@@ -10,7 +10,7 @@ def build_perception(bus: MessageBus) -> None:
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port)
+    bus = MessageBus(base_port=config.base_port, role="node")
     build_perception(bus)
     while True:
         time.sleep(1)

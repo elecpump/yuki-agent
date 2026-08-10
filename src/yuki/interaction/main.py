@@ -21,7 +21,7 @@ def build_interaction(bus: MessageBus, hotkeys: HotkeyManager) -> None:
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port)
+    bus = MessageBus(base_port=config.base_port, role="node")
     hotkeys = HotkeyManager()
     build_interaction(bus, hotkeys)
 

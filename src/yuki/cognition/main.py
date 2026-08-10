@@ -16,7 +16,7 @@ def build_cognition(bus: MessageBus) -> None:
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port)
+    bus = MessageBus(base_port=config.base_port, role="hub")
     build_cognition(bus)
     while True:
         time.sleep(1)
