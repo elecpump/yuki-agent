@@ -13,7 +13,18 @@ def _to_struct(payload: dict) -> Struct:
 
 
 def _from_struct(struct: Struct) -> dict:
-    return json_format.MessageToDict(struct, preserving_proto_field_name=True)
+    data = json_format.MessageToDict(struct, preserving_proto_field_name=True)
+    return _recover_ints(data)
+
+
+def _recover_ints(value):
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [_recover_ints(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _recover_ints(v) for k, v in value.items()}
+    return value
 
 
 def build_request(
