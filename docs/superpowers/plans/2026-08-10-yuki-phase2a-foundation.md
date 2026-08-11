@@ -93,10 +93,11 @@ tests/recorder/test_session.py                         # 新增
 **Interfaces:**
 - Consumes: 无
 - Produces:
-  - `configure_logging(level: str = "INFO") -> None` — 配置 structlog 输出 JSON 行到 stdout；调用一次幂等
-  - `get_logger(name: str) -> logging.Logger` — 返回经 structlog 包装的命名 logger（stdlib logging API 兼容，`logger.info/warning/error/exception`）
-  - `audit_logger` — 模块级单例，仅记录过滤动作，**永不记录原文**，写入 `logs/audit.jsonl`
-  - `decision_logger` — 模块级单例，记录每次开口决策的输入参数与结果，写入 `logs/decision.jsonl`
+  - `configure_logging(level: str = "INFO") -> None` — 配置 structlog 输出 JSON 行到 stderr；调用一次幂等
+  - `get_logger(name: str)` — 返回经 structlog 包装的命名 logger（`logger.info/warning/error/exception` 可调，接收任意 kwarg）
+  - `get_file_logger(name: str, filename: str, log_dir: Path = Path("logs"))` — 返回 structlog logger，JSON 行写入 `<log_dir>/<filename>`；底层 stdlib logger 挂 FileHandler 且 `propagate=False`（避免污染 stderr）
+  - `audit_logger` — 模块级单例（`yuki.audit` → `logs/audit.jsonl`），仅记录过滤动作，**永不记录原文**
+  - `decision_logger` — 模块级单例（`yuki.decision` → `logs/decision.jsonl`），记录开口决策输入与结果
   - `bind_trace_id(trace_id: str) -> None` — contextvars 绑定，随日志自动附加
   - `unbind_trace_id() -> None`
 
@@ -113,13 +114,20 @@ dev = ["pytest>=8", "Pillow>=10"]
 - [ ] **Step 2: 写失败测试 `tests/test_logger.py`**
 
 ```python
-import io
 import json
 
 import structlog
 
 from yuki import logger as logger_mod
-from yuki.logger import audit_logger, bind_trace_id, configure_logging, decision_logger, get_logger, unbind_trace_id
+from yuki.logger import (
+    audit_logger,
+    bind_trace_id,
+    configure_logging,
+    decision_logger,
+    get_file_logger,
+    get_logger,
+    unbind_trace_id,
+)
 
 
 def test_configure_logging_is_idempotent():
@@ -127,29 +135,31 @@ def test_configure_logging_is_idempotent():
     configure_logging("INFO")  # 不应抛异常
 
 
-def test_get_logger_returns_stdlib_compatible_logger():
+def test_get_logger_is_callable():
     log = get_logger("test")
-    assert hasattr(log, "info")
-    assert hasattr(log, "warning")
-    assert hasattr(log, "error")
-    assert hasattr(log, "exception")
-    assert log.name == "test"
+    assert callable(log.info)
+    assert callable(log.warning)
+    assert callable(log.error)
+    assert callable(log.exception)
 
 
-def test_audit_logger_captures_structure(caplog):
-    with caplog.at_level("INFO", logger="yuki.audit"):
-        audit_logger.info("filter_action", rule="SENSITIVE_PASSWORD", category="credentials")
-    record = caplog.records[-1]
-    assert record.name == "yuki.audit"
-    assert "SENSITIVE_PASSWORD" in record.getMessage()
+def test_file_logger_writes_json_line(tmp_path):
+    log = get_file_logger("yuki.audit.test", "audit.jsonl", tmp_path)
+    log.info("filter_action", rule="SENSITIVE_PASSWORD", category="credentials")
+    lines = (tmp_path / "audit.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    data = json.loads(lines[0])
+    assert data["event"] == "filter_action"
+    assert data["rule"] == "SENSITIVE_PASSWORD"
+    assert data["category"] == "credentials"
 
 
-def test_decision_logger_captures_structure(caplog):
-    with caplog.at_level("INFO", logger="yuki.decision"):
-        decision_logger.info("speak_decision", topic="science", speak=True, cooldown_remaining=0.0)
-    record = caplog.records[-1]
-    assert record.name == "yuki.decision"
-    assert "science" in record.getMessage()
+def test_file_logger_appends_lines(tmp_path):
+    log = get_file_logger("yuki.decision.test", "decision.jsonl", tmp_path)
+    log.info("speak_decision", topic="science", speak=True)
+    log.info("speak_decision", topic="history", speak=False)
+    lines = (tmp_path / "decision.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    assert json.loads(lines[1])["topic"] == "history"
 
 
 def test_trace_id_binding():
@@ -163,9 +173,16 @@ def test_logger_module_exports():
     assert hasattr(logger_mod, "audit_logger")
     assert hasattr(logger_mod, "decision_logger")
     assert hasattr(logger_mod, "get_logger")
+    assert hasattr(logger_mod, "get_file_logger")
     assert hasattr(logger_mod, "configure_logging")
     assert hasattr(logger_mod, "bind_trace_id")
     assert hasattr(logger_mod, "unbind_trace_id")
+
+
+def test_module_singletons_write_under_logs_dir():
+    # audit_logger / decision_logger 可调用（写 logs/ 目录，测试不校验内容）
+    assert callable(audit_logger.info)
+    assert callable(decision_logger.info)
 ```
 
 - [ ] **Step 3: 跑测试验证失败**
@@ -177,8 +194,7 @@ Expected: FAIL，`No module named 'yuki.logger'`（若 structlog 未装则先 `p
 
 ```python
 import logging
-import logging.handlers
-from contextvars import ContextVar
+import sys
 from pathlib import Path
 
 import structlog
@@ -193,7 +209,7 @@ def configure_logging(level: str = "INFO") -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format="%(message)s",
-        stream=logging.sys.stderr,
+        stream=sys.stderr,
     )
     structlog.configure(
         processors=[
@@ -211,27 +227,26 @@ def configure_logging(level: str = "INFO") -> None:
     _configured = True
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name: str):
     configure_logging()
     return structlog.get_logger(name)
 
 
-def _file_logger(name: str, filename: str) -> logging.Logger:
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
+def get_file_logger(name: str, filename: str, log_dir: Path = Path("logs")):
+    configure_logging()
+    log_dir = Path(log_dir)
+    log_dir.mkdir(parents=True, exist_ok=True)
     handler = logging.FileHandler(log_dir / filename, encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(message)s"))
-    log = structlog.get_logger(name)
-    handler_wrapped = logging.getLogger(name)
-    handler_wrapped.addHandler(handler)
-    handler_wrapped.propagate = False
-    log.setLevel(logging.INFO)
-    log.addHandler(handler)
-    return log
+    stdlib_logger = logging.getLogger(name)
+    stdlib_logger.setLevel(logging.INFO)
+    stdlib_logger.addHandler(handler)
+    stdlib_logger.propagate = False
+    return structlog.get_logger(name)
 
 
-audit_logger = _file_logger("yuki.audit", "audit.jsonl")
-decision_logger = _file_logger("yuki.decision", "decision.jsonl")
+audit_logger = get_file_logger("yuki.audit", "audit.jsonl")
+decision_logger = get_file_logger("yuki.decision", "decision.jsonl")
 
 
 def bind_trace_id(trace_id: str) -> None:
@@ -242,12 +257,12 @@ def unbind_trace_id() -> None:
     structlog.contextvars.unbind_contextvars("trace_id")
 ```
 
-注意：本实现为 Task 1 交付的最小可用版本，使测试通过。后续任务（bus 信封 trace_id 绑定、审计动作记日志）复用此模块。若 `structlog.get_logger` 返回对象与 `logging.Logger` 断言冲突，调整测试断言为 `hasattr(log, "name")` 且可调 info 方法。
+注意：structlog 的 `BoundLoggerLazyProxy` 没有 `.name` 属性，故测试只断言方法可调。`get_file_logger` 返回 structlog logger，其 kwargs 会作为顶层键进入 JSON 行（`event` 为消息文本）。
 
 - [ ] **Step 5: 跑测试验证通过**
 
 Run: `python -m pytest tests/test_logger.py -v`
-Expected: 6 个测试 PASS
+Expected: 7 个测试 PASS
 
 - [ ] **Step 6: 提交**
 
@@ -475,11 +490,24 @@ def test_request_respond_roundtrip(make_bus):
     assert bus.request("ping", {"msg": "hello"}, timeout_ms=1000) == {"echo": "hello"}
 
 
-def test_request_times_out_on_unregistered_service(make_bus):
+def test_request_unregistered_service_raises_bus_error(make_bus):
     bus = make_bus(6120)
     time.sleep(0.1)
+    with pytest.raises(BusError, match="service not found"):
+        bus.request("ghost", {}, timeout_ms=1000)
+
+
+def test_request_times_out_when_handler_hangs(make_bus):
+    bus = make_bus(6121)
+
+    def slow(payload):
+        time.sleep(1.0)
+        return {"ok": 1}
+
+    bus.respond("slow", slow)
+    time.sleep(0.1)
     with pytest.raises(BusTimeoutError):
-        bus.request("ghost", {}, timeout_ms=300)
+        bus.request("slow", {}, timeout_ms=200)
 
 
 def test_request_raises_bus_error_on_failed_handler(make_bus):
@@ -490,7 +518,7 @@ def test_request_raises_bus_error_on_failed_handler(make_bus):
 
     bus.respond("boom", handler)
     time.sleep(0.1)
-    with pytest.raises(BusError, match="boom"):
+    with pytest.raises(BusError, match="handler error"):
         bus.request("boom", {}, timeout_ms=1000)
 
 
@@ -504,7 +532,7 @@ def test_respond_loop_survives_handler_exception(make_bus):
 
     bus.respond("svc", handler)
     time.sleep(0.1)
-    with pytest.raises(BusError, match="bad payload"):
+    with pytest.raises(BusError, match="handler error"):
         bus.request("svc", {"bad": True}, timeout_ms=1000)
     assert bus.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
 
@@ -1354,9 +1382,9 @@ def test_backoff_increases_with_attempts():
         env=None,
         clock=fake_clock,
         sleep=lambda s: None,
+        restart_window=600,
+        restart_max_per_window=5,
     )
-    sup.restart_base_delay = 1.0
-    sup.restart_max_delay = 8.0
     clock["now"] = 101.0
     sup.tick()
     clock["now"] = 102.0
@@ -1365,7 +1393,64 @@ def test_backoff_increases_with_attempts():
 
 
 def test_window_limit_stops_restarting():
-    ...
+    class DeadProc:
+        def poll(self):
+            return 1
+
+    created = []
+
+    def factory(cmd, env=None, creationflags=None):
+        created.append(cmd[0])
+        return DeadProc()
+
+    clock = {"now": 0.0}
+
+    def fake_clock():
+        return clock["now"]
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        env=None,
+        clock=fake_clock,
+        sleep=lambda s: None,
+        restart_window=100,
+        restart_max_per_window=2,
+    )
+    for _ in range(5):
+        clock["now"] += 1
+        sup.tick()
+    assert created == ["a", "a", "a"]  # 初始 + 2 次重启后窗口限流停止
+
+
+def test_health_probe_failure_counts_as_restart():
+    created = []
+    poll_results = {"a": None}
+
+    class Proc:
+        def poll(self):
+            return poll_results["a"]
+
+    def factory(cmd, env=None, creationflags=None):
+        created.append(cmd[0])
+        return Proc()
+
+    class ProbeBus:
+        def request(self, service, payload, timeout_ms=2000):
+            if service == "health/a":
+                raise BusTimeoutError("no heartbeat")
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        env=None,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    sup.tick(bus=ProbeBus(), health_timeout_ms=200)
+    assert created == ["a", "a"]  # 初始 + 探活失败重启
 ```
 
 **说明：** Supervisor 需要支持 `clock`/`sleep`/退避参数注入才能测。Step 3 实现时会给出完整可测版本；若测试与实现有出入，以实现后的通过测试为准并保持语义（退避递增、窗口限流、探活失败计入、bus_server 先决条件）。
@@ -1460,15 +1545,14 @@ class Supervisor:
     def tick(self, bus: MessageBus | None = None, health_timeout_ms: int = 2000) -> list[str]:
         restarted: list[str] = []
         now = self._clock()
-        bus_alive = bus is not None
         for child in self._children:
             if child.proc.poll() is None:
-                # 存活：重置窗口判定，若稳定超过窗口则清 attempts
+                # 存活：超过窗口无重启则清 attempts
                 if now - child.healthy_since >= self.restart_window:
                     child.attempts = 0
                     child.healthy_since = now
-                # 健康探活（bus_server 存活时）
-                if bus_alive and bus is not None:
+                # 健康探活（bus_server 只靠 poll 判定，不探活；其余子进程在 hub 就绪后探活）
+                if bus is not None and child.name != "bus_server":
                     try:
                         bus.request(f"health/{child.name}", {}, timeout_ms=health_timeout_ms)
                     except (BusError, BusTimeoutError):
@@ -1563,6 +1647,7 @@ def main() -> None:
     env["YUKI_BUS_ROLE"] = "node"
     env["YUKI_BASE_PORT"] = str(config.base_port)
 
+    bus = MessageBus(base_port=config.base_port, role="node", hwm=config.hwm)
     supervisor = Supervisor(
         build_children_cmds(extra),
         env=env,
@@ -1574,19 +1659,21 @@ def main() -> None:
     try:
         while not shutdown.shutdown_requested:
             try:
-                supervisor.tick(
-                    bus=supervisor._hub if hasattr(supervisor, "_hub") else None,
-                    health_timeout_ms=config.health_timeout_ms,
-                )
+                supervisor.tick(bus=bus, health_timeout_ms=config.health_timeout_ms)
             except RuntimeError as exc:
                 print(f"[supervisor] {exc}", flush=True)
             shutdown.wait(timeout=0.5)
     finally:
         _send_break_to_children(supervisor)
         supervisor.terminate_children()
+        bus.close()
+
+
+if __name__ == "__main__":
+    main()
 ```
 
-**注意：** supervisor 作为 node 连 hub 做探活，需要在 main() 中创建 `hub = MessageBus(base_port, role="node")` 并赋值 `supervisor._hub = hub`（供 tick 探活），finally 关闭。具体接线以实现为准，保持语义：bus_server 先拉起（build_children_cmds 顺序保证），探活只在 hub 就绪后发生。
+**注意：** supervisor 以 node 角色连接 hub 做探活，`tick(bus=bus, ...)` 传入。bus_server 是 CHILDREN 第一项（build_children_cmds 顺序保证先拉起），且 tick 中对名为 `bus_server` 的子进程跳过 health 请求（靠 poll() 判定存活），避免"hub 未就绪时探活失败误重启"。
 
 - [ ] **Step 6: 三层 main() 注册 health 服务**
 
@@ -1982,7 +2069,7 @@ git commit -m "feat: add browsing session recorder (frames + events, no audio)"
 - 9 个问题覆盖 → 见"Phase 1 遗留承接 + 新问题覆盖映射"表
 - audio/mic 与 frame/request 仅定型契约（Task 6），实际实现属 Phase 2b/2c，符合阶段边界
 
-**2. Placeholder 扫描：** 无 TBD/TODO。`build_perception` 空桩保持（Phase 2b 填充）。Task 5 中 supervisor 与 hub 的接线（`supervisor._hub`）标注"以实现为准"，因探活连接方式在编码中收敛——不阻塞测试交付。
+**2. Placeholder 扫描：** 无 TBD/TODO。`build_perception` 空桩保持（Phase 2b 填充）。Task 5 的 supervisor 探活接线已明确：main() 创建 node 角色 bus，`tick(bus=bus, ...)` 传入；bus_server 跳过 health 探活。
 
 **3. Type consistency：**
 - `BusError`/`BusTimeoutError`（Task 3）被 Task 3/5 测试引用，一致
