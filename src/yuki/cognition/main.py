@@ -3,6 +3,7 @@ from typing import Callable
 from yuki.bus import MessageBus
 from yuki.cognition.responder import make_reply
 from yuki.config import Config
+from yuki.health import register_health_service
 from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
 
@@ -20,6 +21,7 @@ def main() -> None:
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
     build_cognition(bus)
+    register_health_service(bus, "cognition")
     try:
         while not shutdown.shutdown_requested:
             shutdown.wait(timeout=1.0)
