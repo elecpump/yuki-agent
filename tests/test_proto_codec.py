@@ -108,3 +108,16 @@ def test_true_float_preserved():
     f = request_payload(parsed)["f"]
     assert f == 0.5
     assert type(f) is float
+
+
+def test_struct_number_fidelity_boundary():
+    # Pins the documented boundary: Struct stores every number as a double, so
+    # ints up to 2**53 round-trip exactly while 2**53 + 1 loses precision and
+    # collapses to 2**53 (see codec.py module docstring).
+    env = build_request("svc", "r1", "t1", {"n": 2**53})
+    parsed = parse_envelope(env.SerializeToString())
+    assert request_payload(parsed) == {"n": 2**53}
+
+    env = build_request("svc", "r1", "t1", {"n": 2**53 + 1})
+    parsed = parse_envelope(env.SerializeToString())
+    assert request_payload(parsed) == {"n": 2**53}

@@ -1,3 +1,11 @@
+"""Envelope codec converting dict payloads to/from google.protobuf.Struct.
+
+Number fidelity: Struct stores every number as a double, so integers up to
+2**53 round-trip exactly; beyond that precision is lost (e.g. 2**53 + 1 comes
+back as 2**53). Integral floats collapse to ints by design (1.0 -> 1) via
+``_recover_ints``.
+"""
+
 from google.protobuf import json_format
 from google.protobuf.struct_pb2 import Struct
 

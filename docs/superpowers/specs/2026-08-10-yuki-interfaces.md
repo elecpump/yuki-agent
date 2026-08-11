@@ -23,6 +23,7 @@
 所有总线消息为序列化后的 `Envelope`（`proto/yuki.proto`，生成 `yuki/proto/yuki_pb2.py`）。
 `Envelope` 用 oneof 判别消息类型：`request` / `response` / `event`。
 动态载荷用 `google.protobuf.Struct` 承载，handler 层仍以 dict 出入。
+payload 数值经 google.protobuf.Struct 以 double 存储，整数精确到 2^53，超出丢失精度；1.0 反序列化为 int 1。
 
 - 生成：`python scripts/generate_proto.py`（grpcio-tools，无系统 protoc）
 - CI 兼容性检查：`tests/test_proto_uptodate.py` 重生成比对，不一致即失败
