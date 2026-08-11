@@ -28,7 +28,7 @@ def run(session: Session, bus: MessageBus, grabber, interval_sec: float) -> None
     next_grab = time.time()
     while not shutdown.shutdown_requested:
         now = time.time()
-        if now >= next_grab:
+        if now >= next_grab and grabber is not None:
             session.save_frame(grabber())
             next_grab = now + interval_sec
         shutdown.wait(timeout=0.05)
@@ -45,10 +45,11 @@ def main() -> None:
     config = Config.from_env()
     bus = MessageBus(base_port=config.base_port, role="node", hwm=config.hwm)
     session = Session(Path(args.output_dir))
-    grabber = (lambda: b"") if args.no_frames else grab_frame
+    grabber = None if args.no_frames else grab_frame
     try:
         run(session, bus, grabber, args.interval)
     finally:
+        session.close()
         bus.close()
 
 
