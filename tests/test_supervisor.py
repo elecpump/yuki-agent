@@ -2,7 +2,7 @@ import subprocess
 
 import pytest
 
-from yuki.bus import BusTimeoutError
+from yuki.bus import BusError, BusTimeoutError
 from yuki.supervisor import Supervisor
 
 
@@ -199,12 +199,22 @@ def test_health_probe_failure_counts_as_restart():
     poll_results = {"a": None}
 
     class Proc:
+        def __init__(self):
+            self.terminated = 0
+
         def poll(self):
             return poll_results["a"]
 
+        def terminate(self):
+            self.terminated += 1
+
+    procs = []
+
     def factory(cmd, env=None, creationflags=None):
+        p = Proc()
+        procs.append(p)
         created.append(cmd[0])
-        return Proc()
+        return p
 
     class ProbeBus:
         def request(self, service, payload, timeout_ms=2000):
@@ -221,3 +231,112 @@ def test_health_probe_failure_counts_as_restart():
     )
     sup.tick(bus=ProbeBus(), health_timeout_ms=200)
     assert created == ["a", "a"]  # 初始 + 探活失败重启
+    assert procs[0].terminated == 1  # 重启前终止旧存活进程，不留孤儿
+
+
+def test_probe_restart_terminates_live_child():
+    procs = []
+
+    class LiveProc:
+        def __init__(self):
+            self.terminated = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated += 1
+
+    class ProbeBus:
+        def request(self, service, payload, timeout_ms=2000):
+            raise BusTimeoutError("no heartbeat")
+
+    def factory(cmd, env=None, creationflags=None):
+        p = LiveProc()
+        procs.append(p)
+        return p
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        env=None,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    sup.tick(bus=ProbeBus(), health_timeout_ms=200)
+    assert len(procs) == 2  # 初始 + 探活失败重启
+    assert procs[0].terminated == 1  # 旧存活进程被终止，不留孤儿
+
+
+def test_probe_skipped_when_bus_server_down():
+    created = []
+    probes = []
+
+    class Proc:
+        def __init__(self, name):
+            self.name = name
+            self.terminated = 0
+
+        def poll(self):
+            return 1 if self.name == "bus_server" else None
+
+        def terminate(self):
+            self.terminated += 1
+
+    class ProbeBus:
+        def request(self, service, payload, timeout_ms=2000):
+            probes.append(service)
+            raise BusTimeoutError("no heartbeat")
+
+    def factory(cmd, env=None, creationflags=None):
+        p = Proc(cmd[0])
+        created.append(p)
+        return p
+
+    sup = Supervisor(
+        [("bus_server", ["bus_server"]), ("cognition", ["cognition"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        env=None,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    sup.tick(bus=ProbeBus(), health_timeout_ms=200)
+    assert probes == []  # bus_server 未存活时跳过所有探活
+    assert created[1].terminated == 0  # cognition 未被误重启
+
+
+def test_probe_service_not_found_does_not_restart():
+    procs = []
+
+    class Proc:
+        def __init__(self):
+            self.terminated = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated += 1
+
+    class ProbeBus:
+        def request(self, service, payload, timeout_ms=2000):
+            raise BusError("service not found")
+
+    def factory(cmd, env=None, creationflags=None):
+        p = Proc()
+        procs.append(p)
+        return p
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        env=None,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    sup.tick(bus=ProbeBus(), health_timeout_ms=200)
+    assert len(procs) == 1  # 服务未注册属瞬时状态，不重启
+    assert procs[0].terminated == 0

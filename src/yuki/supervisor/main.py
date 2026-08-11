@@ -61,8 +61,8 @@ def main() -> None:
         while not shutdown.shutdown_requested:
             try:
                 supervisor.tick(bus=bus, health_timeout_ms=config.health_timeout_ms)
-            except RuntimeError as exc:
-                print(f"[supervisor] {exc}", flush=True)
+            except OSError as exc:
+                print(f"[supervisor] spawn failed: {exc}", flush=True)
             shutdown.wait(timeout=0.5)
     finally:
         _send_break_to_children(supervisor)

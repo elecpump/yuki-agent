@@ -61,32 +61,47 @@ class Supervisor:
     def tick(self, bus: MessageBus | None = None, health_timeout_ms: int = 2000) -> list[str]:
         restarted: list[str] = []
         now = self._clock()
+        bus_server = next((c for c in self._children if c.name == "bus_server"), None)
+        bus_up = bus_server is None or bus_server.proc.poll() is None
         for child in self._children:
             if child.proc.poll() is None:
                 # 存活：超过窗口无重启则清 attempts
                 if now - child.healthy_since >= self.restart_window:
                     child.attempts = 0
                     child.healthy_since = now
-                # 健康探活（bus_server 只靠 poll 判定，不探活；其余子进程在 hub 就绪后探活）
+                # 健康探活（bus_server 只靠 poll 判定，不探活；bus_server 未存活时跳过其余探活）
                 if bus is not None and child.name != "bus_server":
-                    try:
-                        bus.request(f"health/{child.name}", {}, timeout_ms=health_timeout_ms)
-                    except BusTimeoutError:
-                        logger.warning("health probe failed", process=child.name)
-                        self._restart(child, now)
-                        restarted.append(child.name)
-                    except BusError as exc:
-                        if str(exc) == "service not found":
-                            # 子进程仍在启动/注册：hub 就绪但服务未注册属瞬时状态，不重启
-                            logger.info("health probe pending (service not registered)", process=child.name)
-                        else:
+                    if not bus_up:
+                        logger.info("health probes skipped (bus_server not alive)", process=child.name)
+                    else:
+                        try:
+                            bus.request(f"health/{child.name}", {}, timeout_ms=health_timeout_ms)
+                        except BusTimeoutError:
                             logger.warning("health probe failed", process=child.name)
                             self._restart(child, now)
                             restarted.append(child.name)
+                        except BusError as exc:
+                            if str(exc) == "service not found":
+                                # 子进程仍在启动/注册：hub 就绪但服务未注册属瞬时状态，不重启
+                                logger.info("health probe pending (service not registered)", process=child.name)
+                            else:
+                                logger.warning("health probe failed", process=child.name)
+                                self._restart(child, now)
+                                restarted.append(child.name)
                 continue
             self._restart(child, now)
             restarted.append(child.name)
         return restarted
+
+    def _stop_proc(self, child: Child) -> None:
+        proc = child.proc
+        if proc.poll() is None:
+            if os.name == "nt":
+                try:
+                    os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+                except (OSError, AttributeError):
+                    pass
+            proc.terminate()
 
     def _restart(self, child: Child, now: float) -> None:
         now_window = now - self.restart_window
@@ -100,13 +115,13 @@ class Supervisor:
         child.restarts += 1
         child.attempts += 1
         child.restart_times.append(now)
+        self._stop_proc(child)
         child.proc = self._spawn(child.cmd)
         child.healthy_since = now
 
     def terminate_children(self, timeout: float = 5.0) -> None:
         for child in self._children:
-            if child.proc.poll() is None:
-                child.proc.terminate()
+            self._stop_proc(child)
         deadline = self._clock() + timeout
         for child in self._children:
             if child.proc.poll() is None:
