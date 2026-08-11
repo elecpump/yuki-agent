@@ -1,7 +1,7 @@
 # Yuki Agent 进程间接口定义
 
 > 日期：2026-08-10
-> 状态：Phase 2a 定型；Phase 2b 将 JSON 编码机械替换为 protobuf（信封字段不变）
+> 状态：Phase 2a 定型；Phase 2c 已将 JSON 编码替换为 protobuf（信封字段不变）
 > 传输：全部 localhost（tcp://127.0.0.1）
 
 ## 1. 总线拓扑与角色
@@ -18,20 +18,26 @@
 | base_port+1 | XPUB | 节点 SUB 连入 |
 | base_port+2 | ROUTER | 节点 DEALER 连入（REQ/REP 经枢纽） |
 
-## 3. 统一信封
+## 3. 统一信封（protobuf）
 
-所有总线消息遵循：`{"version": 1, "trace_id": str, ...}`。PUB/SUB 消息含 `"topic"` 与 `"payload"`；REQ/REP 消息含 `"service"`、`"request_id"`、`"payload"` 或 `"result"`/`"error"`。
+所有总线消息为序列化后的 `Envelope`（`proto/yuki.proto`，生成 `yuki/proto/yuki_pb2.py`）。
+`Envelope` 用 oneof 判别消息类型：`request` / `response` / `event`。
+动态载荷用 `google.protobuf.Struct` 承载，handler 层仍以 dict 出入。
+
+- 生成：`python scripts/generate_proto.py`（grpcio-tools，无系统 protoc）
+- CI 兼容性检查：`tests/test_proto_uptodate.py` 重生成比对，不一致即失败
+- 信封字段：`version`(uint32)、`trace_id`(string)
 
 ### PUB/SUB
-- 发布：`{"version":1, "topic":<str>, "payload":{...}}`，帧头为主题名
+- 帧：`[topic, Envelope(event)]`，`event={topic, payload:Struct}`
 - 订阅：单 SUB 套接字多 SUBSCRIBE；同前缀多 handler 并存；重叠前缀均触发
 
 ### ROUTER/DEALER（REQ/REP）
-- 注册：`["REGISTER", service]`（服务提供方启动时一次）
-- 请求：`[service, json]`，`json={"version","trace_id","service","request_id","payload"}`
-- 响应：`[client_identity, json]`，`json={"version","request_id","result"}` 或 `{"version","request_id","error"}`
-- 服务未注册：hub 直回 `{"version","request_id","error":"service not found"}`
-- 响应方 handler 异常：`{"version","request_id","error":"handler error"}`，且该服务 error_count 递增
+- 注册：`["REGISTER", service]`（文本控制帧，不裹信封）
+- 请求：`[service, Envelope(request)]`，`request={service, request_id, payload:Struct}`
+- 响应：`[client_identity, Envelope(response)]`，`response={request_id, result:Struct|error:string}`（互斥）
+- 服务未注册：hub 直回 `Envelope(response).error="service not found"`
+- 响应方 handler 异常：`Envelope(response).error="handler error"`，error_count 递增
 - 同一服务单提供者，后注册者胜出
 - 默认超时 2000ms → BusTimeoutError；error → BusError
 
