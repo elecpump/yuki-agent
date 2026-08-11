@@ -165,3 +165,14 @@ def test_services_reregister_after_hub_restart(make_bus):
         except (BusError, BusTimeoutError) as exc:
             last_error = exc
     pytest.fail(f"service not re-registered after hub restart: {last_error}")
+
+
+def test_many_bus_create_close_cycles():
+    # 回归：单进程内反复创建/关闭多个 MessageBus，曾触发 libzmq 4.3.5
+    # Windows signaler 断言（signaler.cpp:345）。修复后应稳定通过。
+    for i in range(25):
+        bus = MessageBus(base_port=6800 + i, hwm=10)
+        bus.respond("ping", lambda p: {"echo": p["msg"]})
+        time.sleep(0.01)
+        bus.request("ping", {"msg": "hi"}, timeout_ms=1000)
+        bus.close()
