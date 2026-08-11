@@ -31,6 +31,7 @@
 - 请求：`[service, json]`，`json={"version","trace_id","service","request_id","payload"}`
 - 响应：`[client_identity, json]`，`json={"version","request_id","result"}` 或 `{"version","request_id","error"}`
 - 服务未注册：hub 直回 `{"version","request_id","error":"service not found"}`
+- 响应方 handler 异常：`{"version","request_id","error":"handler error"}`，且该服务 error_count 递增
 - 同一服务单提供者，后注册者胜出
 - 默认超时 2000ms → BusTimeoutError；error → BusError
 
@@ -38,7 +39,7 @@
 
 | 主题 | 方向 | 载荷 |
 |---|---|---|
-| event/awake | 交互层→总线 | {"source":"hotkey"\|"wakeword","ts":float,"confidence":0..1} |
+| event/awake | 交互层→总线 | {"source":"hotkey"\|"wakeword","ts":float,"confidence":0..1}（confidence/wakeword 为 Phase 3 预留；当前仅发 hotkey+ts） |
 | event/reply | 认知层→总线 | {"text":str,"ts":float} |
 | event/focus_changed | 采集层→总线 | {"app":str,"url":str,"title":str}（Phase 2b） |
 | event/heartbeat | 各层→总线 | {"process":str,"ts":float}（可选） |
