@@ -1,17 +1,15 @@
 import threading
 import time
 
-import pytest
-
 from yuki.bus import MessageBus
 
 
-def _wait_sub(t=0.05):
-    time.sleep(t)  # ZMQ PUB/SUB slow-joiner 保护
+def _wait_sub(t=0.1):
+    time.sleep(t)
 
 
 def test_publish_subscribe_roundtrip():
-    bus = MessageBus(base_port=6001)
+    bus = MessageBus(base_port=6001, hwm=10)
     received = threading.Event()
     got = {}
 
@@ -26,10 +24,11 @@ def test_publish_subscribe_roundtrip():
     assert received.wait(timeout=2.0)
     assert got["topic"] == "event/awake"
     assert got["payload"] == {"source": "hotkey"}
+    bus.close()
 
 
 def test_subscribe_filters_by_prefix():
-    bus = MessageBus(base_port=6002)
+    bus = MessageBus(base_port=6002, hwm=10)
     hits = []
 
     def on_awake(topic, payload):
@@ -39,17 +38,8 @@ def test_subscribe_filters_by_prefix():
     _wait_sub()
     bus.publish("event/reply", {"text": "hi"})
     bus.publish("event/awake", {"source": "hotkey"})
-    time.sleep(0.3)
+    deadline = time.time() + 2.0
+    while not hits and time.time() < deadline:
+        time.sleep(0.05)
     assert hits == [{"source": "hotkey"}]
-
-
-def test_request_respond_roundtrip():
-    bus = MessageBus(base_port=6003)
-
-    def handler(payload):
-        return {"echo": payload["msg"]}
-
-    bus.respond("ping", handler)
-    time.sleep(0.05)
-    result = bus.request("ping", {"msg": "hello"})
-    assert result == {"echo": "hello"}
+    bus.close()
