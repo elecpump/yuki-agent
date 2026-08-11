@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package yuki;
+
+import "google/protobuf/struct.proto";
+
+// 统一信封：总线所有数据消息。
+message Envelope {
+  uint32 version = 1;
+  string trace_id = 2;
+  oneof body {
+    Request request = 3;
+    Response response = 4;
+    Event event = 5;
+  }
+}
+
+// REQ/REP 请求。
+message Request {
+  string service = 1;
+  string request_id = 2;
+  google.protobuf.Struct payload = 3;
+}
+
+// REQ/REP 响应：result 与 error 互斥。
+message Response {
+  string request_id = 1;
+  google.protobuf.Struct result = 2;
+  optional string error = 3;
+}
+
+// PUB/SUB 事件。
+message Event {
+  string topic = 1;
+  google.protobuf.Struct payload = 2;
+}
