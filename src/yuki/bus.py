@@ -1,16 +1,25 @@
-import json
 import logging
 import threading
 import uuid
 from typing import Callable
 
 import zmq
+from google.protobuf.message import DecodeError
 
 from yuki.logger import bind_trace_id, get_logger, unbind_trace_id
+from yuki.proto.codec import (
+    VERSION,
+    build_event,
+    build_request,
+    build_response_error,
+    build_response_result,
+    event_payload,
+    parse_envelope,
+    request_payload,
+    response_result,
+)
 
 logger = get_logger("yuki.bus")
-
-VERSION = 1
 
 
 class BusError(Exception):
@@ -128,17 +137,19 @@ class MessageBus:
                 continue
             f1, f2 = frames[1], frames[2]
             try:
-                msg = json.loads(f2.decode())
-            except ValueError:
+                envelope = parse_envelope(f2)
+            except DecodeError:
+                logger.warning("dropping malformed envelope from %s", sender)
                 continue
-            if "payload" in msg:
-                provider = self._service_map.get(msg.get("service", ""))
-                if provider is None:
-                    err = {"version": VERSION, "request_id": msg.get("request_id"), "error": "service not found"}
-                    self._router.send_multipart([sender, json.dumps(err).encode()])
+            kind = envelope.WhichOneof("body")
+            if kind == "request":
+                provider = self._service_map.get(envelope.request.service, "")
+                if not provider:
+                    err = build_response_error(envelope.request.request_id, "service not found")
+                    self._router.send_multipart([sender, err.SerializeToString()])
                 else:
                     self._router.send_multipart([provider, sender, f2])
-            elif "error" in msg or "result" in msg:
+            elif kind == "response":
                 self._router.send_multipart([f1, f2])
         self._close_socket(self._router)
 
@@ -153,35 +164,41 @@ class MessageBus:
             if len(frames) == 2:
                 client_id, raw = frames
                 try:
-                    msg = json.loads(raw.decode())
-                except ValueError:
+                    envelope = parse_envelope(raw)
+                except DecodeError:
                     continue
-                if msg.get("trace_id"):
-                    bind_trace_id(msg["trace_id"])
-                handler = self._services.get(msg.get("service"))
+                if envelope.trace_id:
+                    bind_trace_id(envelope.trace_id)
+                if envelope.WhichOneof("body") != "request":
+                    if envelope.trace_id:
+                        unbind_trace_id()
+                    continue
+                handler = self._services.get(envelope.request.service)
                 if handler is None:
-                    reply = {"version": VERSION, "request_id": msg.get("request_id"), "error": "service not found"}
+                    reply = build_response_error(envelope.request.request_id, "service not found")
                 else:
                     try:
-                        result = handler(msg.get("payload", {}))
-                        reply = {"version": VERSION, "request_id": msg.get("request_id"), "result": result}
+                        result = handler(request_payload(envelope))
+                        reply = build_response_result(envelope.request.request_id, result)
                     except Exception:
-                        logger.error("responder handler failed", service=msg.get("service"))
+                        logger.error("responder handler failed", service=envelope.request.service)
                         self._error_count += 1
-                        reply = {"version": VERSION, "request_id": msg.get("request_id"), "error": "handler error"}
-                self._dealer.send_multipart([client_id, json.dumps(reply).encode()])
-                if msg.get("trace_id"):
+                        reply = build_response_error(envelope.request.request_id, "handler error")
+                self._dealer.send_multipart([client_id, reply.SerializeToString()])
+                if envelope.trace_id:
                     unbind_trace_id()
             elif len(frames) == 1:
                 try:
-                    msg = json.loads(frames[0].decode())
-                except ValueError:
+                    envelope = parse_envelope(frames[0])
+                except DecodeError:
                     continue
-                rid = msg.get("request_id")
+                if envelope.WhichOneof("body") != "response":
+                    continue
+                rid = envelope.response.request_id
                 with self._lock:
                     entry = self._pending.get(rid)
                 if entry:
-                    entry["result"] = msg
+                    entry["result"] = envelope
                     entry["event"].set()
         self._close_socket(self._dealer)
 
@@ -198,8 +215,8 @@ class MessageBus:
                 return
 
     def publish(self, topic: str, payload: dict) -> None:
-        envelope = {"version": VERSION, "topic": topic, "payload": payload}
-        self._pub.send_multipart([topic.encode(), json.dumps(envelope).encode()])
+        envelope = build_event(topic, payload)
+        self._pub.send_multipart([topic.encode(), envelope.SerializeToString()])
 
     def subscribe(self, topic_prefix: str, handler: Callable[[str, dict], None]) -> None:
         with self._lock:
@@ -222,11 +239,14 @@ class MessageBus:
                 return
             topic = raw_topic.decode()
             try:
-                envelope = json.loads(raw_payload.decode())
-            except ValueError:
+                envelope = parse_envelope(raw_payload)
+            except DecodeError:
                 logger.warning("dropping malformed message", topic=topic)
                 continue
-            payload = envelope.get("payload", envelope)
+            if envelope.WhichOneof("body") != "event":
+                logger.warning("dropping non-event envelope", topic=topic)
+                continue
+            payload = event_payload(envelope)
             with self._lock:
                 matching = [
                     h
@@ -245,25 +265,20 @@ class MessageBus:
     def request(self, service: str, payload: dict, timeout_ms: int = 2000) -> dict:
         rid = uuid.uuid4().hex
         event = threading.Event()
-        envelope = {
-            "version": VERSION,
-            "trace_id": uuid.uuid4().hex,
-            "service": service,
-            "request_id": rid,
-            "payload": payload,
-        }
+        trace_id = uuid.uuid4().hex
+        envelope = build_request(service, rid, trace_id, payload)
         with self._lock:
             self._pending[rid] = {"event": event, "result": None}
-        self._dealer.send_multipart([service.encode(), json.dumps(envelope).encode()])
+        self._dealer.send_multipart([service.encode(), envelope.SerializeToString()])
         if not event.wait(timeout_ms / 1000.0):
             with self._lock:
                 self._pending.pop(rid, None)
             raise BusTimeoutError(f"request to {service!r} timed out after {timeout_ms}ms")
         with self._lock:
-            msg = self._pending.pop(rid)["result"]
-        if "error" in msg:
-            raise BusError(msg["error"])
-        return msg["result"]
+            resp = self._pending.pop(rid)["result"]
+        if resp.response.HasField("error"):
+            raise BusError(resp.response.error)
+        return response_result(resp)
 
     def respond(self, service: str, handler: Callable[[dict], dict]) -> None:
         self._services[service] = handler

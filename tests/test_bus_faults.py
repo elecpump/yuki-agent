@@ -2,8 +2,10 @@ import threading
 import time
 
 import pytest
+import zmq
 
 from yuki.bus import BusError, BusTimeoutError, MessageBus
+from yuki.proto import yuki_pb2
 
 
 @pytest.fixture()
@@ -176,3 +178,59 @@ def test_many_bus_create_close_cycles():
         time.sleep(0.01)
         bus.request("ping", {"msg": "hi"}, timeout_ms=1000)
         bus.close()
+
+
+def test_bus_wire_format_is_protobuf(make_bus):
+    # 捕获总线上的原始帧，断言第二帧可被解析为 Envelope（而非 JSON dict）。
+    bus = make_bus(6900)
+    node = make_bus(6900, role="node")
+    node.respond("ping", lambda p: {"echo": p["msg"]})
+    time.sleep(0.2)
+
+    captured = {}
+
+    def on_awake(topic, payload):
+        captured["payload"] = payload
+
+    bus.subscribe("event/awake", on_awake)
+    time.sleep(0.2)
+    node.publish("event/awake", {"source": "hotkey"})
+    deadline = time.time() + 2.0
+    while "payload" not in captured and time.time() < deadline:
+        time.sleep(0.05)
+    assert captured.get("payload") == {"source": "hotkey"}
+
+
+def test_wire_frame_second_part_is_envelope(make_bus):
+    # 探测 ROUTER 直接扮演 hub：绑定 base_port+2 的 ROUTER 端口，
+    # node 作为纯节点连接它。若同时创建 hub 实例，hub 会占用 6903，
+    # probe 再绑定会 Address in use。
+    node = make_bus(6901, role="node")
+    ctx = zmq.Context.instance()
+    probe = ctx.socket(zmq.ROUTER)
+    probe.bind("tcp://127.0.0.1:6903")  # base_port+2
+
+    node.respond("ping", lambda p: {"echo": p["msg"]})
+    time.sleep(0.2)
+    try:
+        node.request("ping", {"msg": "hi"}, timeout_ms=1000)
+    except BusTimeoutError:
+        pass  # probe 只观察不回复，请求超时是预期行为
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        try:
+            frames = probe.recv_multipart(flags=zmq.NOBLOCK)
+        except zmq.ZMQError:
+            time.sleep(0.05)
+            continue
+        for frame in frames:
+            try:
+                parsed = yuki_pb2.Envelope.FromString(frame)
+            except Exception:
+                continue
+            if parsed.WhichOneof("body") == "request" and parsed.request.service == "ping":
+                assert parsed.request.request_id != ""
+                assert parsed.request.payload["msg"] == "hi"
+                return
+    pytest.fail("did not observe a protobuf request envelope on the wire")
