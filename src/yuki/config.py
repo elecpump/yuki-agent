@@ -20,8 +20,13 @@ class Config(BaseModel):
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
         data: dict = {}
-        if config_file and Path(config_file).exists():
-            with open(config_file, "r", encoding="utf-8") as fh:
+        path = Path(config_file) if config_file else None
+        if path is None:
+            default = Path("config.yaml")
+            if default.exists():
+                path = default
+        if path is not None and path.exists():
+            with open(path, "r", encoding="utf-8") as fh:
                 data.update(yaml.safe_load(fh) or {})
         for field in cls.model_fields:
             env_key = f"YUKI_{field.upper()}"

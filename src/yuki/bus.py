@@ -33,12 +33,19 @@ class MessageBus:
     role="node"：仅连接。多进程部署时 bus_server 以 hub 运行，其余以 node 连接。
     """
 
-    def __init__(self, base_port: int = 5555, role: str = "hub", hwm: int = 1000):
+    def __init__(
+        self,
+        base_port: int = 5555,
+        role: str = "hub",
+        hwm: int = 1000,
+        register_interval: float = 10.0,
+    ):
         self._ctx = zmq.Context()
         self._xsub_port = base_port
         self._xpub_port = base_port + 1
         self._router_port = base_port + 2
         self._hwm = hwm
+        self._register_interval = register_interval
         self._handlers: dict[str, list[Callable[[str, dict], None]]] = {}
         self._services: dict[str, Callable[[dict], dict]] = {}
         self._pending: dict[str, dict] = {}
@@ -59,6 +66,7 @@ class MessageBus:
         self._dealer.setsockopt(zmq.RCVHWM, self._hwm)
         self._dealer.connect(f"tcp://127.0.0.1:{self._router_port}")
         threading.Thread(target=self._dealer_loop, daemon=True).start()
+        threading.Thread(target=self._register_loop, daemon=True).start()
 
     def _start_hub(self) -> None:
         xsub = self._ctx.socket(zmq.XSUB)
@@ -143,6 +151,21 @@ class MessageBus:
                 if entry:
                     entry["result"] = msg
                     entry["event"].set()
+
+    def _register_loop(self) -> None:
+        while True:
+            try:
+                time.sleep(self._register_interval)
+            except Exception:
+                return
+            services = list(self._services.keys())
+            if not services:
+                continue
+            try:
+                for service in services:
+                    self._dealer.send_multipart([b"REGISTER", service.encode()])
+            except zmq.ZMQError:
+                return
 
     def publish(self, topic: str, payload: dict) -> None:
         envelope = {"version": VERSION, "topic": topic, "payload": payload}

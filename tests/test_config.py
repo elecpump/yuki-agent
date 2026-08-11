@@ -55,3 +55,12 @@ def test_from_env_backward_compat(monkeypatch):
     monkeypatch.setenv("YUKI_BASE_PORT", "7000")
     config = Config.from_env()
     assert config.base_port == 7000
+
+
+def test_load_autodiscovers_config_yaml_in_cwd(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text("base_port: 8000\nhwm: 200\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("YUKI_HWM", "300")
+    config = Config.load(None)
+    assert config.base_port == 8000  # 来自自动发现的 config.yaml
+    assert config.hwm == 300         # env 仍覆盖 config.yaml

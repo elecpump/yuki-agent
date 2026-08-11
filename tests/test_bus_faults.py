@@ -10,8 +10,8 @@ from yuki.bus import BusError, BusTimeoutError, MessageBus
 def make_bus():
     buses = []
 
-    def _make(port, role="hub"):
-        bus = MessageBus(base_port=port, role=role, hwm=10)
+    def _make(port, role="hub", **kwargs):
+        bus = MessageBus(base_port=port, role=role, hwm=10, **kwargs)
         buses.append(bus)
         return bus
 
@@ -131,3 +131,37 @@ def test_overlapping_prefixes_both_dispatch(make_bus):
     while len(got) < 2 and time.time() < deadline:
         time.sleep(0.05)
     assert sorted(got) == ["broad", "narrow"]
+
+
+def test_services_reregister_after_hub_restart(make_bus):
+    port = 6180
+    hub = make_bus(port, role="hub")
+    node = make_bus(port, role="node", register_interval=0.2)
+    node.respond("svc", lambda payload: {"echo": payload["msg"]})
+
+    deadline = time.time() + 5.0
+    registered = False
+    while time.time() < deadline:
+        try:
+            if node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}:
+                registered = True
+                break
+        except (BusError, BusTimeoutError):
+            time.sleep(0.1)
+    assert registered, "initial registration did not take effect"
+
+    hub.close()
+    time.sleep(0.3)
+
+    hub2 = make_bus(port, role="hub")
+
+    deadline = time.time() + 8.0
+    last_error = None
+    while time.time() < deadline:
+        time.sleep(0.1)
+        try:
+            assert node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
+            return
+        except (BusError, BusTimeoutError) as exc:
+            last_error = exc
+    pytest.fail(f"service not re-registered after hub restart: {last_error}")

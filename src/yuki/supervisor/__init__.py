@@ -93,15 +93,29 @@ class Supervisor:
             restarted.append(child.name)
         return restarted
 
-    def _stop_proc(self, child: Child) -> None:
+    def _stop_proc(self, child: Child, grace: float = 2.0) -> None:
         proc = child.proc
+        if proc.poll() is not None:
+            return
+        if os.name == "nt":
+            try:
+                os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+            except (OSError, AttributeError):
+                pass
+        remaining = grace
+        while proc.poll() is None and remaining > 0:
+            step = min(0.05, remaining)
+            self._sleep(step)
+            remaining -= step
         if proc.poll() is None:
-            if os.name == "nt":
+            try:
+                proc.terminate()
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
                 try:
-                    os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-                except (OSError, AttributeError):
+                    proc.kill()
+                except OSError:
                     pass
-            proc.terminate()
 
     def _restart(self, child: Child, now: float) -> None:
         now_window = now - self.restart_window

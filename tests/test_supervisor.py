@@ -93,6 +93,7 @@ def test_terminate_children_terminates_alive():
         [("cognition", ["python", "-m", "yuki.cognition"])],
         popen_factory=lambda cmd, env=None, creationflags=None: child,
         restart_delay=0.0,
+        sleep=lambda s: None,
     )
     sup.terminate_children(timeout=1.0)
     assert child.terminated >= 1
@@ -118,9 +119,42 @@ def test_terminate_children_kills_on_timeout(monkeypatch):
         [("cognition", ["python", "-m", "yuki.cognition"])],
         popen_factory=lambda cmd, env=None, creationflags=None: hungry,
         restart_delay=0.0,
+        sleep=lambda s: None,
     )
     sup.terminate_children(timeout=0.01)
     assert hungry.killed is True
+
+
+def test_stop_proc_waits_for_graceful_exit_before_terminate():
+    class GracefulExitProc:
+        def __init__(self):
+            self.polls = 0
+            self.terminated = 0
+            self.killed = 0
+
+        def poll(self):
+            self.polls += 1
+            return 0 if self.polls >= 10 else None
+
+        def terminate(self):
+            self.terminated += 1
+
+        def kill(self):
+            self.killed += 1
+
+        def wait(self, timeout=None):
+            return 0
+
+    graceful = GracefulExitProc()
+    sup = Supervisor(
+        [("cognition", ["python", "-m", "yuki.cognition"])],
+        popen_factory=lambda cmd, env=None, creationflags=None: graceful,
+        restart_delay=0.0,
+        sleep=lambda s: None,
+    )
+    sup.terminate_children()
+    assert graceful.terminated == 0
+    assert graceful.killed == 0
 
 
 def test_backoff_increases_with_attempts():
@@ -208,6 +242,12 @@ def test_health_probe_failure_counts_as_restart():
         def terminate(self):
             self.terminated += 1
 
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
     procs = []
 
     def factory(cmd, env=None, creationflags=None):
@@ -246,6 +286,12 @@ def test_probe_restart_terminates_live_child():
 
         def terminate(self):
             self.terminated += 1
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
 
     class ProbeBus:
         def request(self, service, payload, timeout_ms=2000):
