@@ -1,4 +1,3 @@
-import time
 from typing import Callable
 
 
@@ -14,7 +13,3 @@ class HotkeyManager:
     def trigger(self, name: str) -> None:
         if name in self._handlers:
             self._handlers[name]()
-
-    def run(self) -> None:
-        while True:
-            time.sleep(1)

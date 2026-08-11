@@ -5,6 +5,7 @@ import time
 from yuki.bus import MessageBus
 from yuki.config import Config
 from yuki.interaction.hotkey import HotkeyManager
+from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
 
 
@@ -21,8 +22,10 @@ def build_interaction(bus: MessageBus, hotkeys: HotkeyManager) -> None:
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port, role="node")
+    bus = MessageBus(base_port=config.base_port, role=config.bus_role, hwm=config.hwm)
     hotkeys = HotkeyManager()
+    shutdown = ShutdownManager()
+    shutdown.register_signal_handlers()
     build_interaction(bus, hotkeys)
 
     if "--trigger-after" in sys.argv:
@@ -34,7 +37,11 @@ def main() -> None:
 
         threading.Thread(target=delayed, daemon=True).start()
 
-    hotkeys.run()
+    try:
+        while not shutdown.shutdown_requested:
+            shutdown.wait(timeout=1.0)
+    finally:
+        bus.close()
 
 
 if __name__ == "__main__":

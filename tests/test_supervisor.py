@@ -1,3 +1,5 @@
+import subprocess
+
 import pytest
 
 from yuki.supervisor import Supervisor
@@ -15,7 +17,7 @@ class FakeProc:
 def _fake_factory(procs):
     index = {"n": 0}
 
-    def factory(cmd):
+    def factory(cmd, env=None, creationflags=None):
         if cmd[0] == "dead":
             p = procs["dead"]
             p.spawn_count += 1
@@ -53,3 +55,62 @@ def test_supervisor_gives_up_after_max_restarts():
     with pytest.raises(RuntimeError):
         for _ in range(10):
             sup.tick(max_restarts=3)
+
+
+class FakeProcWithState:
+    def __init__(self, exit_code=None):
+        self._exit_code = exit_code
+        self.terminated = 0
+        self.killed = 0
+        self.waited = 0
+
+    def poll(self):
+        return self._exit_code
+
+    def terminate(self):
+        self.terminated += 1
+        self._exit_code = 0
+
+    def kill(self):
+        self.killed += 1
+
+    def wait(self, timeout=None):
+        self.waited += 1
+        self._exit_code = 0
+        return 0
+
+
+def test_terminate_children_terminates_alive():
+    child = FakeProcWithState(exit_code=None)
+    sup = Supervisor(
+        [("cognition", ["python", "-m", "yuki.cognition"])],
+        popen_factory=lambda cmd, env=None, creationflags=None: child,
+        restart_delay=0.0,
+    )
+    sup.terminate_children(timeout=1.0)
+    assert child.terminated >= 1
+
+
+def test_terminate_children_kills_on_timeout(monkeypatch):
+    class HungryProc:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("cognition", 1)
+
+        def kill(self):
+            self.killed = True
+
+    hungry = HungryProc()
+    hungry.killed = False
+    sup = Supervisor(
+        [("cognition", ["python", "-m", "yuki.cognition"])],
+        popen_factory=lambda cmd, env=None, creationflags=None: hungry,
+        restart_delay=0.0,
+    )
+    sup.terminate_children(timeout=0.01)
+    assert hungry.killed is True
