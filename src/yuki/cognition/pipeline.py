@@ -29,7 +29,9 @@ def decode_png_b64(png_b64: str) -> Image.Image | None:
 def scroll_band(scroll_percent: float | None) -> str:
     if scroll_percent is None:
         return "unknown"
-    return f"{int(scroll_percent // 25) * 25}-{int(scroll_percent // 25) * 25 + 25}"
+    percent = min(max(float(scroll_percent), 0.0), 100.0)
+    idx = min(int(percent // 25), 3)
+    return f"{idx * 25}-{idx * 25 + 25}"
 
 
 class PerceptionPipeline:
@@ -127,7 +129,15 @@ class PerceptionPipeline:
         image = decode_png_b64(frame["png"])
         if image is None:
             return {"topic": "", "degraded": True, "reason": "decode_failed"}
-        return self._vlm.understand(image)
+        context = self._vlm.understand(image)
+        text = " ".join([
+            context.get("topic", ""),
+            context.get("summary", ""),
+            " ".join(context.get("key_points", []) or []),
+        ])
+        if self._sensitive.scan(text):
+            return {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
+        return context
 
 
 def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,

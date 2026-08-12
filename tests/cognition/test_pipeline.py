@@ -4,7 +4,7 @@ import io
 import numpy as np
 from PIL import Image
 
-from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
+from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline, scroll_band
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.cognition.topics_ext import TopicsExt
 from yuki.topics import Topics
@@ -181,6 +181,13 @@ def test_pipeline_focus_cache_key_uses_source_id_scroll_band():
     assert vlm.understand_calls[0][1] == "https://x.com/a|25-50"
 
 
+def test_scroll_band_clamps_to_valid_range():
+    assert scroll_band(100) == "75-100"
+    assert scroll_band(130) == "75-100"
+    assert scroll_band(-10) == "0-25"
+    assert scroll_band("30") == "25-50"
+
+
 def test_pipeline_focus_skips_placeholder_frame():
     vlm = FakeVLM()
     bus = FakeBus()
@@ -196,6 +203,21 @@ def test_pipeline_understand_screen_skips_placeholder_frame():
     pipeline = _make_pipeline(vlm=vlm, frame_client=FakeFrameClient(png=""))
     assert pipeline.understand_screen() == {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
     assert vlm.understand_calls == []
+
+
+def test_pipeline_understand_screen_blocks_sensitive_key_points():
+    class SensitiveKeyPointsVLM(FakeVLM):
+        def understand(self, image, cache_key=None):
+            self.understand_calls.append((image, cache_key))
+            return {
+                "topic": "理财",
+                "summary": "推荐方案",
+                "content_type": "web",
+                "key_points": ["联系方式 13812345678"],
+            }
+
+    pipeline = _make_pipeline(vlm=SensitiveKeyPointsVLM(), sensitive=SensitiveFilter())
+    assert pipeline.understand_screen() == {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
 
 
 def test_pipeline_focus_blocks_sensitive_key_points():
