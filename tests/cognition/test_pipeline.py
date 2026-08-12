@@ -91,6 +91,24 @@ def test_pipeline_stt_on_mic():
     )
     import base64
     bus.subscriptions[Topics.AWAKE]("event/awake", {"source": "hotkey", "ts": 0.0})
+    bus.published = []
     pcm = base64.b64encode(b"\x00\x00\x00\x00").decode("ascii")
     bus.subscriptions[Topics.MIC]("audio/mic", {"pcm": pcm, "sample_rate": 16000, "ts": 0.0})
-    assert any(t == Topics.REPLY for t, _ in bus.published)
+    replies = [payload for topic, payload in bus.published if topic == Topics.REPLY]
+    assert len(replies) == 1 and replies[0]["text"] == "你好呀，我在呢。"
+
+
+def test_pipeline_mic_before_awake_is_blocked():
+    bus = FakeBus()
+    pipeline = build_pipeline(
+        bus,
+        vlm=FakeVLM(),
+        sensitive_filter=FakeSensitive(),
+        stt=FakeSTT(),
+        l1=FakeL1(),
+        frame_client=FakeFrameClient(),
+    )
+    import base64
+    pcm = base64.b64encode(b"\x00\x00\x00\x00").decode("ascii")
+    bus.subscriptions[Topics.MIC]("audio/mic", {"pcm": pcm, "sample_rate": 16000, "ts": 0.0})
+    assert bus.published == []
