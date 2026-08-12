@@ -12,24 +12,34 @@ logger = get_logger("yuki.perception.scroll")
 WH_MOUSE_LL = 14
 WH_KEYBOARD_LL = 13
 WM_MOUSEWHEEL = 0x020A
+WM_QUIT = 0x0012
 VK_PRIOR = 0x21  # PageUp
 VK_NEXT = 0x22   # PageDown
 HC_ACTION = 0
 
-# --- 结构 ---
-class KBDLLHOOKSTRUCT(ctypes.Structure):
-    _fields_ = [("vkCode", wintypes.DWORD),
-                ("scanCode", wintypes.DWORD),
-                ("flags", wintypes.DWORD),
-                ("time", wintypes.DWORD),
-                ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong))]
-
-
-MSLLHOOKSTRUCT = None  # 鼠标钩子只需 vkCode 位于其内，用原始指针解析
-
 HOOKPROC = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 
 _user32 = ctypes.windll.user32
+_user32.SetWindowsHookExW.restype = wintypes.HHOOK
+_user32.SetWindowsHookExW.argtypes = [
+    ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD
+]
+_user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+_user32.UnhookWindowsHookEx.argtypes = [wintypes.HHOOK]
+_user32.GetMessageW.restype = ctypes.c_int
+_user32.GetMessageW.argtypes = [
+    ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT
+]
+_user32.PostThreadMessageW.restype = wintypes.BOOL
+_user32.PostThreadMessageW.argtypes = [
+    wintypes.DWORD, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+]
+_user32.CallNextHookEx.restype = ctypes.c_long
+_user32.CallNextHookEx.argtypes = [
+    wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
+]
+
+_kernel32 = ctypes.windll.kernel32
 
 
 class _ScrollHookState:
@@ -38,6 +48,7 @@ class _ScrollHookState:
         self.mouse_hook = None
         self.keyboard_hook = None
         self.thread = None
+        self.thread_id = None
 
 
 _state = _ScrollHookState()
@@ -64,13 +75,18 @@ class ScrollHook:
 
     def __init__(self, on_scroll: Callable[[], None], logger=None) -> None:
         self._on_scroll = on_scroll
+        self._running = False
 
     def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
         _state.on_scroll = self._on_scroll
         _state.thread = threading.Thread(target=self._run_hooks, daemon=True)
         _state.thread.start()
 
     def _run_hooks(self) -> None:
+        _state.thread_id = _kernel32.GetCurrentThreadId()
         mouse_hook = _user32.SetWindowsHookExW(
             WH_MOUSE_LL, _callback_ref, None, 0
         )
@@ -85,12 +101,24 @@ class ScrollHook:
             _user32.DispatchMessageW(ctypes.byref(msg))
 
     def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        thread = _state.thread
+        thread_id = _state.thread_id
         if _state.mouse_hook:
             _user32.UnhookWindowsHookEx(_state.mouse_hook)
             _state.mouse_hook = None
         if _state.keyboard_hook:
             _user32.UnhookWindowsHookEx(_state.keyboard_hook)
             _state.keyboard_hook = None
+        if thread_id is not None:
+            _user32.PostThreadMessageW(thread_id, WM_QUIT, 0, 0)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+        _state.on_scroll = None
+        _state.thread = None
+        _state.thread_id = None
 
 
 class ScrollIdleDetector:
