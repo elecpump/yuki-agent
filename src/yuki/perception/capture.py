@@ -35,34 +35,35 @@ class WgcCapture(FrameCapture):
     """Windows Graphics Capture 适配器（薄壳，真实桌面会话）。"""
 
     def __init__(self, window_hwnd: int, min_update_interval: int = 100) -> None:
-        self._window_hwnd = window_hwnd
+        self.window_hwnd = window_hwnd
         self._min_update_interval = min_update_interval
         self._capture = None
 
     def start(self) -> None:
         import windows_capture
 
-        def on_frame(native_frame, buf_len, width, height, stop_list, timespan):
-            if self.on_frame is None:
-                return
-            try:
-                bgr = native_frame.convert_to_bgr()
-                image = Image.fromarray(bgr)
-                buf = io.BytesIO()
-                image.save(buf, format="PNG")
-                self.on_frame(
-                    buf.getvalue(),
-                    {"width": width, "height": height, "ts": time.time()},
-                )
-            except Exception:
-                logger.exception("wgc frame callback failed")
-
         self._capture = windows_capture.WindowsCapture(
-            window_hwnd=self._window_hwnd,
+            window_hwnd=self.window_hwnd,
             minimum_update_interval=self._min_update_interval,
         )
-        self._capture.on_frame_arrived = on_frame
+        self._capture.on_frame_arrived = self._handle_frame
         self._capture.start_free_threaded()
+
+    def _handle_frame(self, frame, control) -> None:
+        if self.on_frame is None:
+            return
+        try:
+            png = self._frame_to_png(frame)
+            self.on_frame(png, {"width": frame.width, "height": frame.height, "ts": time.time()})
+        except Exception:
+            logger.exception("wgc frame callback failed")
+
+    def _frame_to_png(self, frame) -> bytes:
+        bgr = frame.convert_to_bgr()
+        image = Image.fromarray(bgr.frame_buffer)
+        buf = io.BytesIO()
+        image.save(buf, format="PNG")
+        return buf.getvalue()
 
     def stop(self) -> None:
         if self._capture is not None:
@@ -71,6 +72,16 @@ class WgcCapture(FrameCapture):
             except Exception:
                 pass
             self._capture = None
+
+
+class NullCapture(FrameCapture):
+    """无捕获降级：start/stop 空操作，从不触发 on_frame（frame 服务仍返回空负载）。"""
+
+    def start(self) -> None:
+        return
+
+    def stop(self) -> None:
+        return
 
 
 class FrameStrategy:
@@ -111,18 +122,37 @@ def _foreground_window_info() -> tuple[str, str] | None:
         return None
 
 
+def _window_info_from_hwnd(hwnd: int) -> Callable[[], tuple[str, str] | None]:
+    """从捕获目标 hwnd 解析窗口身份（不依赖实时前台窗口）。"""
+
+    def info() -> tuple[str, str] | None:
+        if not hwnd:
+            return None
+        try:
+            import win32gui
+
+            return win32gui.GetClassName(hwnd), win32gui.GetWindowText(hwnd)
+        except Exception:
+            return None
+
+    return info
+
+
 def make_frame_service(
     bus,
     capture: FrameCapture,
     strategy: FrameStrategy,
     window_info: Callable[[], tuple[str, str] | None] | None = None,
+    *,
+    hwnd: int | None = None,
 ) -> None:
     """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。
 
     应用 FrameStrategy 门控：敏感窗口发布占位黑帧；滚动中暂停截屏不更新 latest。
+    门控基于捕获目标窗口（hwnd）的身份，而非实时前台窗口。
     """
     if window_info is None:
-        window_info = _foreground_window_info
+        window_info = _window_info_from_hwnd(hwnd) if hwnd else _foreground_window_info
     latest: dict = {"png": "", "width": 0, "height": 0, "ts": 0.0, "sensitive": False}
 
     def on_frame(png: bytes, meta: dict) -> None:

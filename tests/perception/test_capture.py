@@ -1,9 +1,16 @@
 import base64
 import io
 
+import numpy as np
 from PIL import Image
 
-from yuki.perception.capture import FrameStrategy, black_frame_png, make_frame_service
+from yuki.perception.capture import (
+    FrameStrategy,
+    WgcCapture,
+    _window_info_from_hwnd,
+    black_frame_png,
+    make_frame_service,
+)
 from yuki.perception.scroll import ScrollIdleDetector
 from yuki.perception.sensitive import SensitiveDetector
 
@@ -166,3 +173,89 @@ def test_make_frame_service_keeps_latest_when_suppressed():
     result = bus.services["frame"]({})
     assert result["png"] == base64.b64encode(first).decode("ascii")
     assert result["ts"] == 1.0
+
+
+class FakeNativeFrame:
+    def __init__(self, frame_buffer):
+        self.frame_buffer = frame_buffer
+        self.width = frame_buffer.shape[1]
+        self.height = frame_buffer.shape[0]
+        self.timespan = 0
+
+    def convert_to_bgr(self):
+        return FakeNativeFrame(self.frame_buffer[:, :, :3])
+
+
+def test_wgc_frame_to_png_from_frame_buffer():
+    frame_buffer = np.zeros((48, 64, 3), dtype=np.uint8)
+    frame_buffer[:, :, 0] = 255
+    capture = WgcCapture(window_hwnd=1234)
+    png = capture._frame_to_png(FakeNativeFrame(frame_buffer))
+    img = Image.open(io.BytesIO(png))
+    assert img.size == (64, 48)
+
+
+def test_wgc_on_frame_callback_stores_real_png():
+    capture = WgcCapture(window_hwnd=1234)
+    stored = []
+    capture.on_frame = lambda png, meta: stored.append((png, meta))
+    frame_buffer = np.zeros((48, 64, 4), dtype=np.uint8)
+    capture._handle_frame(FakeNativeFrame(frame_buffer), object())
+    assert len(stored) == 1
+    png, meta = stored[0]
+    img = Image.open(io.BytesIO(png))
+    assert img.size == (64, 48)
+    assert meta["width"] == 64
+    assert meta["height"] == 48
+    assert "ts" in meta
+
+
+def test_window_info_resolves_from_given_hwnd(monkeypatch):
+    import win32gui as _wg
+
+    sensitive_hwnd, normal_hwnd = 1001, 2002
+    monkeypatch.setattr(_wg, "GetForegroundWindow", lambda: normal_hwnd)
+    monkeypatch.setattr(
+        _wg,
+        "GetClassName",
+        lambda h: "KeePassMainWindow" if h == sensitive_hwnd else "Chrome_WidgetWin_1",
+    )
+    monkeypatch.setattr(
+        _wg,
+        "GetWindowText",
+        lambda h: "KeePass - vault" if h == sensitive_hwnd else "Article",
+    )
+
+    info = _window_info_from_hwnd(sensitive_hwnd)()
+    assert info == ("KeePassMainWindow", "KeePass - vault")
+
+
+def test_frame_gating_uses_captured_hwnd_not_foreground(monkeypatch):
+    import win32gui as _wg
+
+    sensitive_hwnd, normal_hwnd = 1001, 2002
+    monkeypatch.setattr(_wg, "GetForegroundWindow", lambda: normal_hwnd)
+    monkeypatch.setattr(
+        _wg,
+        "GetClassName",
+        lambda h: "KeePassMainWindow" if h == sensitive_hwnd else "Chrome_WidgetWin_1",
+    )
+    monkeypatch.setattr(
+        _wg,
+        "GetWindowText",
+        lambda h: "KeePass - vault" if h == sensitive_hwnd else "Article",
+    )
+
+    capture = FakeCapture()
+    bus = FakeBus()
+    black = black_frame_png(width=64, height=48)
+    strategy = FakeStrategy(results=[(False, True)], black=black)
+    make_frame_service(bus, capture, strategy, hwnd=sensitive_hwnd)
+
+    real = black_frame_png(width=64, height=48, color=(10, 20, 30))
+    capture.on_frame(real, {"width": 64, "height": 48, "ts": 1.5})
+
+    result = bus.services["frame"]({})
+    assert result["png"] == base64.b64encode(black).decode("ascii")
+    assert result["png"] != base64.b64encode(real).decode("ascii")
+    assert result["sensitive"] is True

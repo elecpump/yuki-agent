@@ -3,7 +3,7 @@ from yuki.config import Config
 from yuki.health import register_health_service
 from yuki.logger import get_logger
 from yuki.perception.audio import AudioCapture
-from yuki.perception.capture import FrameStrategy, WgcCapture, make_frame_service
+from yuki.perception.capture import FrameStrategy, NullCapture, WgcCapture, make_frame_service
 from yuki.perception.scroll import ScrollHook, ScrollIdleDetector
 from yuki.perception.sensitive import SensitiveDetector
 from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor, make_monitor
@@ -29,10 +29,11 @@ def build_perception(
 
     detector = SensitiveDetector()
     idle = ScrollIdleDetector(idle_ms=300)
-    strategy = strategy or FrameStrategy(sensitive=detector, idle=idle)
+    strategy = strategy or FrameStrategy(sensitive=detector, idle=idle, require_idle=True)
 
+    gate_hwnd = 0
     if capture is None:
-        # WGC 需前台窗口句柄；取不到时降级为"不截屏"（FrameStrategy 仍发黑帧）
+        # WGC 需前台窗口句柄；取不到时降级为 NullCapture（FrameStrategy 仍发空负载黑帧）
         hwnd = foreground_hwnd
         if hwnd is None:
             try:
@@ -41,7 +42,10 @@ def build_perception(
                 hwnd = win32gui.GetForegroundWindow()
             except Exception:
                 hwnd = 0
-        capture = WgcCapture(hwnd) if hwnd else None
+        gate_hwnd = hwnd
+        capture = WgcCapture(hwnd) if hwnd else NullCapture()
+    elif isinstance(capture, WgcCapture):
+        gate_hwnd = capture.window_hwnd
 
     if monitor is None:
         monitor = make_monitor(bus, probe=ForegroundProbe())
@@ -52,8 +56,7 @@ def build_perception(
     if scroll_hook is None:
         scroll_hook = ScrollHook(on_scroll=idle.on_scroll_activity)
 
-    if capture is not None:
-        make_frame_service(bus, capture, strategy)
+    make_frame_service(bus, capture, strategy, hwnd=gate_hwnd)
 
     _perception_state["capture"] = capture
     _perception_state["monitor"] = monitor
@@ -61,8 +64,7 @@ def build_perception(
     _perception_state["scroll_hook"] = scroll_hook
     monitor.start()
     audio.start()
-    if capture is not None:
-        capture.start()
+    capture.start()
     scroll_hook.start()
 
 
