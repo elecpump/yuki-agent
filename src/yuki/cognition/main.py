@@ -1,6 +1,8 @@
 from typing import Callable
 
 from yuki.bus import MessageBus
+from yuki.cognition.l1_responder import build_l1_responder
+from yuki.cognition.pipeline import build_pipeline
 from yuki.cognition.responder import make_reply
 from yuki.config import Config
 from yuki.health import register_health_service
@@ -23,9 +25,9 @@ def main() -> None:
     bus = MessageBus(base_port=config.base_port, role=config.bus_role, hwm=config.hwm)
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
-    from yuki.cognition.pipeline import build_pipeline
-
-    build_pipeline(bus)
+    pipeline = build_pipeline(bus)
+    pipeline._vlm.warmup()  # VLM 后台预热（不可用则降级文本模式）
+    build_l1_responder(bus)
     register_health_service(bus, "cognition")
     try:
         while not shutdown.shutdown_requested:
