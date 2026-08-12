@@ -1,5 +1,7 @@
 import base64
 import io
+import sys
+import types
 
 import numpy as np
 from PIL import Image
@@ -193,6 +195,45 @@ def test_wgc_frame_to_png_from_frame_buffer():
     png = capture._frame_to_png(FakeNativeFrame(frame_buffer))
     img = Image.open(io.BytesIO(png))
     assert img.size == (64, 48)
+
+
+def test_wgc_start_wires_frame_and_closed_handlers(monkeypatch):
+    class FakeWindowsCapture:
+        def __init__(self, **kwargs):
+            self.frame_handler = None
+            self.closed_handler = None
+            self.kwargs = kwargs
+            self.started_free_threaded = False
+
+        def start_free_threaded(self):
+            self.started_free_threaded = True
+
+    monkeypatch.setitem(
+        sys.modules, "windows_capture", types.SimpleNamespace(WindowsCapture=FakeWindowsCapture)
+    )
+
+    capture = WgcCapture(window_hwnd=1234)
+    stored = []
+    capture.on_frame = lambda png, meta: stored.append((png, meta))
+
+    capture.start()
+
+    native = capture._capture
+    assert isinstance(native, FakeWindowsCapture)
+    assert native.started_free_threaded is True
+    assert callable(native.frame_handler)
+    assert callable(native.closed_handler)
+
+    frame_buffer = np.zeros((48, 64, 4), dtype=np.uint8)
+    native.frame_handler(FakeNativeFrame(frame_buffer), object())
+
+    assert len(stored) == 1
+    png, meta = stored[0]
+    img = Image.open(io.BytesIO(png))
+    assert img.size == (64, 48)
+    assert meta["width"] == 64
+    assert meta["height"] == 48
+    assert "ts" in meta
 
 
 def test_wgc_on_frame_callback_stores_real_png():

@@ -46,8 +46,12 @@ class WgcCapture(FrameCapture):
             window_hwnd=self.window_hwnd,
             minimum_update_interval=self._min_update_interval,
         )
-        self._capture.on_frame_arrived = self._handle_frame
+        self._capture.frame_handler = self._handle_frame
+        self._capture.closed_handler = self._handle_closed
         self._capture.start_free_threaded()
+
+    def _handle_closed(self) -> None:
+        logger.debug("wgc capture closed")
 
     def _handle_frame(self, frame, control) -> None:
         if self.on_frame is None:
