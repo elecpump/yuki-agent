@@ -99,15 +99,50 @@ class FrameStrategy:
         return self._black if self._black is not None else black_frame_png()
 
 
-def make_frame_service(bus, capture: FrameCapture, strategy: FrameStrategy) -> None:
-    """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。"""
-    latest: dict = {"png": "", "width": 0, "height": 0, "ts": 0.0}
+def _foreground_window_info() -> tuple[str, str] | None:
+    try:
+        import win32gui
+
+        hwnd = win32gui.GetForegroundWindow()
+        if not hwnd:
+            return None
+        return win32gui.GetClassName(hwnd), win32gui.GetWindowText(hwnd)
+    except Exception:
+        return None
+
+
+def make_frame_service(
+    bus,
+    capture: FrameCapture,
+    strategy: FrameStrategy,
+    window_info: Callable[[], tuple[str, str] | None] | None = None,
+) -> None:
+    """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。
+
+    应用 FrameStrategy 门控：敏感窗口发布占位黑帧；滚动中暂停截屏不更新 latest。
+    """
+    if window_info is None:
+        window_info = _foreground_window_info
+    latest: dict = {"png": "", "width": 0, "height": 0, "ts": 0.0, "sensitive": False}
 
     def on_frame(png: bytes, meta: dict) -> None:
+        info = window_info()
+        class_name, title = info if info is not None else (None, None)
+        capture_ok, is_sensitive = strategy.should_capture(class_name, title)
+        if not capture_ok and is_sensitive:
+            latest["png"] = base64.b64encode(strategy.black_frame()).decode("ascii")
+            latest["width"] = meta["width"]
+            latest["height"] = meta["height"]
+            latest["ts"] = meta["ts"]
+            latest["sensitive"] = True
+            return
+        if not capture_ok:
+            return
         latest["png"] = base64.b64encode(png).decode("ascii")
         latest["width"] = meta["width"]
         latest["height"] = meta["height"]
         latest["ts"] = meta["ts"]
+        latest["sensitive"] = False
 
     capture.on_frame = on_frame
 

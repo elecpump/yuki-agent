@@ -74,7 +74,13 @@ def test_build_perception_wires_components():
         strategy=strategy,
     )
     assert "frame" in bus.services
-    assert bus.services["frame"]({}) == {"png": "", "width": 0, "height": 0, "ts": 0.0}
+    assert bus.services["frame"]({}) == {
+        "png": "",
+        "width": 0,
+        "height": 0,
+        "ts": 0.0,
+        "sensitive": False,
+    }
     assert capture.started
     assert monitor.started
     assert audio.started
