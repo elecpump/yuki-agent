@@ -1,14 +1,15 @@
 import base64
 import io
 import time
+from typing import Callable
 
 from PIL import Image
 
-from yuki.bus import MessageBus
 from yuki.cognition.frame_client import FrameClient
-from yuki.cognition.l1 import L1Engine
 from yuki.cognition.sensitive import SensitiveFilter
+from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
+from yuki.cognition.topics_ext import TopicsExt
 from yuki.cognition.vlm import VisualUnderstander
 from yuki.logger import get_logger
 from yuki.topics import Topics
@@ -17,103 +18,127 @@ logger = get_logger("yuki.cognition.pipeline")
 
 
 def decode_png_b64(png_b64: str) -> Image.Image | None:
-    """base64 PNG → PIL Image；解码失败返回 None（按空帧处理）。"""
     try:
-        return Image.open(io.BytesIO(base64.b64decode(png_b64))).convert("RGB")
+        raw = base64.b64decode(png_b64)
+        return Image.open(io.BytesIO(raw)).convert("RGB")
     except (ValueError, OSError):
-        logger.warning("decode png failed, treating frame as empty")
+        logger.warning("png decode failed")
         return None
 
 
-class PerceptionPipeline:
-    """感知理解管线：前台变化→读屏情境、唤醒→L1 快答、音频→STT。"""
+def scroll_band(scroll_percent: float | None) -> str:
+    if scroll_percent is None:
+        return "unknown"
+    return f"{int(scroll_percent // 25) * 25}-{int(scroll_percent // 25) * 25 + 25}"
 
-    def __init__(self, vlm, sensitive_filter, stt, l1, frame_client, bus=None) -> None:
+
+class PerceptionPipeline:
+    """纯感知管线：产出结构化理解事件，不产生任何回复。
+
+    发布 event/perception/situation_update 与 event/perception/user_utterance，
+    供 L1Responder（当前）/ ContextAssembler（未来 Brain）消费。
+    """
+
+    def __init__(
+        self,
+        vlm: VisualUnderstander,
+        sensitive_filter: SensitiveFilter,
+        stt: SpeechRecognizer,
+        frame_client: FrameClient,
+        bus,
+        speech_buffer: SpeechBuffer | None = None,
+        cache_scroll: bool = True,
+    ) -> None:
         self._vlm = vlm
         self._sensitive = sensitive_filter
         self._stt = stt
-        self._l1 = l1
         self._frame_client = frame_client
         self._bus = bus
-        self._last_context: dict = {}
         self._listening = False
+        self._speech_buffer = speech_buffer or SpeechBuffer(
+            on_utterance=self._on_utterance
+        )
+
+    def _on_utterance(self, samples) -> None:
+        text = self._stt.recognize(samples, sample_rate=16000)
+        if not text:
+            return
+        self._bus.publish(TopicsExt.USER_UTTERANCE, {
+            "text": text, "duration_s": round(len(samples) / 16000, 2), "ts": time.time(),
+        })
 
     def on_focus_changed(self, topic: str, payload: dict) -> None:
         frame = self._frame_client.get_latest()
-        if not frame or not frame.get("png"):
-            return
-        if frame.get("sensitive"):
-            self._last_context = {"topic": "", "sensitive": True}
+        if not frame or not frame.get("png") or frame.get("sensitive"):
             return
         image = decode_png_b64(frame["png"])
         if image is None:
             return
-        cache_key = f"{payload.get('title', '')}|{payload.get('url', '')}"
+        source_id = payload.get("url") or payload.get("title") or "unknown"
+        cache_key = f"{source_id}|{scroll_band(payload.get('scroll_percent'))}"
         context = self._vlm.understand(image, cache_key=cache_key)
-        text = " ".join(
-            filter(
-                None,
-                [
-                    context.get("topic", ""),
-                    context.get("summary", ""),
-                    " ".join(context.get("key_points", [])),
-                ],
-            )
-        )
+        text = " ".join([
+            context.get("topic", ""),
+            context.get("summary", ""),
+            " ".join(context.get("key_points", []) or []),
+        ])
         if self._sensitive.scan(text):
-            self._last_context = {"topic": "", "sensitive": True}
+            self._publish_situation({"topic": "", "sensitive": True, "degraded": True,
+                                     "reason": "sensitive"})
             return
-        self._last_context = context
+        self._publish_situation({
+            "source_id": source_id,
+            "scroll_band": scroll_band(payload.get("scroll_percent")),
+            "topic": context.get("topic", ""),
+            "summary": context.get("summary", ""),
+            "content_type": context.get("content_type", "unknown"),
+            "key_points": context.get("key_points", []),
+            "sensitive": False,
+            "degraded": context.get("degraded", False),
+            "reason": context.get("reason", ""),
+        })
+
+    def _publish_situation(self, data: dict) -> None:
+        data.setdefault("source_id", "unknown")
+        data.setdefault("scroll_band", "unknown")
+        data.setdefault("key_points", [])
+        data.setdefault("ts", time.time())
+        self._bus.publish(TopicsExt.SITUATION_UPDATE, data)
 
     def on_awake(self, topic: str, payload: dict) -> None:
         self._listening = True
-        reply = self._l1.reply("", context=self._last_context)
-        self._bus_publish_reply(reply)
+        self._speech_buffer.reset()
 
     def on_mic(self, topic: str, payload: dict) -> None:
         if not self._listening:
             return
-        text = self._stt.recognize_base64(payload.get("pcm", ""), payload.get("sample_rate", 16000))
-        if not text:
+        pcm_b64 = payload.get("pcm", "")
+        if not pcm_b64:
             return
-        reply = self._l1.reply(text, context=self._last_context)
-        self._bus_publish_reply(reply)
+        import numpy as np
+        raw = base64.b64decode(pcm_b64)
+        samples = np.frombuffer(raw, dtype=np.float32)
+        self._speech_buffer.add_frame(samples)
 
     def understand_screen(self) -> dict:
         frame = self._frame_client.get_latest()
         if not frame or not frame.get("png") or frame.get("sensitive"):
-            return {"topic": "", "sensitive": True}
+            return {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
         image = decode_png_b64(frame["png"])
         if image is None:
-            return {"topic": "", "sensitive": True}
-        context = self._vlm.understand(image)
-        text = " ".join(
-            filter(
-                None,
-                [
-                    context.get("topic", ""),
-                    context.get("summary", ""),
-                    " ".join(context.get("key_points", [])),
-                ],
-            )
-        )
-        if self._sensitive.scan(text):
-            return {"topic": "", "sensitive": True}
-        return context
-
-    def _bus_publish_reply(self, text: str) -> None:
-        self._bus.publish(Topics.REPLY, {"text": text, "ts": time.time()})
+            return {"topic": "", "degraded": True, "reason": "decode_failed"}
+        return self._vlm.understand(image)
 
 
-def build_pipeline(bus: MessageBus, *, vlm=None, sensitive_filter=None, stt=None, l1=None, frame_client=None) -> PerceptionPipeline:
-    """组装感知理解管线并订阅事件。测试注入 fake，默认懒加载真实组件。"""
+def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
+                   frame_client=None, speech_buffer=None) -> PerceptionPipeline:
     pipeline = PerceptionPipeline(
         vlm=vlm or VisualUnderstander(),
         sensitive_filter=sensitive_filter or SensitiveFilter(),
         stt=stt or SpeechRecognizer(),
-        l1=l1 or L1Engine(),
         frame_client=frame_client or FrameClient(bus),
         bus=bus,
+        speech_buffer=speech_buffer,
     )
     bus.subscribe(Topics.FOCUS_CHANGED, pipeline.on_focus_changed)
     bus.subscribe(Topics.AWAKE, pipeline.on_awake)

@@ -1,11 +1,12 @@
 import base64
 import io
 
-import pytest
+import numpy as np
 from PIL import Image
 
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.sensitive import SensitiveFilter
+from yuki.cognition.topics_ext import TopicsExt
 from yuki.topics import Topics
 
 
@@ -30,22 +31,8 @@ class FakeSensitive:
 
 
 class FakeSTT:
-    def recognize_base64(self, pcm, sample_rate=16000):
+    def recognize(self, samples, sample_rate=16000):
         return "你好"
-
-
-class FakeL1:
-    def reply(self, text, context=None):
-        return "你好呀，我在呢。"
-
-
-class RecordingL1(FakeL1):
-    def __init__(self):
-        self.contexts = []
-
-    def reply(self, text, context=None):
-        self.contexts.append(context)
-        return "你好呀，我在呢。"
 
 
 class FakeFrameClient:
@@ -60,6 +47,19 @@ class FakeFrameClient:
 
     def get_latest(self):
         return dict(self.latest)
+
+
+class FakeSpeechBuffer:
+    def __init__(self):
+        self.reset_calls = 0
+        self.frames = []
+
+    def reset(self):
+        self.reset_calls += 1
+        self.frames = []
+
+    def add_frame(self, samples):
+        self.frames.append(samples)
 
 
 class FakeBus:
@@ -77,78 +77,90 @@ class FakeBus:
         pass
 
 
-def _make_pipeline(vlm=None, sensitive=None, stt=None, l1=None, frame_client=None):
+def _make_pipeline(bus=None, vlm=None, sensitive=None, stt=None, frame_client=None, speech_buffer=None):
     return build_pipeline(
-        FakeBus(),
+        bus or FakeBus(),
         vlm=vlm or FakeVLM(),
         sensitive_filter=sensitive or FakeSensitive(),
         stt=stt or FakeSTT(),
-        l1=l1 or FakeL1(),
         frame_client=frame_client or FakeFrameClient(),
+        speech_buffer=speech_buffer,
     )
 
 
-def test_pipeline_on_awake_replies():
+def test_pipeline_focus_publishes_situation_update():
     bus = FakeBus()
-    pipeline = build_pipeline(
-        bus,
-        vlm=FakeVLM(),
-        sensitive_filter=FakeSensitive(),
-        stt=FakeSTT(),
-        l1=FakeL1(),
-        frame_client=FakeFrameClient(),
-    )
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed",
+        {"app": "chrome", "url": "https://x.com/a", "title": "A"})
+    events = [t for t, _ in bus.published if t == TopicsExt.SITUATION_UPDATE]
+    assert len(events) == 1
+    payload = [p for t, p in bus.published if t == TopicsExt.SITUATION_UPDATE][0]
+    assert payload["topic"] == "climate"
+    assert payload["source_id"] == "https://x.com/a"
+    assert "scroll_band" in payload
+    assert payload["degraded"] is False
+    # 管线不直接回复
+    assert not any(t == Topics.REPLY for t, _ in bus.published)
+
+
+def test_pipeline_awake_no_direct_reply():
+    bus = FakeBus()
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.AWAKE]("event/awake", {"source": "hotkey", "ts": 0.0})
-    assert any(t == Topics.REPLY for t, _ in bus.published)
+    assert not any(t == Topics.REPLY for t, _ in bus.published)
 
 
-def test_pipeline_understand_screen_uses_vlm():
+def test_pipeline_understand_screen_returns_vlm_context():
     bus = FakeBus()
-    pipeline = build_pipeline(
-        bus,
-        vlm=FakeVLM(),
-        sensitive_filter=FakeSensitive(),
-        stt=FakeSTT(),
-        l1=FakeL1(),
-        frame_client=FakeFrameClient(),
-    )
+    pipeline = build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                              stt=FakeSTT(), frame_client=FakeFrameClient())
     context = pipeline.understand_screen()
     assert context["topic"] == "climate"
+    assert context["content_type"] == "article"
+    assert not any(t == Topics.REPLY for t, _ in bus.published)
 
 
-def test_pipeline_stt_on_mic():
+def test_pipeline_stt_on_mic_publishes_utterance():
+    sb = FakeSpeechBuffer()
     bus = FakeBus()
-    pipeline = build_pipeline(
-        bus,
-        vlm=FakeVLM(),
-        sensitive_filter=FakeSensitive(),
-        stt=FakeSTT(),
-        l1=FakeL1(),
-        frame_client=FakeFrameClient(),
-    )
-    import base64
+    pipeline = build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                              stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
     bus.subscriptions[Topics.AWAKE]("event/awake", {"source": "hotkey", "ts": 0.0})
     bus.published = []
-    pcm = base64.b64encode(b"\x00\x00\x00\x00").decode("ascii")
+    pcm = base64.b64encode(np.zeros(320, dtype=np.float32).tobytes()).decode("ascii")
     bus.subscriptions[Topics.MIC]("audio/mic", {"pcm": pcm, "sample_rate": 16000, "ts": 0.0})
-    replies = [payload for topic, payload in bus.published if topic == Topics.REPLY]
-    assert len(replies) == 1 and replies[0]["text"] == "你好呀，我在呢。"
+    assert len(sb.frames) == 1
+    sb.on_utterance = pipeline._on_utterance
+    sb.on_utterance(np.zeros(320, dtype=np.float32))
+    events = [t for t, _ in bus.published if t == TopicsExt.USER_UTTERANCE]
+    assert len(events) == 1
+    payload = [p for t, p in bus.published if t == TopicsExt.USER_UTTERANCE][0]
+    assert payload["text"] == "你好"
 
 
 def test_pipeline_mic_before_awake_is_blocked():
+    sb = FakeSpeechBuffer()
     bus = FakeBus()
-    pipeline = build_pipeline(
-        bus,
-        vlm=FakeVLM(),
-        sensitive_filter=FakeSensitive(),
-        stt=FakeSTT(),
-        l1=FakeL1(),
-        frame_client=FakeFrameClient(),
-    )
-    import base64
-    pcm = base64.b64encode(b"\x00\x00\x00\x00").decode("ascii")
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
+    pcm = base64.b64encode(np.zeros(320, dtype=np.float32).tobytes()).decode("ascii")
     bus.subscriptions[Topics.MIC]("audio/mic", {"pcm": pcm, "sample_rate": 16000, "ts": 0.0})
+    assert sb.frames == []
     assert bus.published == []
+
+
+def test_pipeline_awake_resets_speech_buffer():
+    sb = FakeSpeechBuffer()
+    bus = FakeBus()
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
+    sb.frames = [np.zeros(320, dtype=np.float32)]
+    bus.subscriptions[Topics.AWAKE]("event/awake", {"source": "hotkey", "ts": 0.0})
+    assert sb.reset_calls == 1
+    assert sb.frames == []
 
 
 def test_pipeline_focus_passes_decoded_pil_image_to_vlm():
@@ -160,23 +172,33 @@ def test_pipeline_focus_passes_decoded_pil_image_to_vlm():
     assert not isinstance(image, str)
 
 
+def test_pipeline_focus_cache_key_uses_source_id_scroll_band():
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(vlm=vlm)
+    pipeline.on_focus_changed(
+        "event/focus_changed", {"title": "T", "url": "https://x.com/a", "scroll_percent": 30}
+    )
+    assert vlm.understand_calls[0][1] == "https://x.com/a|25-50"
+
+
 def test_pipeline_focus_skips_placeholder_frame():
     vlm = FakeVLM()
-    pipeline = _make_pipeline(vlm=vlm, frame_client=FakeFrameClient(png=""))
-    pipeline.on_focus_changed("event/focus", {"title": "t", "url": "u"})
+    bus = FakeBus()
+    build_pipeline(bus, vlm=vlm, sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient(png=""))
+    bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed", {"title": "t", "url": "u"})
     assert vlm.understand_calls == []
+    assert bus.published == []
 
 
 def test_pipeline_understand_screen_skips_placeholder_frame():
     vlm = FakeVLM()
     pipeline = _make_pipeline(vlm=vlm, frame_client=FakeFrameClient(png=""))
-    assert pipeline.understand_screen() == {"topic": "", "sensitive": True}
+    assert pipeline.understand_screen() == {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
     assert vlm.understand_calls == []
 
 
 def test_pipeline_focus_blocks_sensitive_key_points():
-    l1 = RecordingL1()
-
     class SensitiveKeyPointsVLM(FakeVLM):
         def understand(self, image, cache_key=None):
             self.understand_calls.append((image, cache_key))
@@ -187,22 +209,28 @@ def test_pipeline_focus_blocks_sensitive_key_points():
                 "key_points": ["联系方式 13812345678"],
             }
 
-    pipeline = _make_pipeline(vlm=SensitiveKeyPointsVLM(), sensitive=SensitiveFilter(), l1=l1)
-    pipeline.on_focus_changed("event/focus", {"title": "t", "url": "u"})
-    pipeline.on_awake("event/awake", {"source": "hotkey", "ts": 0.0})
-    assert l1.contexts[-1] == {"topic": "", "sensitive": True}
+    bus = FakeBus()
+    build_pipeline(bus, vlm=SensitiveKeyPointsVLM(), sensitive_filter=SensitiveFilter(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed", {"title": "t", "url": "u"})
+    events = [p for t, p in bus.published if t == TopicsExt.SITUATION_UPDATE]
+    assert len(events) == 1
+    assert events[0]["sensitive"] is True
+    assert events[0]["degraded"] is True
+    assert events[0]["reason"] == "sensitive"
 
 
-def test_pipeline_understand_screen_blocks_sensitive_summary():
-    class SensitiveSummaryVLM(FakeVLM):
+def test_pipeline_focus_publishes_degraded_on_vlm_failure():
+    class BoomVLM(FakeVLM):
         def understand(self, image, cache_key=None):
-            self.understand_calls.append((image, cache_key))
-            return {
-                "topic": "web",
-                "summary": "客服电话 13812345678",
-                "content_type": "web",
-                "key_points": [],
-            }
+            return {"topic": "", "summary": "", "content_type": "unknown",
+                    "key_points": [], "degraded": True, "reason": "inference_failed"}
 
-    pipeline = _make_pipeline(vlm=SensitiveSummaryVLM(), sensitive=SensitiveFilter())
-    assert pipeline.understand_screen() == {"topic": "", "sensitive": True}
+    bus = FakeBus()
+    build_pipeline(bus, vlm=BoomVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed", {"title": "t", "url": "u"})
+    events = [p for t, p in bus.published if t == TopicsExt.SITUATION_UPDATE]
+    assert len(events) == 1
+    assert events[0]["degraded"] is True
+    assert events[0]["reason"] == "inference_failed"

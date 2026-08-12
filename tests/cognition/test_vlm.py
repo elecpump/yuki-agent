@@ -50,3 +50,32 @@ def test_understand_parse_failure_degrades():
     result = vlm.understand(None)
     assert result["topic"] == ""
     assert result["content_type"] == "unknown"
+
+
+def test_understand_inference_failure_degrades():
+    class BoomModel:
+        pass
+
+    vlm = VisualUnderstander(model=BoomModel(), processor=object())
+
+    def boom(image):
+        raise RuntimeError("oom")
+
+    vlm._infer = boom
+    result = vlm.understand(None)
+    assert result["degraded"] is True
+    assert result["reason"] == "inference_failed"
+    assert result["topic"] == ""
+
+
+def test_warmup_is_idempotent_and_background():
+    import time
+
+    vlm = VisualUnderstander(model=None, processor=None)
+    vlm._load = lambda: setattr(vlm, "_loaded", True)
+    vlm.warmup()
+    vlm.warmup()  # 幂等
+    deadline = time.time() + 2.0
+    while not vlm._loaded and time.time() < deadline:
+        time.sleep(0.01)
+    assert vlm._loaded

@@ -1,4 +1,5 @@
 import json
+import threading
 
 from yuki.cognition.context_cache import ContextCache
 from yuki.logger import get_logger
@@ -29,6 +30,16 @@ class VisualUnderstander:
         )
         self._processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-8B")
         self._loaded = True
+
+    def warmup(self) -> None:
+        if self._loaded:
+            return
+        def _load_thread():
+            try:
+                self._load()
+            except Exception:
+                logger.warning("vlm warmup failed, will degrade to text mode", exc_info=True)
+        threading.Thread(target=_load_thread, daemon=True).start()
 
     def _infer(self, image) -> dict:
         self._load()
@@ -64,9 +75,14 @@ class VisualUnderstander:
             hit = self._cache.get(cache_key)
             if hit is not None:
                 return hit
-        result = self._infer(image)
+        try:
+            result = self._infer(image)
+        except Exception:
+            logger.exception("vlm inference failed, degrading")
+            result = {"topic": "", "summary": "", "content_type": "unknown",
+                      "key_points": [], "degraded": True, "reason": "inference_failed"}
         if not isinstance(result, dict):
-            result = self._parse(result)
+            result = self._parse(result if isinstance(result, str) else "")
         if cache_key:
             self._cache.put(cache_key, result)
         return result
