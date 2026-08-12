@@ -1,11 +1,99 @@
+import pytest
+
+from yuki.config import Config
+from yuki.perception.capture import FrameStrategy
 from yuki.perception.main import build_perception
+from yuki.perception.sensitive import SensitiveDetector
+from yuki.perception.scroll import ScrollIdleDetector
 
 
 class FakeBus:
-    pass
+    def __init__(self):
+        self.published = []
+        self.services = {}
+
+    def publish(self, topic, payload):
+        self.published.append((topic, payload))
+
+    def respond(self, service, handler):
+        self.services[service] = handler
+
+    def request(self, service, payload, timeout_ms=2000):
+        return self.services[service](payload)
 
 
-def test_build_perception_is_callable():
+class FakeCapture:
+    on_frame = None
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeMonitor:
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeAudio:
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+class FakeScrollHook:
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+
+def test_build_perception_wires_components():
     bus = FakeBus()
-    result = build_perception(bus)
-    assert result is None
+    config = Config(bus_role="node")
+    strategy = FrameStrategy(sensitive=SensitiveDetector(), idle=ScrollIdleDetector())
+    capture = FakeCapture()
+    monitor = FakeMonitor()
+    audio = FakeAudio()
+    scroll_hook = FakeScrollHook()
+    build_perception(
+        bus,
+        config,
+        capture=capture,
+        monitor=monitor,
+        audio=audio,
+        scroll_hook=scroll_hook,
+        strategy=strategy,
+    )
+    assert "frame" in bus.services
+    assert bus.services["frame"]({}) == {"png": "", "width": 0, "height": 0, "ts": 0.0}
+    assert capture.started
+    assert monitor.started
+    assert audio.started
+    assert scroll_hook.started
+
+
+def test_build_perception_default_constructs(monkeypatch):
+    # 默认路径：注入 fake，验证组装与 frame 服务注册（不启动真实硬件）
+    import yuki.perception.main as pm
+
+    monkeypatch.setattr(pm, "_perception_state", {})
+    bus = FakeBus()
+    config = Config(bus_role="node")
+    build_perception(
+        bus,
+        config,
+        capture=FakeCapture(),
+        monitor=FakeMonitor(),
+        audio=FakeAudio(),
+        scroll_hook=FakeScrollHook(),
+    )
+    assert "frame" in bus.services
