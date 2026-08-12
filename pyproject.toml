@@ -18,5 +18,5 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = ["-m", "not e2e"]
+addopts = ["-m", "not e2e", "--import-mode=importlib"]
 markers = ["e2e: end-to-end integration test that spawns real processes"]
