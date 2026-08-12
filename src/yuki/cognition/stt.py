@@ -24,7 +24,7 @@ class SpeechRecognizer:
 
     def _infer(self, samples: np.ndarray, sample_rate: int) -> str:
         self._load()
-        result = self._model(samples.astype(np.float32), sample_rate)
+        result = self._model(input=samples.astype(np.float32), fs=sample_rate)
         if isinstance(result, list) and result:
             return str(result[0].get("text", ""))
         return ""

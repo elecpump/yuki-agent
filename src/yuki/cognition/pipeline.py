@@ -1,4 +1,8 @@
+import base64
+import io
 import time
+
+from PIL import Image
 
 from yuki.bus import MessageBus
 from yuki.cognition.frame_client import FrameClient
@@ -10,6 +14,15 @@ from yuki.logger import get_logger
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.pipeline")
+
+
+def decode_png_b64(png_b64: str) -> Image.Image | None:
+    """base64 PNG → PIL Image；解码失败返回 None（按空帧处理）。"""
+    try:
+        return Image.open(io.BytesIO(base64.b64decode(png_b64))).convert("RGB")
+    except (ValueError, OSError):
+        logger.warning("decode png failed, treating frame as empty")
+        return None
 
 
 class PerceptionPipeline:
@@ -27,14 +40,27 @@ class PerceptionPipeline:
 
     def on_focus_changed(self, topic: str, payload: dict) -> None:
         frame = self._frame_client.get_latest()
-        if not frame:
+        if not frame or not frame.get("png"):
             return
         if frame.get("sensitive"):
             self._last_context = {"topic": "", "sensitive": True}
             return
+        image = decode_png_b64(frame["png"])
+        if image is None:
+            return
         cache_key = f"{payload.get('title', '')}|{payload.get('url', '')}"
-        context = self._vlm.understand(frame.get("png"), cache_key=cache_key)
-        if self._sensitive.scan(context.get("summary", "") + context.get("topic", "")):
+        context = self._vlm.understand(image, cache_key=cache_key)
+        text = " ".join(
+            filter(
+                None,
+                [
+                    context.get("topic", ""),
+                    context.get("summary", ""),
+                    " ".join(context.get("key_points", [])),
+                ],
+            )
+        )
+        if self._sensitive.scan(text):
             self._last_context = {"topic": "", "sensitive": True}
             return
         self._last_context = context
@@ -55,9 +81,25 @@ class PerceptionPipeline:
 
     def understand_screen(self) -> dict:
         frame = self._frame_client.get_latest()
-        if not frame or frame.get("sensitive"):
+        if not frame or not frame.get("png") or frame.get("sensitive"):
             return {"topic": "", "sensitive": True}
-        return self._vlm.understand(frame.get("png"))
+        image = decode_png_b64(frame["png"])
+        if image is None:
+            return {"topic": "", "sensitive": True}
+        context = self._vlm.understand(image)
+        text = " ".join(
+            filter(
+                None,
+                [
+                    context.get("topic", ""),
+                    context.get("summary", ""),
+                    " ".join(context.get("key_points", [])),
+                ],
+            )
+        )
+        if self._sensitive.scan(text):
+            return {"topic": "", "sensitive": True}
+        return context
 
     def _bus_publish_reply(self, text: str) -> None:
         self._bus.publish(Topics.REPLY, {"text": text, "ts": time.time()})
