@@ -6,7 +6,7 @@
 
 **Architecture:** 三进程架构保持不变（bus_server / cognition / interaction / perception）。采集层四个组件各自独立、可单测：滚动检测用 ctypes 低级钩子（WH_MOUSE_LL + WH_KEYBOARD_LL，设计文档 §4.3 指定机制）驱动 300ms 静止窗口；SystemMonitor 用 UIA（uiautomation）探测前台窗口；SensitiveDetector 用 win32 窗口枚举 + 黑名单规则；ScreenCapture 用 WGC（windows_capture 包，window_hwnd 回调式）；AudioCapture 用 sounddevice（WASAPI 16kHz/16bit/单声道/20ms）。全部经 protobuf 信封发布到总线（Phase 2c 编码）。**硬件适配器与可测核心分离**：每个组件拆成纯逻辑核心（可注入时钟/fake）与薄适配器（WGC/sounddevice/ctypes 钩子），单测打纯核心，适配器走集成验证。
 
-**Tech Stack:** Python ≥3.11；新增运行时依赖：`windows-capture>=2.0`（WGC）、`sounddevice>=0.5`、`comtypes`、`uiautomation>=2`；既有：pyzmq、protobuf、pydantic、PIL、pywin32。
+**Tech Stack:** Python ≥3.11；新增运行时依赖：`windows-capture>=2.0`（WGC）、`sounddevice>=0.5`、`numpy`（sounddevice 不声明，audio.py 运行时需要）、`comtypes`、`uiautomation>=2`；既有：pyzmq、protobuf、pydantic、PIL、pywin32。
 
 **Spec:** `docs/superpowers/specs/2026-08-10-yuki-agent-design.md` §3.1（组件职责与关键决策）、§4.3（时序）、§9.1（测试）；接口契约 `docs/superpowers/specs/2026-08-10-yuki-interfaces.md` §4/§5/§7。
 
@@ -948,6 +948,17 @@ git commit -m "feat: frame capture abstraction, WGC adapter, and sensitive-aware
     - `start() / stop()` — 打开流，回调里切帧并 `bus.publish(Topics.MIC, {"pcm": <base64 float32 原始字节>, "sample_rate": ..., "ts": ...})`
     - **本阶段只采集发布，唤醒词不消费**（Phase 4）
   - 载荷约定：`{"pcm": <base64>, "sample_rate": 16000, "ts": float}`（protobuf Struct 承载；pcm 为 float32 原始字节 base64）
+
+- [ ] **Step 0: 修改 `pyproject.toml` 加运行时依赖**
+
+```toml
+[project]
+dependencies = ["pyzmq>=25", "structlog>=24", "pydantic>=2", "PyYAML>=6",
+                "protobuf>=6.33.5", "windows-capture>=2.0", "sounddevice>=0.5",
+                "numpy>=1.26", "comtypes>=1.2", "uiautomation>=2"]
+```
+
+（若 Task 1-4 已先行加入部分依赖，合并即可；numpy 必须进运行时依赖——sounddevice 不声明它但 audio.py 需要。）
 
 - [ ] **Step 1: 写失败测试 `tests/perception/test_audio.py`**
 
