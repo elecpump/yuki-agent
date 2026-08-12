@@ -6,7 +6,7 @@
 
 **Architecture:** 认知层拆为两层职责：**PerceptionPipeline**（纯感知：focus_changed→VLM→situation_update 事件；mic→SpeechBuffer→VAD→整段 STT→user_utterance 事件；awake→_listening）与 **L1Responder**（独立消费者：订阅感知事件 + awake → L1 规则引擎 → event/reply）。两者都在 cognition 进程内，但职责分离——后续 Brain 阶段直接替换 L1Responder。VLM 启动时后台预热；不可用降级为纯文本模式并记日志。
 
-**Tech Stack:** Python ≥3.11；新增 `webrtcvad`（VAD，仅 SpeechBuffer 内部用，可注入 fake）；既有：protobuf 总线、structlog、numpy、Pillow。
+**Tech Stack:** Python ≥3.11；新增 `webrtcvad-wheels`（VAD 维护分支，同 API；`webrtcvad` 2.0.10 的 pkg_resources 在 py3.11+ 不可用，仅 SpeechBuffer 内部用，可注入 fake）；既有：protobuf 总线、structlog、numpy、Pillow。
 
 **Spec:** `docs/superpowers/specs/2026-08-10-yuki-agent-design.md` §3.2/§4.3；接口契约 `docs/superpowers/specs/2026-08-10-yuki-interfaces.md` §4（新增 event/perception/* 主题）；Phase 3 原计划（本修订重构其 Task 6/7 的输出）。
 
