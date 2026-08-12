@@ -8,7 +8,10 @@ from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
 
 
-def build_cognition(bus: MessageBus) -> None:
+def build_cognition(bus: MessageBus, *, pipeline=None) -> None:
+    if pipeline is not None:
+        return
+
     def on_awake(topic: str, payload: dict) -> None:
         bus.publish(Topics.REPLY, make_reply(payload))
 
@@ -20,7 +23,9 @@ def main() -> None:
     bus = MessageBus(base_port=config.base_port, role=config.bus_role, hwm=config.hwm)
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
-    build_cognition(bus)
+    from yuki.cognition.pipeline import build_pipeline
+
+    build_pipeline(bus)
     register_health_service(bus, "cognition")
     try:
         while not shutdown.shutdown_requested:

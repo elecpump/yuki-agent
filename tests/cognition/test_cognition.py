@@ -23,3 +23,21 @@ def test_build_cognition_wires_awake_to_reply():
     topic, payload = bus.published[0]
     assert topic == Topics.REPLY
     assert payload["text"] == "我在，你说。"
+
+
+def test_build_cognition_still_replies_on_awake():
+    bus = FakeBus()
+    build_cognition(bus)
+    assert bus.handler is not None
+    bus.handler(Topics.AWAKE, {"source": "hotkey", "ts": 0.0})
+    assert len(bus.published) == 1
+    topic, payload = bus.published[0]
+    assert topic == Topics.REPLY
+    assert payload["text"] == "我在，你说。"
+
+
+def test_build_cognition_with_pipeline_skips_legacy_handler():
+    bus = FakeBus()
+    build_cognition(bus, pipeline=object())
+    assert bus.handler is None
+    assert bus.published == []
