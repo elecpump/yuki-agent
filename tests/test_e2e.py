@@ -12,7 +12,7 @@ E2E_PORT = 6500
 
 def _env(port: int):
     env = dict(os.environ)
-    env["YUKI_BASE_PORT"] = str(port)
+    env["YUKI_BUS_BASE_PORT"] = str(port)
     env["PYTHONPATH"] = "src"
     return env
 

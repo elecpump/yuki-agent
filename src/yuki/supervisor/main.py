@@ -45,22 +45,22 @@ def main() -> None:
         extra = ["--trigger-after", sys.argv[index + 1]]
 
     env = dict(os.environ)
-    env["YUKI_BUS_ROLE"] = "node"
-    env["YUKI_BASE_PORT"] = str(config.base_port)
+    env["YUKI_BUS_BASE_PORT"] = str(config.bus.base_port)
+    env["YUKI_BUS_HWM"] = str(config.bus.hwm)
 
-    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
+    bus = BusNode(base_port=config.bus.base_port, hwm=config.bus.hwm)
     supervisor = Supervisor(
         build_children_cmds(extra),
         env=env,
-        restart_base_delay=config.restart_base_delay,
-        restart_max_delay=config.restart_max_delay,
-        restart_window=config.restart_window,
-        restart_max_per_window=config.restart_max_per_window,
+        restart_base_delay=config.supervisor.restart_base_delay,
+        restart_max_delay=config.supervisor.restart_max_delay,
+        restart_window=config.supervisor.restart_window,
+        restart_max_per_window=config.supervisor.restart_max_per_window,
     )
     try:
         while not shutdown.shutdown_requested:
             try:
-                supervisor.tick(bus=bus, health_timeout_ms=config.health_timeout_ms)
+                supervisor.tick(bus=bus, health_timeout_ms=config.health.timeout_ms)
             except OSError as exc:
                 print(f"[supervisor] spawn failed: {exc}", flush=True)
             shutdown.wait(timeout=0.5)
