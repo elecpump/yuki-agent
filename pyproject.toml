@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "yuki"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["pyzmq>=25", "structlog>=24", "pydantic>=2", "PyYAML>=6", "protobuf>=6.33.5",
+dependencies = ["pyzmq>=25", "structlog>=24", "pydantic>=2", "PyYAML>=6", "protobuf>=7.35.1",
                 "windows-capture>=2.0", "sounddevice>=0.5", "numpy>=1.26", "comtypes>=1.2",
                 "uiautomation>=2", "pywin32>=306", "Pillow>=10", "psutil>=5.9",
                 "webrtcvad-wheels>=2.0.12"]

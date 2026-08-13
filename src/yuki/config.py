@@ -44,7 +44,7 @@ class Config(BaseModel):
         if path is not None and path.exists():
             with open(path, "r", encoding="utf-8") as fh:
                 data.update(yaml.safe_load(fh) or {})
-        cls._apply_env("persona_name", "PERSONA", data)
+        cls._apply_env("persona_name", "PERSONA_NAME", data)
         for section_name, section_cls in (
             ("bus", BusConfig),
             ("logging", LoggingConfig),

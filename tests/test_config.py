@@ -22,10 +22,12 @@ def test_from_env_merges_env_overrides(monkeypatch):
     monkeypatch.setenv("YUKI_BUS_BASE_PORT", "7000")
     monkeypatch.setenv("YUKI_BUS_HWM", "500")
     monkeypatch.setenv("YUKI_LOGGING_LEVEL", "DEBUG")
+    monkeypatch.setenv("YUKI_PERSONA_NAME", "aki")
     config = Config.load(None)
     assert config.bus.base_port == 7000
     assert config.bus.hwm == 500
     assert config.logging.level == "DEBUG"
+    assert config.persona_name == "aki"
 
 
 def test_yaml_then_env_merge(tmp_path, monkeypatch):

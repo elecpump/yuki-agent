@@ -81,3 +81,24 @@ def test_health_service_returns_collect_result():
         assert result["components"]["tts"]["ok"] is True
     finally:
         reporter.stop()
+
+
+def test_health_service_over_real_bus():
+    from yuki.bus import BusHub, BusNode
+
+    port = 6250
+    hub = BusHub(base_port=port, hwm=10)
+    node = BusNode(base_port=port, hwm=10)
+    try:
+        reporter = HealthReporter(node, process="cognition")
+        reporter.register_component("vlm", lambda: HealthStatus(True, {"loaded": True}))
+        reporter.start()
+        time.sleep(0.1)
+        result = node.request("health/cognition", {}, timeout_ms=1000)
+        assert result["process"] == "cognition"
+        assert result["components"]["vlm"] == {"ok": True, "detail": {"loaded": True}}
+        assert result["healthy"] is True
+    finally:
+        reporter.stop()
+        node.close()
+        hub.close()

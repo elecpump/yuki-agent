@@ -56,8 +56,10 @@ class ProcessAgent(ABC):
             self.setup()
             self.loop()
         finally:
-            self.teardown()
-            if self.register_health:
-                self.health.stop()
-            self.shutdown.run_cleanups()
-            self.bus.close()
+            try:
+                self.teardown()
+            finally:
+                if self.register_health:
+                    self.health.stop()
+                self.shutdown.run_cleanups()
+                self.bus.close()

@@ -11,8 +11,8 @@ from tests.fakes import FakeBus
 class FakeAgent(ProcessAgent):
     name = "fake"
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, bus=None):
+        super().__init__(config, bus=bus)
         self.events = []
         self.components = {"comp": lambda: HealthStatus(True)}
 
@@ -81,3 +81,23 @@ def test_agent_health_started_only_when_register_health():
     threading.Timer(0.05, shutdown.request_shutdown).start()
     agent.run(register_signals=False)
     assert "health/fake" not in bus.services
+
+
+def test_agent_teardown_raising_still_stops_health_and_closes_bus():
+    import pytest
+
+    bus = FakeBus()
+    shutdown = ShutdownManager()
+    agent = FakeAgent(Config(), bus=bus)
+    agent.shutdown = shutdown
+    agent.health.start()
+    assert "health/fake" in bus.services
+
+    def boom():
+        raise RuntimeError("teardown failed")
+
+    agent.teardown = boom
+    threading.Timer(0.05, shutdown.request_shutdown).start()
+    with pytest.raises(RuntimeError):
+        agent.run(register_signals=False)
+    assert bus.closed is True
