@@ -16,6 +16,8 @@ from yuki.perception.capture import (
 from yuki.perception.scroll import ScrollIdleDetector
 from yuki.perception.sensitive import SensitiveDetector
 
+from tests.fakes import FakeBus
+
 
 class FakeCapture:
     def __init__(self):
@@ -28,14 +30,6 @@ class FakeCapture:
 
     def stop(self) -> None:
         self.stopped = True
-
-
-class FakeBus:
-    def __init__(self):
-        self.services = {}
-
-    def respond(self, service, handler):
-        self.services[service] = handler
 
 
 class FakeStrategy:

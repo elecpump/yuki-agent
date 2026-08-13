@@ -1,5 +1,6 @@
 import base64
 import io
+import threading
 import time
 from abc import ABC, abstractmethod
 from typing import Callable
@@ -158,29 +159,33 @@ def make_frame_service(
     if window_info is None:
         window_info = _window_info_from_hwnd(hwnd) if hwnd else _foreground_window_info
     latest: dict = {"png": "", "width": 0, "height": 0, "ts": 0.0, "sensitive": False}
+    latest_lock = threading.Lock()
 
     def on_frame(png: bytes, meta: dict) -> None:
         info = window_info()
         class_name, title = info if info is not None else (None, None)
         capture_ok, is_sensitive = strategy.should_capture(class_name, title)
         if not capture_ok and is_sensitive:
-            latest["png"] = base64.b64encode(strategy.black_frame()).decode("ascii")
-            latest["width"] = meta["width"]
-            latest["height"] = meta["height"]
-            latest["ts"] = meta["ts"]
-            latest["sensitive"] = True
+            with latest_lock:
+                latest["png"] = base64.b64encode(strategy.black_frame()).decode("ascii")
+                latest["width"] = meta["width"]
+                latest["height"] = meta["height"]
+                latest["ts"] = meta["ts"]
+                latest["sensitive"] = True
             return
         if not capture_ok:
             return
-        latest["png"] = base64.b64encode(png).decode("ascii")
-        latest["width"] = meta["width"]
-        latest["height"] = meta["height"]
-        latest["ts"] = meta["ts"]
-        latest["sensitive"] = False
+        with latest_lock:
+            latest["png"] = base64.b64encode(png).decode("ascii")
+            latest["width"] = meta["width"]
+            latest["height"] = meta["height"]
+            latest["ts"] = meta["ts"]
+            latest["sensitive"] = False
 
     capture.on_frame = on_frame
 
     def handler(payload: dict) -> dict:
-        return dict(latest)
+        with latest_lock:
+            return dict(latest)
 
     bus.respond("frame", handler)

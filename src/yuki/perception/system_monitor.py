@@ -6,8 +6,16 @@ from yuki.logger import get_logger
 
 logger = get_logger("yuki.perception.system_monitor")
 
-import win32gui  # noqa: E402
-import win32process  # noqa: E402
+try:
+    import win32gui
+    import win32process
+except ImportError:
+    win32gui = None
+    win32process = None
+
+
+def _noop(*args, **kwargs):
+    raise RuntimeError("win32 unavailable")
 
 
 def _default_process_name(pid: int) -> str:
@@ -23,16 +31,16 @@ class ForegroundProbe:
 
     def __init__(
         self,
-        get_foreground=win32gui.GetForegroundWindow,
-        get_text=win32gui.GetWindowText,
-        get_class=win32gui.GetClassName,
-        get_pid=win32process.GetWindowThreadProcessId,
+        get_foreground=None,
+        get_text=None,
+        get_class=None,
+        get_pid=None,
         process_name=_default_process_name,
     ) -> None:
-        self._get_foreground = get_foreground
-        self._get_text = get_text
-        self._get_class = get_class
-        self._get_pid = get_pid
+        self._get_foreground = get_foreground or (win32gui.GetForegroundWindow if win32gui else _noop)
+        self._get_text = get_text or (win32gui.GetWindowText if win32gui else _noop)
+        self._get_class = get_class or (win32gui.GetClassName if win32gui else _noop)
+        self._get_pid = get_pid or (win32process.GetWindowThreadProcessId if win32process else _noop)
         self._process_name = process_name
 
     def probe(self) -> dict | None:

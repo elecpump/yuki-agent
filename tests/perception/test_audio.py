@@ -2,6 +2,8 @@ import numpy as np
 
 from yuki.perception.audio import AudioCapture, AudioFrameSplitter
 
+from tests.fakes import FakeBus
+
 
 def test_splitter_frames_at_20ms():
     splitter = AudioFrameSplitter(sample_rate=16000, frame_ms=20)
@@ -26,12 +28,8 @@ def test_splitter_empty():
 
 
 def test_capture_uses_fake_stream():
-    published = []
     splitter = AudioFrameSplitter(sample_rate=16000, frame_ms=20)
-
-    class FakeBus:
-        def publish(self, topic, payload):
-            published.append((topic, payload))
+    bus = FakeBus()
 
     class FakeStream:
         def __init__(self, callback):
@@ -45,13 +43,13 @@ def test_capture_uses_fake_stream():
         return FakeStream(callback)
 
     cap = AudioCapture(
-        FakeBus(),
+        bus,
         stream_factory=fake_stream_factory,
         splitter=splitter,
     )
     cap.start()
-    assert len(published) == 1
-    topic, payload = published[0]
+    assert len(bus.published) == 1
+    topic, payload = bus.published[0]
     assert topic == "audio/mic"
     assert payload["sample_rate"] == 16000
     assert payload["pcm"] != ""

@@ -60,6 +60,9 @@ class AudioCapture:
             logger.warning("audio status: %s", status)
         samples = np.asarray(indata)[:, 0] if indata.ndim > 1 else np.asarray(indata)
         for frame in self._splitter.split(samples):
+            # PCM 经 base64 塞入 protobuf Struct（Struct 仅支持 JSON 值）。
+            # 带宽浪费 33%，量级可忽略（20ms/帧 ~426B）；
+            # 待 proto 升级为 typed message（bytes 字段）时一并消除。
             pcm = base64.b64encode(frame.astype(np.float32).tobytes()).decode("ascii")
             self._bus.publish(
                 Topics.MIC,

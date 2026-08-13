@@ -4,10 +4,10 @@ import structlog
 
 from yuki import logger as logger_mod
 from yuki.logger import (
-    audit_logger,
     bind_trace_id,
     configure_logging,
-    decision_logger,
+    get_audit_logger,
+    get_decision_logger,
     get_file_logger,
     get_logger,
     unbind_trace_id,
@@ -54,8 +54,8 @@ def test_trace_id_binding():
 
 
 def test_logger_module_exports():
-    assert hasattr(logger_mod, "audit_logger")
-    assert hasattr(logger_mod, "decision_logger")
+    assert hasattr(logger_mod, "get_audit_logger")
+    assert hasattr(logger_mod, "get_decision_logger")
     assert hasattr(logger_mod, "get_logger")
     assert hasattr(logger_mod, "get_file_logger")
     assert hasattr(logger_mod, "configure_logging")
@@ -64,6 +64,6 @@ def test_logger_module_exports():
 
 
 def test_module_singletons_write_under_logs_dir():
-    # audit_logger / decision_logger 可调用（写 logs/ 目录，测试不校验内容）
-    assert callable(audit_logger.info)
-    assert callable(decision_logger.info)
+    # audit/decision logger 惰性创建，可调用（写 logs/ 目录，测试不校验内容）
+    assert callable(get_audit_logger().info)
+    assert callable(get_decision_logger().info)

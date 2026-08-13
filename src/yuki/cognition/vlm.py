@@ -52,7 +52,9 @@ class VisualUnderstander:
         ]
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         inputs = self._processor(text=[text], images=[image], return_tensors="pt").to(self._model.device)
-        with __import__("torch").no_grad():
+        import torch
+
+        with torch.no_grad():
             outputs = self._model.generate(**inputs, max_new_tokens=200)
         generated = outputs[0][inputs["input_ids"].shape[-1]:]
         return self._parse(self._processor.decode(generated, skip_special_tokens=True))

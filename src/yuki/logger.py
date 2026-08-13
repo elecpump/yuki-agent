@@ -50,8 +50,22 @@ def get_file_logger(name: str, filename: str, log_dir: Path = Path("logs")):
     return structlog.get_logger(name)
 
 
-audit_logger = get_file_logger("yuki.audit", "audit.jsonl")
-decision_logger = get_file_logger("yuki.decision", "decision.jsonl")
+_audit_logger = None
+_decision_logger = None
+
+
+def get_audit_logger():
+    global _audit_logger
+    if _audit_logger is None:
+        _audit_logger = get_file_logger("yuki.audit", "audit.jsonl")
+    return _audit_logger
+
+
+def get_decision_logger():
+    global _decision_logger
+    if _decision_logger is None:
+        _decision_logger = get_file_logger("yuki.decision", "decision.jsonl")
+    return _decision_logger
 
 
 def bind_trace_id(trace_id: str) -> None:

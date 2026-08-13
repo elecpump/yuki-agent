@@ -4,20 +4,7 @@ from yuki.perception.capture import FrameStrategy, black_frame_png
 from yuki.perception.sensitive import SensitiveDetector
 from yuki.perception.scroll import ScrollIdleDetector
 
-
-class FakeBus:
-    def __init__(self):
-        self.published = []
-        self.services = {}
-
-    def publish(self, topic, payload):
-        self.published.append((topic, payload))
-
-    def respond(self, service, handler):
-        self.services[service] = handler
-
-    def request(self, service, payload, timeout_ms=2000):
-        return self.services[service](payload)
+from tests.fakes import FakeBus
 
 
 class FakeCapture:
@@ -131,7 +118,12 @@ def test_perception_agent_default_constructs():
 def test_perception_agent_default_strategy_gates_on_scroll():
     recorded = {}
     idle = ScrollIdleDetector()
-    strategy = FrameStrategy(sensitive=SensitiveDetector(), idle=idle, require_idle=True)
+    # 空黑名单/关键词：避免真实前台窗口触发敏感分支，隔离滚动静止门控逻辑
+    strategy = FrameStrategy(
+        sensitive=SensitiveDetector(class_blacklist=set(), title_keywords=()),
+        idle=idle,
+        require_idle=True,
+    )
 
     class RecordingScrollHook:
         def __init__(self, on_scroll):
