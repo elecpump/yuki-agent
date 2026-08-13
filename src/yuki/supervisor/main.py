@@ -2,7 +2,7 @@ import os
 import signal
 import sys
 
-from yuki.bus import MessageBus
+from yuki.bus import BusNode
 from yuki.config import Config
 from yuki.shutdown import ShutdownManager
 from yuki.supervisor import Supervisor
@@ -48,7 +48,7 @@ def main() -> None:
     env["YUKI_BUS_ROLE"] = "node"
     env["YUKI_BASE_PORT"] = str(config.base_port)
 
-    bus = MessageBus(base_port=config.base_port, role="node", hwm=config.hwm)
+    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
     supervisor = Supervisor(
         build_children_cmds(extra),
         env=env,

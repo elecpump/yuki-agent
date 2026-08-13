@@ -1,10 +1,10 @@
 import os
 import time
 
-from yuki.bus import MessageBus
+from yuki.bus import BusNode
 
 
-def register_health_service(bus: MessageBus, name: str) -> None:
+def register_health_service(bus: BusNode, name: str) -> None:
     start = time.time()
     error_count = getattr(bus, "_error_count", 0)
 

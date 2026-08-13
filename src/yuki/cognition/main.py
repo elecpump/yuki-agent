@@ -1,6 +1,6 @@
 from typing import Callable
 
-from yuki.bus import MessageBus
+from yuki.bus import BusNode
 from yuki.cognition.l1_responder import build_l1_responder
 from yuki.cognition.pipeline import build_pipeline
 from yuki.cognition.responder import make_reply
@@ -10,7 +10,7 @@ from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
 
 
-def build_cognition(bus: MessageBus, *, pipeline=None) -> None:
+def build_cognition(bus: BusNode, *, pipeline=None) -> None:
     if pipeline is not None:
         return
 
@@ -22,7 +22,7 @@ def build_cognition(bus: MessageBus, *, pipeline=None) -> None:
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port, role=config.bus_role, hwm=config.hwm)
+    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
     pipeline = build_pipeline(bus)

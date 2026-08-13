@@ -1,13 +1,13 @@
 import time
 
-from yuki.bus import MessageBus
+from yuki.bus import BusHub
 from yuki.config import Config
 from yuki.shutdown import ShutdownManager
 
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port, role="hub", hwm=config.hwm)
+    bus = BusHub(base_port=config.base_port, hwm=config.hwm)
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
     try:

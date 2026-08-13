@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PIL import ImageGrab
 
-from yuki.bus import MessageBus
+from yuki.bus import BusNode
 from yuki.config import Config
 from yuki.recorder.session import Session
 from yuki.shutdown import ShutdownManager
@@ -18,7 +18,7 @@ def grab_frame() -> bytes:
     return buf.getvalue()
 
 
-def run(session: Session, bus: MessageBus, grabber, interval_sec: float) -> None:
+def run(session: Session, bus: BusNode, grabber, interval_sec: float) -> None:
     def on_event(topic: str, payload: dict) -> None:
         session.record_event(topic, payload)
 
@@ -43,7 +43,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port, role="node", hwm=config.hwm)
+    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
     session = Session(Path(args.output_dir))
     grabber = None if args.no_frames else grab_frame
     try:

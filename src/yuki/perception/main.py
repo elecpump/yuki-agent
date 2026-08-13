@@ -1,4 +1,4 @@
-from yuki.bus import MessageBus
+from yuki.bus import BusNode
 from yuki.config import Config
 from yuki.health import register_health_service
 from yuki.logger import get_logger
@@ -15,7 +15,7 @@ _perception_state: dict = {}
 
 
 def build_perception(
-    bus: MessageBus,
+    bus: BusNode,
     config: Config,
     *,
     capture=None,
@@ -70,7 +70,7 @@ def build_perception(
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port, role=config.bus_role, hwm=config.hwm)
+    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
     build_perception(bus, config)

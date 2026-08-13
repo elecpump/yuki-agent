@@ -2,7 +2,7 @@ import sys
 import threading
 import time
 
-from yuki.bus import MessageBus
+from yuki.bus import BusNode
 from yuki.config import Config
 from yuki.health import register_health_service
 from yuki.interaction.hotkey import HotkeyManager
@@ -10,7 +10,7 @@ from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
 
 
-def build_interaction(bus: MessageBus, hotkeys: HotkeyManager) -> None:
+def build_interaction(bus: BusNode, hotkeys: HotkeyManager) -> None:
     def on_reply(topic: str, payload: dict) -> None:
         print(f"[yuki] {payload['text']}", flush=True)
 
@@ -23,7 +23,7 @@ def build_interaction(bus: MessageBus, hotkeys: HotkeyManager) -> None:
 
 def main() -> None:
     config = Config.from_env()
-    bus = MessageBus(base_port=config.base_port, role=config.bus_role, hwm=config.hwm)
+    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
     hotkeys = HotkeyManager()
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()

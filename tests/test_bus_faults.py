@@ -4,7 +4,7 @@ import time
 import pytest
 import zmq
 
-from yuki.bus import BusError, BusTimeoutError, MessageBus
+from yuki.bus import BusError, BusTimeoutError, BusHub, BusNode
 from yuki.proto import yuki_pb2
 
 
@@ -12,10 +12,11 @@ from yuki.proto import yuki_pb2
 def make_bus():
     buses = []
 
-    def _make(port, role="hub", **kwargs):
-        bus = MessageBus(base_port=port, role=role, hwm=10, **kwargs)
-        buses.append(bus)
-        return bus
+    def _make(port, **kwargs):
+        hub = BusHub(base_port=port, hwm=10)
+        node = BusNode(base_port=port, hwm=10, **kwargs)
+        buses.extend([hub, node])
+        return node
 
     yield _make
     for bus in buses:
@@ -135,10 +136,10 @@ def test_overlapping_prefixes_both_dispatch(make_bus):
     assert sorted(got) == ["broad", "narrow"]
 
 
-def test_services_reregister_after_hub_restart(make_bus):
+def test_services_reregister_after_hub_restart():
     port = 6180
-    hub = make_bus(port, role="hub")
-    node = make_bus(port, role="node", register_interval=0.2)
+    hub = BusHub(base_port=port, hwm=10)
+    node = BusNode(base_port=port, hwm=10, register_interval=0.2)
     node.respond("svc", lambda payload: {"echo": payload["msg"]})
 
     deadline = time.time() + 5.0
@@ -155,35 +156,40 @@ def test_services_reregister_after_hub_restart(make_bus):
     hub.close()
     time.sleep(0.3)
 
-    hub2 = make_bus(port, role="hub")
+    hub2 = BusHub(base_port=port, hwm=10)
 
-    deadline = time.time() + 8.0
-    last_error = None
-    while time.time() < deadline:
-        time.sleep(0.1)
-        try:
-            assert node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
-            return
-        except (BusError, BusTimeoutError) as exc:
-            last_error = exc
-    pytest.fail(f"service not re-registered after hub restart: {last_error}")
+    try:
+        deadline = time.time() + 8.0
+        last_error = None
+        while time.time() < deadline:
+            time.sleep(0.1)
+            try:
+                assert node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
+                return
+            except (BusError, BusTimeoutError) as exc:
+                last_error = exc
+        pytest.fail(f"service not re-registered after hub restart: {last_error}")
+    finally:
+        hub2.close()
+        node.close()
 
 
 def test_many_bus_create_close_cycles():
     # 回归：单进程内反复创建/关闭多个 MessageBus，曾触发 libzmq 4.3.5
     # Windows signaler 断言（signaler.cpp:345）。修复后应稳定通过。
     for i in range(25):
-        bus = MessageBus(base_port=6800 + i, hwm=10)
-        bus.respond("ping", lambda p: {"echo": p["msg"]})
+        hub = BusHub(base_port=6800 + i, hwm=10)
+        node = BusNode(base_port=6800 + i, hwm=10)
+        node.respond("ping", lambda p: {"echo": p["msg"]})
         time.sleep(0.01)
-        bus.request("ping", {"msg": "hi"}, timeout_ms=1000)
-        bus.close()
+        node.request("ping", {"msg": "hi"}, timeout_ms=1000)
+        hub.close()
+        node.close()
 
 
-def test_bus_wire_format_is_protobuf(make_bus):
-    # 捕获总线上的原始帧，断言第二帧可被解析为 Envelope（而非 JSON dict）。
-    bus = make_bus(6900)
-    node = make_bus(6900, role="node")
+def test_bus_wire_format_is_protobuf():
+    hub = BusHub(base_port=6900, hwm=10)
+    node = BusNode(base_port=6900, hwm=10)
     node.respond("ping", lambda p: {"echo": p["msg"]})
     time.sleep(0.2)
 
@@ -192,20 +198,22 @@ def test_bus_wire_format_is_protobuf(make_bus):
     def on_awake(topic, payload):
         captured["payload"] = payload
 
-    bus.subscribe("event/awake", on_awake)
+    node.subscribe("event/awake", on_awake)
     time.sleep(0.2)
     node.publish("event/awake", {"source": "hotkey"})
     deadline = time.time() + 2.0
     while "payload" not in captured and time.time() < deadline:
         time.sleep(0.05)
     assert captured.get("payload") == {"source": "hotkey"}
+    hub.close()
+    node.close()
 
 
-def test_wire_frame_second_part_is_envelope(make_bus):
+def test_wire_frame_second_part_is_envelope():
     # 探测 ROUTER 直接扮演 hub：绑定 base_port+2 的 ROUTER 端口，
     # node 作为纯节点连接它。若同时创建 hub 实例，hub 会占用 6903，
     # probe 再绑定会 Address in use。
-    node = make_bus(6901, role="node")
+    node = BusNode(base_port=6901, hwm=10)
     ctx = zmq.Context.instance()
     probe = ctx.socket(zmq.ROUTER)
     probe.bind("tcp://127.0.0.1:6903")  # base_port+2
@@ -213,24 +221,28 @@ def test_wire_frame_second_part_is_envelope(make_bus):
     node.respond("ping", lambda p: {"echo": p["msg"]})
     time.sleep(0.2)
     try:
-        node.request("ping", {"msg": "hi"}, timeout_ms=1000)
-    except BusTimeoutError:
-        pass  # probe 只观察不回复，请求超时是预期行为
-
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
         try:
-            frames = probe.recv_multipart(flags=zmq.NOBLOCK)
-        except zmq.ZMQError:
-            time.sleep(0.05)
-            continue
-        for frame in frames:
+            node.request("ping", {"msg": "hi"}, timeout_ms=1000)
+        except BusTimeoutError:
+            pass  # probe 只观察不回复，请求超时是预期行为
+
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
             try:
-                parsed = yuki_pb2.Envelope.FromString(frame)
-            except Exception:
+                frames = probe.recv_multipart(flags=zmq.NOBLOCK)
+            except zmq.ZMQError:
+                time.sleep(0.05)
                 continue
-            if parsed.WhichOneof("body") == "request" and parsed.request.service == "ping":
-                assert parsed.request.request_id != ""
-                assert parsed.request.payload["msg"] == "hi"
-                return
-    pytest.fail("did not observe a protobuf request envelope on the wire")
+            for frame in frames:
+                try:
+                    parsed = yuki_pb2.Envelope.FromString(frame)
+                except Exception:
+                    continue
+                if parsed.WhichOneof("body") == "request" and parsed.request.service == "ping":
+                    assert parsed.request.request_id != ""
+                    assert parsed.request.payload["msg"] == "hi"
+                    return
+        pytest.fail("did not observe a protobuf request envelope on the wire")
+    finally:
+        node.close()
+        probe.close(linger=0)

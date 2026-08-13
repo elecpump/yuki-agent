@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from yuki.bus import MessageBus
+from yuki.bus import BusHub, BusNode
 from yuki.health import register_health_service
 
 
@@ -10,10 +10,11 @@ from yuki.health import register_health_service
 def make_bus():
     buses = []
 
-    def _make(port, role="hub"):
-        bus = MessageBus(base_port=port, role=role, hwm=10)
-        buses.append(bus)
-        return bus
+    def _make(port, **kwargs):
+        hub = BusHub(base_port=port, hwm=10)
+        node = BusNode(base_port=port, hwm=10, **kwargs)
+        buses.extend([hub, node])
+        return node
 
     yield _make
     for bus in buses:

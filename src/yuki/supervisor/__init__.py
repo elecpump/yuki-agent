@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from yuki.bus import BusError, BusTimeoutError, MessageBus
+from yuki.bus import BusError, BusTimeoutError, BusNode
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.supervisor")
@@ -58,7 +58,7 @@ class Supervisor:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         return self._popen(cmd, **kwargs)
 
-    def tick(self, bus: MessageBus | None = None, health_timeout_ms: int = 2000) -> list[str]:
+    def tick(self, bus: BusNode | None = None, health_timeout_ms: int = 2000) -> list[str]:
         restarted: list[str] = []
         now = self._clock()
         bus_server = next((c for c in self._children if c.name == "bus_server"), None)

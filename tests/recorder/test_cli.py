@@ -64,7 +64,7 @@ def test_main_closes_session_on_run_exception(monkeypatch, tmp_path):
         cli.Config, "from_env", classmethod(lambda cls: SimpleNamespace(base_port=7777, hwm=1000))
     )
     bus = FakeBus()
-    monkeypatch.setattr(cli, "MessageBus", lambda *a, **kw: bus)
+    monkeypatch.setattr(cli, "BusNode", lambda *a, **kw: bus)
     session = FakeSession(tmp_path)
     monkeypatch.setattr(cli, "Session", lambda path: session)
 
