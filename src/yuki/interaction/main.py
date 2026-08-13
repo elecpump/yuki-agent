@@ -4,7 +4,6 @@ import time
 
 from yuki.bus import BusNode
 from yuki.config import Config
-from yuki.health import register_health_service
 from yuki.interaction.hotkey import HotkeyManager
 from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
@@ -28,7 +27,6 @@ def main() -> None:
     shutdown = ShutdownManager()
     shutdown.register_signal_handlers()
     build_interaction(bus, hotkeys)
-    register_health_service(bus, "interaction")
 
     if "--trigger-after" in sys.argv:
         delay = float(sys.argv[sys.argv.index("--trigger-after") + 1])

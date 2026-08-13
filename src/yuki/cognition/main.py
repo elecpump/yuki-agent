@@ -5,7 +5,6 @@ from yuki.cognition.l1_responder import build_l1_responder
 from yuki.cognition.pipeline import build_pipeline
 from yuki.cognition.responder import make_reply
 from yuki.config import Config
-from yuki.health import register_health_service
 from yuki.shutdown import ShutdownManager
 from yuki.topics import Topics
 
@@ -28,7 +27,6 @@ def main() -> None:
     pipeline = build_pipeline(bus)
     pipeline._vlm.warmup()  # VLM 后台预热（不可用则降级文本模式）
     build_l1_responder(bus)
-    register_health_service(bus, "cognition")
     try:
         while not shutdown.shutdown_requested:
             shutdown.wait(timeout=1.0)
