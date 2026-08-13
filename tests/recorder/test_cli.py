@@ -1,23 +1,13 @@
 import json
-import sys
-from types import SimpleNamespace
 
 import pytest
 
+from yuki.config import Config
 from yuki.recorder import cli
+from yuki.recorder.agent import RecorderAgent
 from yuki.recorder.session import Session
 
-
-class FakeBus:
-    def __init__(self):
-        self.closed = False
-        self.subscriptions = []
-
-    def subscribe(self, prefix, handler):
-        self.subscriptions.append((prefix, handler))
-
-    def close(self):
-        self.closed = True
+from tests.fakes import FakeBus
 
 
 class FakeShutdown:
@@ -41,40 +31,42 @@ class FakeSession:
     def __init__(self, output_dir):
         self.output_dir = output_dir
         self.closed = False
+        self.events = []
+        self.frames = []
+
+    def record_event(self, topic, payload):
+        self.events.append((topic, payload))
+
+    def save_frame(self, png):
+        self.frames.append(png)
 
     def close(self):
         self.closed = True
 
 
-def test_run_with_grabber_none_records_events_only(monkeypatch, tmp_path):
-    monkeypatch.setattr(cli, "ShutdownManager", lambda: FakeShutdown(iterations=3))
-    session = Session(tmp_path, session_id="sess-noframes")
+def test_recorder_agent_records_events_and_frames():
+    bus = FakeBus()
+    session = FakeSession("out")
+    agent = RecorderAgent(Config(), bus=bus, session=session, grabber=lambda: b"png", interval_sec=0.0)
+    agent.shutdown = FakeShutdown(iterations=2)
+    agent.setup()
+    bus.subscriptions["event/"][0]("event/reply", {"text": "hi", "ts": 0.0})
+    assert session.events == [("event/reply", {"text": "hi", "ts": 0.0})]
+    agent.loop()
+    assert session.frames == [b"png", b"png"]
+    agent.teardown()
+    assert session.closed is True
 
-    cli.run(session, FakeBus(), None, interval_sec=0.0)
 
-    assert list(session.frames_dir.iterdir()) == []
-    events_path = session.dir / "events.jsonl"
-    lines = events_path.read_text(encoding="utf-8").splitlines() if events_path.exists() else []
-    assert all(json.loads(line)["topic"] != "recorder/frame" for line in lines)
-
-
-def test_main_closes_session_on_run_exception(monkeypatch, tmp_path):
+def test_main_propagates_run_exception(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["yuki.recorder", "--output-dir", str(tmp_path), "--no-frames"])
     monkeypatch.setattr(
-        cli.Config, "from_env", classmethod(lambda cls: SimpleNamespace(base_port=7777, hwm=1000))
+        cli.Config, "from_env", classmethod(lambda cls: Config())
     )
-    bus = FakeBus()
-    monkeypatch.setattr(cli, "BusNode", lambda *a, **kw: bus)
-    session = FakeSession(tmp_path)
-    monkeypatch.setattr(cli, "Session", lambda path: session)
-
-    def boom(*a, **kw):
-        raise RuntimeError("grab failed")
-
-    monkeypatch.setattr(cli, "run", boom)
-
+    monkeypatch.setattr(
+        cli.RecorderAgent,
+        "run",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("grab failed")),
+    )
     with pytest.raises(RuntimeError, match="grab failed"):
         cli.main()
-
-    assert session.closed is True
-    assert bus.closed is True

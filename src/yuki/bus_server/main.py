@@ -1,20 +1,9 @@
-import time
-
-from yuki.bus import BusHub
+from yuki.bus_server.agent import BusServerAgent
 from yuki.config import Config
-from yuki.shutdown import ShutdownManager
 
 
 def main() -> None:
-    config = Config.from_env()
-    bus = BusHub(base_port=config.base_port, hwm=config.hwm)
-    shutdown = ShutdownManager()
-    shutdown.register_signal_handlers()
-    try:
-        while not shutdown.shutdown_requested:
-            shutdown.wait(timeout=1.0)
-    finally:
-        bus.close()
+    BusServerAgent(Config.from_env()).run()
 
 
 if __name__ == "__main__":

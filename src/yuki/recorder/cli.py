@@ -1,14 +1,12 @@
 import argparse
 import io
-import time
 from pathlib import Path
 
 from PIL import ImageGrab
 
-from yuki.bus import BusNode
 from yuki.config import Config
+from yuki.recorder.agent import RecorderAgent
 from yuki.recorder.session import Session
-from yuki.shutdown import ShutdownManager
 
 
 def grab_frame() -> bytes:
@@ -16,23 +14,6 @@ def grab_frame() -> bytes:
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     return buf.getvalue()
-
-
-def run(session: Session, bus: BusNode, grabber, interval_sec: float) -> None:
-    def on_event(topic: str, payload: dict) -> None:
-        session.record_event(topic, payload)
-
-    bus.subscribe("event/", on_event)
-    shutdown = ShutdownManager()
-    shutdown.register_signal_handlers()
-    next_grab = time.time()
-    while not shutdown.shutdown_requested:
-        now = time.time()
-        if now >= next_grab and grabber is not None:
-            session.save_frame(grabber())
-            next_grab = now + interval_sec
-        shutdown.wait(timeout=0.05)
-    session.close()
 
 
 def main() -> None:
@@ -43,14 +24,9 @@ def main() -> None:
     args = parser.parse_args()
 
     config = Config.from_env()
-    bus = BusNode(base_port=config.base_port, hwm=config.hwm)
     session = Session(Path(args.output_dir))
     grabber = None if args.no_frames else grab_frame
-    try:
-        run(session, bus, grabber, args.interval)
-    finally:
-        session.close()
-        bus.close()
+    RecorderAgent(config, session=session, grabber=grabber, interval_sec=args.interval).run()
 
 
 if __name__ == "__main__":
