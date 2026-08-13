@@ -138,6 +138,9 @@ class PerceptionPipeline:
             return {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
         return context
 
+    def warmup_vlm(self) -> None:
+        self._vlm.warmup()
+
 
 def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
                    frame_client=None, speech_buffer=None) -> PerceptionPipeline:
