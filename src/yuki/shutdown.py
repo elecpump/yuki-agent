@@ -1,12 +1,24 @@
 import signal
 import threading
+from typing import Callable
 
 
 class ShutdownManager:
-    """注册 SIGINT/SIGTERM/SIGBREAK，提供优雅关闭事件。"""
+    """注册 SIGINT/SIGTERM/SIGBREAK，提供优雅关闭事件与优先级清理。"""
 
     def __init__(self) -> None:
         self._event = threading.Event()
+        self._cleanups: list[tuple[int, str, Callable[[], None]]] = []
+
+    def register_cleanup(self, name: str, fn: Callable[[], None], priority: int = 0) -> None:
+        self._cleanups.append((priority, name, fn))
+
+    def run_cleanups(self) -> None:
+        for _, _, fn in sorted(self._cleanups, key=lambda item: item[0], reverse=True):
+            try:
+                fn()
+            except Exception:
+                pass
 
     def register_signal_handlers(self) -> None:
         for sig in (signal.SIGINT, signal.SIGTERM, getattr(signal, "SIGBREAK", None)):
