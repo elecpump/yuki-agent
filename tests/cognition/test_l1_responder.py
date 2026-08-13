@@ -1,7 +1,6 @@
 import pytest
 
 from yuki.cognition.l1_responder import L1Responder, build_l1_responder
-from yuki.cognition.topics_ext import TopicsExt
 from yuki.topics import Topics
 
 
@@ -32,7 +31,7 @@ def test_awake_triggers_l1_reply():
 def test_utterance_triggers_l1_reply_with_text():
     bus = FakeBus()
     responder = build_l1_responder(bus, l1=FakeL1())
-    bus.subscriptions[TopicsExt.USER_UTTERANCE](
-        TopicsExt.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
+    bus.subscriptions[Topics.USER_UTTERANCE](
+        Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
     replies = [p for t, p in bus.published if t == Topics.REPLY]
     assert replies and replies[0]["text"] == "reply:你好"

@@ -6,7 +6,6 @@ from PIL import Image
 
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline, scroll_band
 from yuki.cognition.sensitive import SensitiveFilter
-from yuki.cognition.topics_ext import TopicsExt
 from yuki.topics import Topics
 
 
@@ -94,9 +93,9 @@ def test_pipeline_focus_publishes_situation_update():
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed",
         {"app": "chrome", "url": "https://x.com/a", "title": "A"})
-    events = [t for t, _ in bus.published if t == TopicsExt.SITUATION_UPDATE]
+    events = [t for t, _ in bus.published if t == Topics.SITUATION_UPDATE]
     assert len(events) == 1
-    payload = [p for t, p in bus.published if t == TopicsExt.SITUATION_UPDATE][0]
+    payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
     assert payload["topic"] == "climate"
     assert payload["source_id"] == "https://x.com/a"
     assert "scroll_band" in payload
@@ -135,9 +134,9 @@ def test_pipeline_stt_on_mic_publishes_utterance():
     assert len(sb.frames) == 1
     sb.on_utterance = pipeline._on_utterance
     sb.on_utterance(np.zeros(320, dtype=np.float32))
-    events = [t for t, _ in bus.published if t == TopicsExt.USER_UTTERANCE]
+    events = [t for t, _ in bus.published if t == Topics.USER_UTTERANCE]
     assert len(events) == 1
-    payload = [p for t, p in bus.published if t == TopicsExt.USER_UTTERANCE][0]
+    payload = [p for t, p in bus.published if t == Topics.USER_UTTERANCE][0]
     assert payload["text"] == "你好"
 
 
@@ -235,7 +234,7 @@ def test_pipeline_focus_blocks_sensitive_key_points():
     build_pipeline(bus, vlm=SensitiveKeyPointsVLM(), sensitive_filter=SensitiveFilter(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed", {"title": "t", "url": "u"})
-    events = [p for t, p in bus.published if t == TopicsExt.SITUATION_UPDATE]
+    events = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE]
     assert len(events) == 1
     assert events[0]["sensitive"] is True
     assert events[0]["degraded"] is True
@@ -252,7 +251,7 @@ def test_pipeline_focus_publishes_degraded_on_vlm_failure():
     build_pipeline(bus, vlm=BoomVLM(), sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED]("event/focus_changed", {"title": "t", "url": "u"})
-    events = [p for t, p in bus.published if t == TopicsExt.SITUATION_UPDATE]
+    events = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE]
     assert len(events) == 1
     assert events[0]["degraded"] is True
     assert events[0]["reason"] == "inference_failed"

@@ -9,7 +9,6 @@ from yuki.cognition.frame_client import FrameClient
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
-from yuki.cognition.topics_ext import TopicsExt
 from yuki.cognition.vlm import VisualUnderstander
 from yuki.logger import get_logger
 from yuki.topics import Topics
@@ -38,7 +37,7 @@ class PerceptionPipeline:
     """纯感知管线：产出结构化理解事件，不产生任何回复。
 
     发布 event/perception/situation_update 与 event/perception/user_utterance，
-    供 L1Responder（当前）/ ContextAssembler（未来 Brain）消费。
+    当前由 L1Responder 作为 context 消费，不触发自动回复；未来 Brain 阶段接入主动评论。
     """
 
     def __init__(
@@ -65,7 +64,7 @@ class PerceptionPipeline:
         text = self._stt.recognize(samples, sample_rate=16000)
         if not text:
             return
-        self._bus.publish(TopicsExt.USER_UTTERANCE, {
+        self._bus.publish(Topics.USER_UTTERANCE, {
             "text": text, "duration_s": round(len(samples) / 16000, 2), "ts": time.time(),
         })
 
@@ -105,7 +104,7 @@ class PerceptionPipeline:
         data.setdefault("scroll_band", "unknown")
         data.setdefault("key_points", [])
         data.setdefault("ts", time.time())
-        self._bus.publish(TopicsExt.SITUATION_UPDATE, data)
+        self._bus.publish(Topics.SITUATION_UPDATE, data)
 
     def on_awake(self, topic: str, payload: dict) -> None:
         self._listening = True

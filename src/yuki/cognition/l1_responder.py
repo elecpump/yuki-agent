@@ -1,7 +1,6 @@
 import time
 
 from yuki.cognition.l1 import L1Engine
-from yuki.cognition.topics_ext import TopicsExt
 from yuki.logger import get_logger
 from yuki.topics import Topics
 
@@ -35,5 +34,5 @@ class L1Responder:
 def build_l1_responder(bus, *, l1=None) -> L1Responder:
     responder = L1Responder(l1=l1 or L1Engine(), bus=bus)
     bus.subscribe(Topics.AWAKE, responder.on_awake)
-    bus.subscribe(TopicsExt.USER_UTTERANCE, responder.on_user_utterance)
+    bus.subscribe(Topics.USER_UTTERANCE, responder.on_user_utterance)
     return responder
