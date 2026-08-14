@@ -49,6 +49,10 @@ class CloudConfig(BaseModel):
     max_turns: int = Field(3, ge=1)
 
 
+class SoulConfig(BaseModel):
+    path: str = "data/soul.json"
+
+
 class Config(BaseModel):
     persona_name: str = "yuki"
     bus: BusConfig = Field(default_factory=BusConfig)
@@ -58,6 +62,7 @@ class Config(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
+    soul: SoulConfig = Field(default_factory=SoulConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -79,6 +84,7 @@ class Config(BaseModel):
             ("memory", MemoryConfig),
             ("brain", BrainConfig),
             ("cloud", CloudConfig),
+            ("soul", SoulConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:

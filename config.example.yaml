@@ -30,3 +30,5 @@ cloud:
   api_key_env: YUKI_CLOUD_API_KEY
   timeout_s: 10.0
   max_turns: 3
+soul:
+  path: data/soul.json

@@ -106,3 +106,14 @@ def test_cloud_env_override(monkeypatch):
     assert config.cloud.enabled is True
     assert config.cloud.model == "gpt-5"
     assert config.cloud.timeout_s == 20.0
+
+
+def test_soul_defaults():
+    config = Config()
+    assert config.soul.path == "data/soul.json"
+
+
+def test_soul_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_SOUL_PATH", "tmp/soul.json")
+    config = Config.load(None)
+    assert config.soul.path == "tmp/soul.json"
