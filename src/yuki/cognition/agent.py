@@ -50,6 +50,8 @@ class CognitionAgent(ProcessAgent):
                 decay_base=self.config.memory.decay_base,
                 decay_lambda=self.config.memory.decay_lambda,
                 decay_threshold=self.config.memory.decay_threshold,
+                short_term_ttl_s=self.config.memory.short_term_ttl_s,
+                short_term_capacity=self.config.memory.short_term_capacity,
             )
         register_memory_services(self.bus, self._memory)
         if self._registry is None:
