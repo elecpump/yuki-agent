@@ -1,5 +1,3 @@
-import pytest
-
 from yuki.cognition.brain.classifier import (
     Emotion,
     Intent,

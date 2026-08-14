@@ -1,5 +1,3 @@
-import pytest
-
 from yuki.cognition.brain.actions import Action
 from yuki.cognition.brain.classifier import Emotion, Intent
 from yuki.cognition.brain.policy import DecisionPolicy, TriggerKind
@@ -42,6 +40,14 @@ def test_situation_stay_silent_when_disabled():
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
                             situation={"topic": "量子计算", "sensitive": False}, last_open_ts=0.0, now=999.0)
     assert [a.name for a in actions] == ["stay_silent"]
+
+
+def test_situation_proactive_at_exact_cooldown_boundary():
+    policy = DecisionPolicy(proactive_cooldown_s=120.0)
+    actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
+                            situation={"topic": "量子计算", "sensitive": False},
+                            last_open_ts=180.0, now=300.0)
+    assert [a.name for a in actions] == ["acknowledge", "ask"]
 
 
 def test_situation_proactive_when_cooldown_passed():

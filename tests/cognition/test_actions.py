@@ -62,12 +62,19 @@ def test_write_memory_is_side_effect_only(tmp_path):
 
 def test_call_function_dispatches_when_registry_present():
     registry = FunctionRegistry()
-    registry.tool("echo", description="e", params=None)(lambda p: "ok")
+    calls = []
+
+    def record(params):
+        calls.append("called")
+        return "ok"
+
+    registry.tool("echo", description="e", params=None)(record)
     c = ActionContext(intent=Intent.SYSTEM, emotion=Emotion.NEUTRAL, text="",
                       registry=registry)
     text = ACTION_EXECUTORS["call_function"](Action("call_function", {
         "name": "echo", "arguments": {}}), c)
     assert text == ""
+    assert calls == ["called"]
 
 
 def test_stay_silent_no_text(ctx):

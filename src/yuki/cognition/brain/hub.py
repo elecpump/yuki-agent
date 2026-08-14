@@ -1,6 +1,6 @@
 import time
 
-from yuki.cognition.brain.actions import ACTION_EXECUTORS, Action, ActionContext
+from yuki.cognition.brain.actions import ACTION_EXECUTORS, ActionContext
 from yuki.cognition.brain.classifier import (
     Emotion,
     Intent,
@@ -14,8 +14,9 @@ from yuki.topics import Topics
 
 
 class DecisionTrace:
-    def __init__(self, *, trigger, intent, emotion, actions, rendered, reason, cooldown_state) -> None:
+    def __init__(self, *, trigger, ts, intent, emotion, actions, rendered, reason, cooldown_state) -> None:
         self.trigger = trigger
+        self.ts = ts
         self.intent = intent
         self.emotion = emotion
         self.actions = actions
@@ -26,6 +27,7 @@ class DecisionTrace:
     def to_dict(self) -> dict:
         return {
             "trigger": self.trigger,
+            "ts": self.ts,
             "intent": self.intent,
             "emotion": self.emotion,
             "actions": [a.name for a in self.actions],
@@ -79,7 +81,7 @@ class DecisionHub:
             self._last_open_ts = time.time()
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
         self._trace_logger.info("decision", **DecisionTrace(
-            trigger=trigger.value, intent=intent.value, emotion=emotion.value,
+            trigger=trigger.value, ts=time.time(), intent=intent.value, emotion=emotion.value,
             actions=actions, rendered=rendered, reason=reason,
             cooldown_state={"last_open_ts": self._last_open_ts},
         ).to_dict())
