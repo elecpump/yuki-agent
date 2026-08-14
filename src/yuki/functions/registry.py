@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -74,6 +75,58 @@ class FunctionRegistry:
             raise
         except Exception as exc:
             raise ToolExecutionError(f"{name} failed: {exc}") from exc
+
+    def dispatch(self, tool_call: dict) -> dict:
+        name = tool_call.get("name")
+        tool = self._tools.get(name) if isinstance(name, str) else None
+        if tool is None:
+            return {"ok": False, "error": {"code": "tool_not_found", "message": f"unknown tool: {name!r}"}}
+        try:
+            args = self._parse_arguments(tool_call.get("arguments"))
+        except ArgumentValidationError as exc:
+            return {"ok": False, "error": {"code": "invalid_arguments", "message": str(exc)}}
+        try:
+            validated = self._validate(tool, args)
+        except ArgumentValidationError as exc:
+            return {"ok": False, "error": {"code": "invalid_arguments", "message": str(exc)}}
+        try:
+            result = tool.handler(validated)
+        except Exception as exc:
+            return {"ok": False, "error": {"code": "handler_error", "message": str(exc)}}
+        return {"ok": True, "result": result}
+
+    def tool_schemas(self) -> list[dict]:
+        schemas = []
+        for name in self.names():
+            tool = self._tools[name]
+            if tool.params is None:
+                parameters: dict = {"type": "object", "properties": {}}
+            else:
+                parameters = tool.params.model_json_schema()
+            schemas.append({
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": parameters,
+                },
+            })
+        return schemas
+
+    def _parse_arguments(self, raw) -> dict:
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return {}
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ArgumentValidationError(f"arguments not valid JSON: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise ArgumentValidationError("arguments must be a JSON object")
+            return parsed
+        raise ArgumentValidationError("arguments must be a string or object")
 
     def _validate(self, tool: FunctionTool, args: dict | None) -> BaseModel | None:
         if tool.params is None:
