@@ -35,6 +35,11 @@ class MemoryConfig(BaseModel):
     short_term_capacity: int = Field(50, ge=1)
 
 
+class BrainConfig(BaseModel):
+    proactive_cooldown_s: float = Field(120.0, ge=0.0)
+    proactive_enabled: bool = True
+
+
 class Config(BaseModel):
     persona_name: str = "yuki"
     bus: BusConfig = Field(default_factory=BusConfig)
@@ -42,6 +47,7 @@ class Config(BaseModel):
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    brain: BrainConfig = Field(default_factory=BrainConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -61,6 +67,7 @@ class Config(BaseModel):
             ("supervisor", SupervisorConfig),
             ("health", HealthConfig),
             ("memory", MemoryConfig),
+            ("brain", BrainConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:

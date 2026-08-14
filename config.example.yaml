@@ -20,3 +20,6 @@ memory:
   decay_threshold: 0.02
   short_term_ttl_s: 1800
   short_term_capacity: 50
+brain:
+  proactive_cooldown_s: 120.0
+  proactive_enabled: true

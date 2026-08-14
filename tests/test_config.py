@@ -72,3 +72,17 @@ def test_memory_env_override(monkeypatch):
     config = Config.load(None)
     assert config.memory.db_path == "tmp/mem.db"
     assert config.memory.decay_lambda == 0.3
+
+
+def test_brain_defaults():
+    config = Config()
+    assert config.brain.proactive_cooldown_s == 120.0
+    assert config.brain.proactive_enabled is True
+
+
+def test_brain_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_BRAIN_PROACTIVE_COOLDOWN_S", "60.0")
+    monkeypatch.setenv("YUKI_BRAIN_PROACTIVE_ENABLED", "false")
+    config = Config.load(None)
+    assert config.brain.proactive_cooldown_s == 60.0
+    assert config.brain.proactive_enabled is False
