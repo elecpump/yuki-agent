@@ -13,3 +13,10 @@ supervisor:
 health:
   timeout_ms: 2000
   heartbeat_interval_s: 5.0
+memory:
+  db_path: data/yuki.db
+  decay_base: 1.0
+  decay_lambda: 0.1
+  decay_threshold: 0.02
+  short_term_ttl_s: 1800
+  short_term_capacity: 50

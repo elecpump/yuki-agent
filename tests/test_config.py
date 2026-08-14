@@ -54,3 +54,21 @@ def test_load_autodiscovers_config_yaml_in_cwd(tmp_path, monkeypatch):
     config = Config.load(None)
     assert config.bus.base_port == 8000
     assert config.bus.hwm == 300
+
+
+def test_memory_defaults():
+    config = Config()
+    assert config.memory.db_path == "data/yuki.db"
+    assert config.memory.decay_base == 1.0
+    assert config.memory.decay_lambda == 0.1
+    assert config.memory.decay_threshold == 0.02
+    assert config.memory.short_term_ttl_s == 1800
+    assert config.memory.short_term_capacity == 50
+
+
+def test_memory_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_MEMORY_DB_PATH", "tmp/mem.db")
+    monkeypatch.setenv("YUKI_MEMORY_DECAY_LAMBDA", "0.3")
+    config = Config.load(None)
+    assert config.memory.db_path == "tmp/mem.db"
+    assert config.memory.decay_lambda == 0.3
