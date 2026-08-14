@@ -1,5 +1,7 @@
+import pytest
+
 from yuki.functions.memory_tools import register_memory_functions
-from yuki.functions.registry import FunctionRegistry
+from yuki.functions.registry import ArgumentValidationError, FunctionRegistry
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
 
@@ -14,13 +16,33 @@ def test_registers_four_functions(tmp_path):
 def test_query_filters_high_sensitivity(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     manager.write("preference", "普通记忆内容", sensitivity=0)
-    manager.write("personal", "高敏机密", sensitivity=2)
+    manager.write("personal", "高敏记忆内容", sensitivity=2)
     registry = FunctionRegistry()
     register_memory_functions(registry, manager)
     results = registry.call("memory.query", {"text": "记忆"})
     contents = [r["content"] for r in results]
     assert "普通记忆内容" in contents
-    assert "高敏机密" not in contents
+    assert "高敏记忆内容" not in contents
+
+
+def test_list_filters_high_sensitivity(tmp_path):
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    manager.write("preference", "普通记忆内容", sensitivity=0)
+    manager.write("personal", "高敏记忆内容", sensitivity=2)
+    registry = FunctionRegistry()
+    register_memory_functions(registry, manager)
+    results = registry.call("memory.list", {})
+    contents = [r["content"] for r in results]
+    assert "普通记忆内容" in contents
+    assert "高敏记忆内容" not in contents
+
+
+def test_write_rejects_invalid_memory_type(tmp_path):
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    registry = FunctionRegistry()
+    register_memory_functions(registry, manager)
+    with pytest.raises(ArgumentValidationError):
+        registry.call("memory.write", {"memory_type": "bogus", "content": "x"})
 
 
 def test_write_and_get_roundtrip(tmp_path):
