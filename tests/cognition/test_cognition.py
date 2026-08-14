@@ -80,3 +80,21 @@ def test_cognition_agent_health_includes_brain(tmp_path):
         assert components["brain"]().ok is True
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_registers_memory_functions_and_l2_health(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        assert "memory.query" in agent._registry.names()
+        components = agent.health_components()
+        assert "l2" in components
+        assert components["l2"]().ok is True  # 未启用视为正常
+    finally:
+        agent.teardown()
