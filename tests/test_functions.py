@@ -57,6 +57,15 @@ def test_call_handler_error_wraps(registry):
         registry.call("boom")
 
 
+def test_handler_raising_function_error_propagates_unwrapped(registry):
+    def inner(p):
+        raise ArgumentValidationError("inner error")
+
+    registry.tool("badargs", description="raises a FunctionError", params=None)(inner)
+    with pytest.raises(ArgumentValidationError, match="inner error"):
+        registry.call("badargs")
+
+
 def test_register_duplicate_raises(registry):
     with pytest.raises(RegistryError):
         registry.tool("echo", description="dup", params=EchoParams)(lambda p: "")

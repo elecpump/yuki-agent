@@ -77,6 +77,21 @@ def test_dispatch_schema_violation():
     assert result["error"]["code"] == "invalid_arguments"
 
 
+def test_dispatch_required_field_missing_from_blank_arguments():
+    r = make_registry()
+    result = r.dispatch({"name": "echo"})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_arguments"
+    assert r.dispatch({"name": "echo", "arguments": ""})["error"]["code"] == "invalid_arguments"
+
+
+def test_dispatch_non_string_arguments():
+    r = make_registry()
+    result = r.dispatch({"name": "echo", "arguments": 123})
+    assert result["ok"] is False
+    assert result["error"]["code"] == "invalid_arguments"
+
+
 def test_dispatch_handler_error():
     r = make_registry()
     result = r.dispatch({"name": "boom", "arguments": "{}"})
