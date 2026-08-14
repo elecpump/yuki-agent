@@ -65,3 +65,55 @@ class HealthResult(TypedDict):
     error_count: int
     healthy: bool
     components: dict[str, dict]
+
+
+class MemoryWritePayload(TypedDict):
+    memory_type: str
+    content: str
+    confidence: NotRequired[float]
+    sensitivity: NotRequired[int]
+    source: NotRequired[str]
+    metadata: NotRequired[dict]
+
+
+class MemoryQueryPayload(TypedDict):
+    text: str
+    type: NotRequired[str]
+    top_k: NotRequired[int]
+    min_sensitivity: NotRequired[int]
+
+
+class MemoryListPayload(TypedDict):
+    type: NotRequired[str]
+    min_sensitivity: NotRequired[int]
+
+
+class MemoryGetPayload(TypedDict):
+    id: int
+
+
+class MemoryDeletePayload(TypedDict):
+    id: int
+
+
+class MemoryStrengthenPayload(TypedDict):
+    id: int
+
+
+class MemoryResult(TypedDict):
+    id: int
+    memory_type: str
+    content: str
+    confidence: float
+    sensitivity: int
+    source: str
+    metadata: dict
+    created_at: float
+    last_access: float
+    access_count: int
+    strengthened: bool
+    score: NotRequired[float]
+
+
+class MemoryWriteResult(TypedDict):
+    id: int

@@ -26,12 +26,22 @@ class HealthConfig(BaseModel):
     heartbeat_interval_s: float = 5.0
 
 
+class MemoryConfig(BaseModel):
+    db_path: str = "data/yuki.db"
+    decay_base: float = Field(1.0, ge=0.0)
+    decay_lambda: float = Field(0.1, ge=0.0)
+    decay_threshold: float = Field(0.02, ge=0.0)
+    short_term_ttl_s: float = Field(1800, ge=1)
+    short_term_capacity: int = Field(50, ge=1)
+
+
 class Config(BaseModel):
     persona_name: str = "yuki"
     bus: BusConfig = Field(default_factory=BusConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -50,6 +60,7 @@ class Config(BaseModel):
             ("logging", LoggingConfig),
             ("supervisor", SupervisorConfig),
             ("health", HealthConfig),
+            ("memory", MemoryConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:
