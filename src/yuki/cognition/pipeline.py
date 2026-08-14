@@ -37,7 +37,7 @@ class PerceptionPipeline:
     """纯感知管线：产出结构化理解事件，不产生任何回复。
 
     发布 event/perception/situation_update 与 event/perception/user_utterance，
-    当前由 L1Responder 作为 context 消费，不触发自动回复；未来 Brain 阶段接入主动评论。
+    由 Brain（DecisionHub）作为 context 消费并决策是否主动评论。
     """
 
     def __init__(

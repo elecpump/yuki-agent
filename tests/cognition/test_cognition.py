@@ -24,7 +24,6 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
         Config(),
         bus=bus,
         pipeline=FakePipeline(),
-        l1=FakeL1(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
     )
     agent.setup()
@@ -63,3 +62,21 @@ def test_cognition_agent_memory_health_unhealthy_after_teardown(tmp_path):
     agent.teardown()
     status = agent.health_components()["memory"]()
     assert status.ok is False
+
+
+def test_cognition_agent_health_includes_brain(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(),
+        bus=bus,
+        pipeline=FakePipeline(),
+        l1=FakeL1(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()  # hub 在 setup 中构建，必须先 setup 再查健康
+    try:
+        components = agent.health_components()
+        assert "brain" in components
+        assert components["brain"]().ok is True
+    finally:
+        agent.teardown()
