@@ -30,6 +30,18 @@ def test_load_corrupt_json_returns_none(tmp_path):
     assert SoulStore(path, "yuki").load() is None
 
 
+def test_load_non_dict_root_returns_none(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text("[1,2]", encoding="utf-8")
+    assert SoulStore(path, "yuki").load() is None
+
+
+def test_load_non_dict_params_returns_none(tmp_path):
+    path = tmp_path / "s.json"
+    path.write_text('{"persona_name": "yuki", "persona_version": 1, "params": "x"}', encoding="utf-8")
+    assert SoulStore(path, "yuki", persona_version=1).load() is None
+
+
 def test_save_creates_parent_dirs(tmp_path):
     store = SoulStore(tmp_path / "nested" / "dir" / "soul.json", "yuki")
     store.save({"a": 1})

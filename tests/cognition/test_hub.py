@@ -172,10 +172,6 @@ class FakeTuner:
     def __init__(self):
         self.opens = 0
         self.utterances = []
-        self.loaded = 0
-
-    def load_soul(self):
-        self.loaded += 1
 
     def on_proactive_open(self):
         self.opens += 1
@@ -191,6 +187,14 @@ def test_hub_notifies_tuner_on_proactive_open(hub, monkeypatch):
     monkeypatch.setattr("time.time", lambda: 0.0)
     h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
     assert tuner.opens == 1
+
+
+def test_hub_does_not_notify_tuner_on_silent_situation(hub):
+    h, bus, _ = hub
+    tuner = FakeTuner()
+    h._tuner = tuner
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "x", "sensitive": True, "ts": 0.0})
+    assert tuner.opens == 0
 
 
 def test_hub_feeds_utterance_to_tuner(hub):

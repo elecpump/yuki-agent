@@ -113,5 +113,6 @@ def test_cognition_agent_builds_tuner(tmp_path):
     agent.setup()
     try:
         assert agent._hub._tuner is not None
+        assert agent._hub._policy is agent._hub._tuner._policy
     finally:
         agent.teardown()

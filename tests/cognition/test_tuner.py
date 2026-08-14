@@ -13,7 +13,6 @@ def make(policy=None, soul=None, tmp_path=None, **kwargs):
 
 
 def test_initial_cooldown_from_policy(tmp_path):
-    policy = DecisionPolicy(120.0)
     tuner = make(tmp_path=tmp_path)
     assert tuner.cooldown_s == 120.0
 

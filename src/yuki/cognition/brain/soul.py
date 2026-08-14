@@ -37,7 +37,6 @@ class SoulStore:
         return params
 
     def save(self, params: dict) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "persona_name": self._persona_name,
             "persona_version": self._persona_version,
@@ -45,6 +44,7 @@ class SoulStore:
             "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         }
         try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
             self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError as exc:
             logger.warning("soul write failed", error=str(exc))

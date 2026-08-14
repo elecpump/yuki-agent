@@ -33,7 +33,7 @@ class FeedbackTuner:
     def load_soul(self) -> None:
         params = self._soul.load()
         if params and isinstance(params.get(COOLDOWN_KEY), (int, float)):
-            self._cooldown = float(params[COOLDOWN_KEY])
+            self._cooldown = min(max(float(params[COOLDOWN_KEY]), self._min_s), self._max_s)
             self._policy.set_cooldown_s(self._cooldown)
 
     def on_proactive_open(self) -> None:
