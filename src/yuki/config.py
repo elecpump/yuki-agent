@@ -40,6 +40,15 @@ class BrainConfig(BaseModel):
     proactive_enabled: bool = True
 
 
+class CloudConfig(BaseModel):
+    enabled: bool = False
+    base_url: str = "https://api.openai.com/v1"
+    model: str = "gpt-4o-mini"
+    api_key_env: str = "YUKI_CLOUD_API_KEY"
+    timeout_s: float = Field(10.0, ge=0.1)
+    max_turns: int = Field(3, ge=1)
+
+
 class Config(BaseModel):
     persona_name: str = "yuki"
     bus: BusConfig = Field(default_factory=BusConfig)
@@ -48,6 +57,7 @@ class Config(BaseModel):
     health: HealthConfig = Field(default_factory=HealthConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
+    cloud: CloudConfig = Field(default_factory=CloudConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -68,6 +78,7 @@ class Config(BaseModel):
             ("health", HealthConfig),
             ("memory", MemoryConfig),
             ("brain", BrainConfig),
+            ("cloud", CloudConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:

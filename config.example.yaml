@@ -23,3 +23,10 @@ memory:
 brain:
   proactive_cooldown_s: 120.0
   proactive_enabled: true
+cloud:
+  enabled: false
+  base_url: https://api.openai.com/v1
+  model: gpt-4o-mini
+  api_key_env: YUKI_CLOUD_API_KEY
+  timeout_s: 10.0
+  max_turns: 3

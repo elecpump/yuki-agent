@@ -86,3 +86,23 @@ def test_brain_env_override(monkeypatch):
     config = Config.load(None)
     assert config.brain.proactive_cooldown_s == 60.0
     assert config.brain.proactive_enabled is False
+
+
+def test_cloud_defaults():
+    config = Config()
+    assert config.cloud.enabled is False
+    assert config.cloud.base_url == "https://api.openai.com/v1"
+    assert config.cloud.model == "gpt-4o-mini"
+    assert config.cloud.api_key_env == "YUKI_CLOUD_API_KEY"
+    assert config.cloud.timeout_s == 10.0
+    assert config.cloud.max_turns == 3
+
+
+def test_cloud_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_CLOUD_ENABLED", "true")
+    monkeypatch.setenv("YUKI_CLOUD_MODEL", "gpt-5")
+    monkeypatch.setenv("YUKI_CLOUD_TIMEOUT_S", "20.0")
+    config = Config.load(None)
+    assert config.cloud.enabled is True
+    assert config.cloud.model == "gpt-5"
+    assert config.cloud.timeout_s == 20.0
