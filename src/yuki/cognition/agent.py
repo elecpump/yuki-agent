@@ -116,8 +116,13 @@ class CognitionAgent(ProcessAgent):
 
     def _health_l2(self) -> HealthStatus:
         enabled = self.config.cloud.enabled
-        ok = (not enabled) or self._bridge is not None
-        return HealthStatus(ok, {"enabled": enabled, "installed": self._bridge is not None})
+        configured = bool(self.config.cloud.base_url and self.config.cloud.model)
+        ok = (not enabled) or (self._bridge is not None and configured)
+        return HealthStatus(ok, {
+            "enabled": enabled,
+            "installed": self._bridge is not None,
+            "configured": configured,
+        })
 
     def _health_pipeline(self) -> HealthStatus:
         frame_client = getattr(self._pipeline, "_frame_client", None) if self._pipeline else None

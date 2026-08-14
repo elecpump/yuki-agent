@@ -93,8 +93,10 @@ def test_cognition_agent_registers_memory_functions_and_l2_health(tmp_path):
     agent.setup()
     try:
         assert "memory.query" in agent._registry.names()
+        assert agent._bridge is None  # cloud 默认未启用
         components = agent.health_components()
         assert "l2" in components
         assert components["l2"]().ok is True  # 未启用视为正常
+        assert components["l2"]().detail["installed"] is False
     finally:
         agent.teardown()

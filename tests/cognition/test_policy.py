@@ -79,7 +79,7 @@ def test_policy_table_injectable():
     assert [a.name for a in policy.decide(TriggerKind.UTTERANCE, Intent.GAME, Emotion.NEUTRAL, text="猜数字")] == ["invite_game"]
 
 
-from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
+from yuki.cognition.brain.policy import Tier
 
 
 def test_tier_for_mapping():

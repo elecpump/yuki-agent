@@ -1,5 +1,6 @@
 import pytest
 
+from yuki.cognition.brain.actions import DEFAULT_JOKES
 from yuki.cognition.brain.hub import DecisionHub, build_brain
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.l2.client import CloudError
@@ -133,7 +134,16 @@ def test_l2_failure_falls_back_to_l1(hub):
     h, bus, _ = hub
     h._bridge = FakeBridge(error=CloudError("boom"))
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
-    assert _reply_text(bus)  # L1 动作链兜底，有回复
+    assert _reply_text(bus) == DEFAULT_JOKES[0]  # L1 动作链兜底
+
+
+def test_l2_empty_reply_falls_back_to_l1(hub):
+    h, bus, _ = hub
+    bridge = FakeBridge(reply="   ")
+    h._bridge = bridge
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    assert _reply_text(bus)  # 空回复 → L1 兜底
+    assert bridge.calls == ["讲个笑话"]
 
 
 def test_l2_intent_without_bridge_uses_l1(hub):

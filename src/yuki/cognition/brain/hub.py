@@ -9,7 +9,6 @@ from yuki.cognition.brain.classifier import (
 )
 from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
 from yuki.cognition.l1 import L1Engine
-from yuki.cognition.l2.client import CloudError
 from yuki.logger import get_decision_logger
 from yuki.topics import Topics
 
@@ -79,6 +78,7 @@ class DecisionHub:
             intent = self._intent_clf.classify(text)
             emotion = self._emotion_clf.classify(text)
             tier = self._policy.tier_for(intent)
+        actions: list = []
         rendered, spoke, reason = "", False, "silent"
         if tier == Tier.L2 and self._bridge is not None:
             rendered, spoke = self._try_l2(text, situation or self._context)
@@ -96,14 +96,14 @@ class DecisionHub:
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
         self._trace_logger.info("decision", **DecisionTrace(
             ts=time.time(), trigger=trigger.value, intent=intent.value, emotion=emotion.value,
-            actions=[], rendered=rendered, reason=reason, tier=tier.value,
+            actions=actions, rendered=rendered, reason=reason, tier=tier.value,
             cooldown_state={"last_open_ts": self._last_open_ts},
         ).to_dict())
 
     def _try_l2(self, text: str, situation: dict | None):
         try:
             reply = self._bridge.generate(text, situation, self._memory)
-        except CloudError:
+        except Exception:
             return "", False
         reply = (reply or "").strip()
         if not reply:

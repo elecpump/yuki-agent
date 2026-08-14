@@ -36,12 +36,12 @@ class CloudBridge:
         situation: dict | None = None,
         memory: MemoryManager | None = None,
     ) -> str:
-        messages = [
-            {"role": "system", "content": self._system},
-            {"role": "user", "content": build_cloud_context(utterance, situation, memory)},
-        ]
-        tools = self._registry.tool_schemas() if self._registry else None
         try:
+            messages = [
+                {"role": "system", "content": self._system},
+                {"role": "user", "content": build_cloud_context(utterance, situation, memory)},
+            ]
+            tools = self._registry.tool_schemas() if self._registry else None
             for _ in range(self._max_turns):
                 response = self._client.chat(messages, tools=tools)
                 message = response["choices"][0]["message"]
