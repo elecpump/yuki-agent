@@ -65,8 +65,8 @@ strengthened  INTEGER 0/1 手动强化标记
 
 ### 3.3 FTS5
 
-- 虚拟表 `memories_fts`，**trigram tokenizer**（SQLite ≥3.34，支持中文子串匹配；Python 3.11 内置 SQLite 满足）。
-- 触发器同步 `memories.content` 的插入/更新/删除。
+- 虚拟表 `memories_fts`，**trigram tokenizer**（SQLite ≥3.34，支持中文子串匹配；本机验证 SQLite 3.53.1 可用），外部内容表（`content='memories'`），触发器同步 `memories.content` 的插入/更新/删除。
+- **<3 字符查询兜底（已验证必须）**：trigram 不支持少于 3 字符的子串查询，会漏掉双字中文词（"计算""股票"）与英文短词。因此 `search` 对**最短分词 < 3 字符**的查询走 `content LIKE '%'||?||'%'` 兜底（本地小型库量级下性能可接受），≥3 字符走 FTS + bm25。两种路径均带 `memory_type`/`sensitivity` 过滤。
 
 ## 4. 检索与衰减
 
@@ -84,6 +84,9 @@ decay_weight = 1.0 if strengthened else base * exp(-λ * days_since_last_access)
 ```
 score = FTS rank（归一化） × decay_weight
 ```
+
+- FTS 路径：`rank = 1/(1+|bm25|)`；LIKE 兜底路径 `rank = 1.0`（仅按衰减与 recency 排序）。
+- `query` 命中即 `touch`（更新 `last_access`/`access_count`），实现"首次被访问后切换为真实访问时间"。
 
 - 按 `min_sensitivity` 过滤（默认 0）。
 - 返回 `top_k` 条。
