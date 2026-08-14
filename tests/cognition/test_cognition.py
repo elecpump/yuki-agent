@@ -100,3 +100,18 @@ def test_cognition_agent_registers_memory_functions_and_l2_health(tmp_path):
         assert components["l2"]().detail["installed"] is False
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_builds_tuner(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        assert agent._hub._tuner is not None
+    finally:
+        agent.teardown()

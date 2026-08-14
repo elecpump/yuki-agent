@@ -45,7 +45,7 @@ class DecisionHub:
 
     def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
                  memory=None, registry=None, l1=None, executors=None, trace_logger=None,
-                 bridge=None) -> None:
+                 bridge=None, tuner=None) -> None:
         self._bus = bus
         self._intent_clf = intent_clf or RuleIntentClassifier()
         self._emotion_clf = emotion_clf or RuleEmotionClassifier()
@@ -56,6 +56,7 @@ class DecisionHub:
         self._executors = executors if executors is not None else ACTION_EXECUTORS
         self._trace_logger = trace_logger or get_decision_logger()
         self._bridge = bridge
+        self._tuner = tuner
         self._context = None
         self._last_open_ts = None
 
@@ -94,6 +95,11 @@ class DecisionHub:
         if spoke:
             self._last_open_ts = time.time()
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
+        if self._tuner is not None:
+            if trigger == TriggerKind.SITUATION and spoke:
+                self._tuner.on_proactive_open()
+            if trigger == TriggerKind.UTTERANCE:
+                self._tuner.on_user_utterance(text)
         self._trace_logger.info("decision", **DecisionTrace(
             ts=time.time(), trigger=trigger.value, intent=intent.value, emotion=emotion.value,
             actions=actions, rendered=rendered, reason=reason, tier=tier.value,
@@ -125,7 +131,8 @@ class DecisionHub:
 
 
 def build_brain(bus, *, memory=None, registry=None, config=None,
-                intent_clf=None, emotion_clf=None, policy=None, bridge=None) -> DecisionHub:
+                intent_clf=None, emotion_clf=None, policy=None, bridge=None,
+                tuner=None) -> DecisionHub:
     from yuki.config import Config
     cfg = config or Config.from_env()
     hub = DecisionHub(
@@ -139,6 +146,7 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         memory=memory,
         registry=registry,
         bridge=bridge,
+        tuner=tuner,
     )
     bus.subscribe(Topics.AWAKE, hub.on_awake)
     bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance)

@@ -166,3 +166,36 @@ def test_decision_trace_includes_tier(hub):
     h._trace_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
     assert records[0]["tier"] == "l2"
+
+
+class FakeTuner:
+    def __init__(self):
+        self.opens = 0
+        self.utterances = []
+        self.loaded = 0
+
+    def load_soul(self):
+        self.loaded += 1
+
+    def on_proactive_open(self):
+        self.opens += 1
+
+    def on_user_utterance(self, text):
+        self.utterances.append(text)
+
+
+def test_hub_notifies_tuner_on_proactive_open(hub, monkeypatch):
+    h, bus, _ = hub
+    tuner = FakeTuner()
+    h._tuner = tuner
+    monkeypatch.setattr("time.time", lambda: 0.0)
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
+    assert tuner.opens == 1
+
+
+def test_hub_feeds_utterance_to_tuner(hub):
+    h, bus, _ = hub
+    tuner = FakeTuner()
+    h._tuner = tuner
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
+    assert tuner.utterances == ["你好"]

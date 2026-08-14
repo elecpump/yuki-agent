@@ -3,6 +3,9 @@ import os
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.brain.hub import build_brain
+from yuki.cognition.brain.policy import DecisionPolicy
+from yuki.cognition.brain.soul import SoulStore
+from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.l1 import L1Engine
 from yuki.cognition.pipeline import build_pipeline
 from yuki.cognition.stt import SpeechRecognizer
@@ -77,13 +80,22 @@ class CognitionAgent(ProcessAgent):
                 max_turns=self.config.cloud.max_turns,
                 persona_name=self.config.persona_name,
             )
+        policy = DecisionPolicy(
+            proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
+            proactive_enabled=self.config.brain.proactive_enabled,
+        )
+        soul = SoulStore(self.config.soul.path, self.config.persona_name)
+        tuner = FeedbackTuner(policy, soul)
+        tuner.load_soul()
         self._bridge = bridge
         self._hub = build_brain(
             self.bus,
             memory=self._memory,
             registry=self._registry,
             config=self.config,
+            policy=policy,
             bridge=bridge,
+            tuner=tuner,
         )
 
     def teardown(self) -> None:
