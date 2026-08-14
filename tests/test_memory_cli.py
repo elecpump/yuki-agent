@@ -39,6 +39,16 @@ def test_delete_and_strengthen(db):
     assert main(["--db", db, "delete", "1"]) == 0
 
 
+def test_delete_missing_returns_error_code(db, capsys):
+    assert main(["--db", db, "delete", "999"]) == 1
+    assert "memory #999 not found" in capsys.readouterr().err
+
+
+def test_strengthen_missing_returns_error_code(db, capsys):
+    assert main(["--db", db, "strengthen", "999"]) == 1
+    assert "memory #999 not found" in capsys.readouterr().err
+
+
 def test_wipe_requires_confirmation(db, monkeypatch, capsys):
     main(["--db", db, "add", "--type", "preference", "--content", "x"])
     monkeypatch.setattr("sys.stdin", io.StringIO("no\n"))

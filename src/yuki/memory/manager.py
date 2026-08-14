@@ -50,13 +50,17 @@ class MemoryManager:
         decay_base: float = 1.0,
         decay_lambda: float = 0.1,
         decay_threshold: float = 0.02,
+        short_term_ttl_s: float = 1800,
+        short_term_capacity: int = 50,
         short_term: ShortTermMemory | None = None,
     ) -> None:
         self._store = store
         self._base = decay_base
         self._lam = decay_lambda
         self._threshold = decay_threshold
-        self._short_term = short_term or ShortTermMemory()
+        self._short_term = short_term or ShortTermMemory(
+            ttl_s=short_term_ttl_s, capacity=short_term_capacity,
+        )
 
     def write(
         self,

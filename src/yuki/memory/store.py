@@ -90,7 +90,10 @@ class MemoryStore:
 
     def _row(self, row) -> dict:
         d = dict(row)
-        d["metadata"] = json.loads(d.get("metadata") or "{}")
+        try:
+            d["metadata"] = json.loads(d.get("metadata") or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise MemoryError(f"corrupt metadata for memory id={d.get('id')}") from exc
         d["strengthened"] = bool(d["strengthened"])
         return d
 
@@ -106,6 +109,10 @@ class MemoryStore:
     ) -> int:
         if memory_type not in MEMORY_TYPES:
             raise MemoryError(f"unknown memory_type: {memory_type!r}")
+        if sensitivity not in (0, 1, 2):
+            raise MemoryError(f"sensitivity must be 0, 1 or 2, got {sensitivity!r}")
+        if not (0.0 <= confidence <= 1.0):
+            raise MemoryError(f"confidence must be in [0, 1], got {confidence!r}")
         now = time.time()
         meta = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
@@ -190,11 +197,12 @@ class MemoryStore:
             with self._lock:
                 rows = self._conn.execute(sql, params).fetchall()
             return [(self._row(r), 1.0 / (1.0 + abs(r["bm25"]))) for r in rows]
+        escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         sql = (
             "SELECT * FROM memories "
-            "WHERE content LIKE '%' || ? || '%' AND sensitivity >= ?"
+            "WHERE content LIKE '%' || ? || '%' ESCAPE '\\' AND sensitivity >= ?"
         )
-        params = [text, min_sens]
+        params = [escaped, min_sens]
         if memory_type is not None:
             sql += " AND memory_type = ?"
             params.append(memory_type)

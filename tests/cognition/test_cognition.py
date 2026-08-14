@@ -48,3 +48,18 @@ def test_cognition_agent_health_includes_memory(tmp_path):
     assert "memory" in components
     status = components["memory"]()
     assert status.ok is True
+
+
+def test_cognition_agent_memory_health_unhealthy_after_teardown(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(),
+        bus=bus,
+        pipeline=FakePipeline(),
+        l1=FakeL1(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    agent.teardown()
+    status = agent.health_components()["memory"]()
+    assert status.ok is False

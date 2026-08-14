@@ -59,12 +59,20 @@ def _cmd_get(args, manager: MemoryManager) -> int:
     return 0
 
 
-def _cmd_delete(args, manager: MemoryManager) -> None:
-    print(manager.delete(args.id))
+def _cmd_delete(args, manager: MemoryManager) -> int:
+    if manager.delete(args.id):
+        print(args.id)
+        return 0
+    print(f"memory #{args.id} not found", file=sys.stderr)
+    return 1
 
 
-def _cmd_strengthen(args, manager: MemoryManager) -> None:
-    print(manager.strengthen(args.id))
+def _cmd_strengthen(args, manager: MemoryManager) -> int:
+    if manager.strengthen(args.id):
+        print(args.id)
+        return 0
+    print(f"memory #{args.id} not found", file=sys.stderr)
+    return 1
 
 
 def _cmd_wipe(args, manager: MemoryManager) -> int:
@@ -110,7 +118,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--confidence", type=float, default=0.5)
     p.add_argument("--sensitivity", type=int, default=0)
     p.add_argument("--source", default="cli")
-    p.add_argument("--metadata", action="append")
+    p.add_argument("--metadata", action="append",
+                   help="repeatable KEY=VALUE (one per flag, e.g. --metadata topic=a --metadata kind=b)")
     p.set_defaults(func=_cmd_add)
 
     p = sub.add_parser("get")

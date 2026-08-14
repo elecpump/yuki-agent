@@ -87,3 +87,26 @@ def test_short_term_capacity_evicts_oldest():
 def test_reflector_generate_not_implemented():
     with pytest.raises(NotImplementedError):
         Reflector().generate([1, 2])
+
+
+def test_manager_short_term_capacity_param_honored(tmp_path):
+    m = MemoryManager(
+        MemoryStore(tmp_path / "mem.db"),
+        short_term_capacity=2,
+    )
+    m.short_term_add("a")
+    m.short_term_add("b")
+    m.short_term_add("c")
+    assert len(m.short_term_items()) == 2
+    m.close()
+
+
+def test_manager_short_term_ttl_param_honored(tmp_path):
+    m = MemoryManager(
+        MemoryStore(tmp_path / "mem.db"),
+        short_term_ttl_s=-1,
+        short_term_capacity=10,
+    )
+    m.short_term_add("a")
+    assert m.short_term_items() == []
+    m.close()

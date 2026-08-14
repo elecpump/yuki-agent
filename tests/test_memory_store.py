@@ -109,3 +109,87 @@ def test_ping_true_for_valid_db(tmp_path):
     s = MemoryStore(tmp_path / "m.db")
     assert s.ping() is True
     s.close()
+
+
+def test_fts_sync_delete_then_search(store):
+    a = store.create("preference", "quantum computing rocks")
+    b = store.create("preference", "quantum entanglement theory")
+    assert len(store.search("quantum")) == 2
+    store.delete(a)
+    hits = store.search("quantum")
+    assert [h[0]["id"] for h in hits] == [b]
+
+
+def test_fts_sync_wipe_then_search(store):
+    store.create("preference", "quantum computing rocks")
+    assert store.search("quantum") != []
+    store.wipe()
+    assert store.search("quantum") == []
+
+
+def test_fts_sync_update_then_search(store):
+    mem_id = store.create("preference", "quantum computing rocks")
+    store._conn.execute(
+        "UPDATE memories SET content = ? WHERE id = ?",
+        ("classical physics theory", mem_id),
+    )
+    store._conn.commit()
+    assert store.search("quantum") == []
+    hits = store.search("classical")
+    assert len(hits) == 1
+    assert hits[0][0]["content"] == "classical physics theory"
+
+
+def test_search_fts_filters_and_limits(store):
+    for i in range(6):
+        store.create("preference", f"quantum topic number {i}", sensitivity=0)
+    store.create("scenario", "quantum sensitive topic", sensitivity=2)
+    hits = store.search("quantum", top_k=3)
+    assert len(hits) == 3
+    assert all(rank < 1.0 for _, rank in hits)
+    assert all(m["memory_type"] == "preference" for m, _ in hits)
+    typed = store.search("quantum", memory_type="scenario")
+    assert len(typed) == 1
+    assert typed[0][0]["sensitivity"] == 2
+    low = store.search("quantum", min_sensitivity=2)
+    assert len(low) == 1
+    assert low[0][0]["sensitivity"] == 2
+    assert low[0][1] < 1.0
+
+
+def test_search_like_fallback_escapes_wildcards(store):
+    store.create("preference", "50% off sale")
+    store.create("preference", "plain_text notes")
+    hits = store.search("%")
+    assert [h[0]["content"] for h in hits] == ["50% off sale"]
+    hits = store.search("_")
+    assert [h[0]["content"] for h in hits] == ["plain_text notes"]
+    assert store.search("50%x") == []
+
+
+def test_corrupt_metadata_raises_memory_error(store):
+    mem_id = store.create("preference", "a")
+    store._conn.execute(
+        "UPDATE memories SET metadata = ? WHERE id = ?", ("{not json", mem_id),
+    )
+    store._conn.commit()
+    with pytest.raises(MemoryError):
+        store.list()
+    with pytest.raises(MemoryError):
+        store.all()
+    with pytest.raises(MemoryError):
+        store.search("a")
+
+
+def test_create_rejects_out_of_range_sensitivity(store):
+    with pytest.raises(MemoryError):
+        store.create("preference", "x", sensitivity=3)
+    with pytest.raises(MemoryError):
+        store.create("preference", "x", sensitivity=-1)
+
+
+def test_create_rejects_out_of_range_confidence(store):
+    with pytest.raises(MemoryError):
+        store.create("preference", "x", confidence=1.5)
+    with pytest.raises(MemoryError):
+        store.create("preference", "x", confidence=-0.1)
