@@ -7,41 +7,46 @@ from yuki.cognition.brain.classifier import (
     RuleEmotionClassifier,
     RuleIntentClassifier,
 )
-from yuki.cognition.brain.policy import DecisionPolicy, TriggerKind
+from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
 from yuki.cognition.l1 import L1Engine
+from yuki.cognition.l2.client import CloudError
 from yuki.logger import get_decision_logger
 from yuki.topics import Topics
 
 
 class DecisionTrace:
-    def __init__(self, *, trigger, ts, intent, emotion, actions, rendered, reason, cooldown_state) -> None:
-        self.trigger = trigger
+    def __init__(self, *, ts, trigger, intent, emotion, actions, rendered, reason,
+                 tier, cooldown_state) -> None:
         self.ts = ts
+        self.trigger = trigger
         self.intent = intent
         self.emotion = emotion
         self.actions = actions
         self.rendered = rendered
         self.reason = reason
+        self.tier = tier
         self.cooldown_state = cooldown_state
 
     def to_dict(self) -> dict:
         return {
-            "trigger": self.trigger,
             "ts": self.ts,
+            "trigger": self.trigger,
             "intent": self.intent,
             "emotion": self.emotion,
             "actions": [a.name for a in self.actions],
             "rendered": self.rendered,
             "reason": self.reason,
+            "tier": self.tier,
             "cooldown_state": self.cooldown_state,
         }
 
 
 class DecisionHub:
-    """Brain 内核：分类 → 决策 → 执行 → 渲染 → 发布 REPLY + 决策轨迹。"""
+    """Brain 内核：分类 → tier 路由（L2 云桥 / L1 动作链）→ 执行 → 发布 REPLY + 轨迹。"""
 
     def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
-                 memory=None, registry=None, l1=None, executors=None, trace_logger=None) -> None:
+                 memory=None, registry=None, l1=None, executors=None, trace_logger=None,
+                 bridge=None) -> None:
         self._bus = bus
         self._intent_clf = intent_clf or RuleIntentClassifier()
         self._emotion_clf = emotion_clf or RuleEmotionClassifier()
@@ -51,6 +56,7 @@ class DecisionHub:
         self._l1 = l1 or L1Engine()
         self._executors = executors if executors is not None else ACTION_EXECUTORS
         self._trace_logger = trace_logger or get_decision_logger()
+        self._bridge = bridge
         self._context = None
         self._last_open_ts = None
 
@@ -68,23 +74,41 @@ class DecisionHub:
     def _handle(self, trigger: TriggerKind, text: str, situation: dict | None = None) -> None:
         intent = Intent.UNKNOWN
         emotion = Emotion.NEUTRAL
+        tier = Tier.L1
         if trigger == TriggerKind.UTTERANCE:
             intent = self._intent_clf.classify(text)
             emotion = self._emotion_clf.classify(text)
-        actions = self._policy.decide(
-            trigger, intent, emotion, text=text, situation=situation or self._context,
-            last_open_ts=self._last_open_ts, now=time.time(),
-        )
-        rendered, spoke = self._execute(actions, intent, emotion, text, situation or self._context)
-        reason = "spoke" if spoke else "silent"
+            tier = self._policy.tier_for(intent)
+        rendered, spoke, reason = "", False, "silent"
+        if tier == Tier.L2 and self._bridge is not None:
+            rendered, spoke = self._try_l2(text, situation or self._context)
+            if spoke:
+                reason = "l2"
+        if not spoke:
+            actions = self._policy.decide(
+                trigger, intent, emotion, text=text, situation=situation or self._context,
+                last_open_ts=self._last_open_ts, now=time.time(),
+            )
+            rendered, spoke = self._execute(actions, intent, emotion, text, situation or self._context)
+            reason = "silent" if not spoke else "l1"
         if spoke:
             self._last_open_ts = time.time()
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
         self._trace_logger.info("decision", **DecisionTrace(
-            trigger=trigger.value, ts=time.time(), intent=intent.value, emotion=emotion.value,
-            actions=actions, rendered=rendered, reason=reason,
+            ts=time.time(), trigger=trigger.value, intent=intent.value, emotion=emotion.value,
+            actions=[], rendered=rendered, reason=reason, tier=tier.value,
             cooldown_state={"last_open_ts": self._last_open_ts},
         ).to_dict())
+
+    def _try_l2(self, text: str, situation: dict | None):
+        try:
+            reply = self._bridge.generate(text, situation, self._memory)
+        except CloudError:
+            return "", False
+        reply = (reply or "").strip()
+        if not reply:
+            return "", False
+        return reply, True
 
     def _execute(self, actions, intent, emotion, text, situation):
         ctx = ActionContext(intent=intent, emotion=emotion, text=text,
@@ -101,7 +125,7 @@ class DecisionHub:
 
 
 def build_brain(bus, *, memory=None, registry=None, config=None,
-                intent_clf=None, emotion_clf=None, policy=None) -> DecisionHub:
+                intent_clf=None, emotion_clf=None, policy=None, bridge=None) -> DecisionHub:
     from yuki.config import Config
     cfg = config or Config.from_env()
     hub = DecisionHub(
@@ -114,6 +138,7 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         ),
         memory=memory,
         registry=registry,
+        bridge=bridge,
     )
     bus.subscribe(Topics.AWAKE, hub.on_awake)
     bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance)

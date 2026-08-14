@@ -10,6 +10,11 @@ class TriggerKind(str, Enum):
     SITUATION = "situation"
 
 
+class Tier(str, Enum):
+    L1 = "l1"
+    L2 = "l2"
+
+
 FAREWELL_KEYWORDS = ("再见", "晚安", "拜拜", "下次聊")
 
 # 披露类意图（emotional/companion）追加 write_memory 副动作
@@ -28,6 +33,8 @@ DEFAULT_POLICY_TABLE: dict[Intent, list[str]] = {
     Intent.UNKNOWN: ["clarify"],
 }
 
+L2_INTENTS = {Intent.ENTERTAINMENT, Intent.CREATIVE, Intent.ROLEPLAY, Intent.GAME, Intent.EMOTIONAL}
+
 
 class DecisionPolicy:
     """意图/触发 → 动作序列。UTTERANCE 按策略表;SITUATION 走主动开口冷却门控。"""
@@ -42,6 +49,9 @@ class DecisionPolicy:
         self._cooldown = proactive_cooldown_s
         self._enabled = proactive_enabled
         self._table = policy_table if policy_table is not None else DEFAULT_POLICY_TABLE
+
+    def tier_for(self, intent: Intent) -> Tier:
+        return Tier.L2 if intent in L2_INTENTS else Tier.L1
 
     def decide(
         self,

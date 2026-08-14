@@ -77,3 +77,18 @@ def test_situation_stay_silent_when_sensitive_or_no_topic():
 def test_policy_table_injectable():
     policy = DecisionPolicy(120.0, policy_table={Intent.GAME: ["invite_game"]})
     assert [a.name for a in policy.decide(TriggerKind.UTTERANCE, Intent.GAME, Emotion.NEUTRAL, text="猜数字")] == ["invite_game"]
+
+
+from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
+
+
+def test_tier_for_mapping():
+    policy = DecisionPolicy(proactive_cooldown_s=120.0)
+    assert policy.tier_for(Intent.ENTERTAINMENT) == Tier.L2
+    assert policy.tier_for(Intent.CREATIVE) == Tier.L2
+    assert policy.tier_for(Intent.ROLEPLAY) == Tier.L2
+    assert policy.tier_for(Intent.GAME) == Tier.L2
+    assert policy.tier_for(Intent.EMOTIONAL) == Tier.L2
+    assert policy.tier_for(Intent.SAFETY) == Tier.L1
+    assert policy.tier_for(Intent.CHIT_CHAT) == Tier.L1
+    assert policy.tier_for(Intent.UNKNOWN) == Tier.L1

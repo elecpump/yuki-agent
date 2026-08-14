@@ -2,6 +2,7 @@ import pytest
 
 from yuki.cognition.brain.hub import DecisionHub, build_brain
 from yuki.cognition.brain.policy import DecisionPolicy
+from yuki.cognition.l2.client import CloudError
 from yuki.functions.registry import FunctionRegistry
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
@@ -106,3 +107,52 @@ def test_decision_trace_logged(hub):
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
     assert records and records[0]["trigger"] == "utterance"
     assert records[0]["intent"] == "chit_chat"
+
+
+class FakeBridge:
+    def __init__(self, reply=None, error=None):
+        self._reply = reply
+        self._error = error
+        self.calls = []
+
+    def generate(self, utterance, situation=None, memory=None):
+        self.calls.append(utterance)
+        if self._error:
+            raise self._error
+        return self._reply
+
+
+def test_l2_intent_routes_to_bridge(hub):
+    h, bus, _ = hub
+    h._bridge = FakeBridge(reply="云端深度回答")
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    assert _reply_text(bus) == "云端深度回答"
+
+
+def test_l2_failure_falls_back_to_l1(hub):
+    h, bus, _ = hub
+    h._bridge = FakeBridge(error=CloudError("boom"))
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    assert _reply_text(bus)  # L1 动作链兜底，有回复
+
+
+def test_l2_intent_without_bridge_uses_l1(hub):
+    h, bus, _ = hub
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    assert _reply_text(bus)
+
+
+def test_l1_intent_never_calls_bridge(hub):
+    h, bus, _ = hub
+    bridge = FakeBridge(reply="不应被调用")
+    h._bridge = bridge
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
+    assert bridge.calls == []
+
+
+def test_decision_trace_includes_tier(hub):
+    h, bus, _ = hub
+    records = []
+    h._trace_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    assert records[0]["tier"] == "l2"
