@@ -1,3 +1,5 @@
+import time
+
 import pytest
 
 from yuki.memory.manager import MemoryManager, Reflector, ShortTermMemory
@@ -24,10 +26,10 @@ def test_write_returns_id_and_query_ranks_freshness(manager):
 
 def test_query_returns_scores_and_touches(manager):
     mem_id = manager.write("preference", "喜欢咖啡")
-    manager._store.touch(mem_id, at=1000000.0)
+    manager._store.touch(mem_id, at=time.time() - 3 * 86400)
     results = manager.query("咖啡")
     assert results[0]["score"] > 0.0
-    assert manager.get(mem_id)["access_count"] >= 1
+    assert manager._store.get(mem_id)["access_count"] == 2
 
 
 def test_decay_weight_strengthened_is_one(manager):

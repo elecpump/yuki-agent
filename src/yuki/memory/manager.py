@@ -101,7 +101,6 @@ class MemoryManager:
         scored: list[dict] = []
         for mem, rank in hits:
             self._store.touch(mem["id"])
-            mem["last_access"] = now
             mem["score"] = rank * self.decay_weight(mem, now)
             scored.append(mem)
         scored.sort(key=lambda m: m["score"], reverse=True)
