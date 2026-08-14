@@ -92,3 +92,15 @@ def test_tier_for_mapping():
     assert policy.tier_for(Intent.SAFETY) == Tier.L1
     assert policy.tier_for(Intent.CHIT_CHAT) == Tier.L1
     assert policy.tier_for(Intent.UNKNOWN) == Tier.L1
+
+
+def test_set_cooldown_s_changes_gate():
+    policy = DecisionPolicy(proactive_cooldown_s=120.0)
+    assert policy.cooldown_s == 120.0
+    policy.set_cooldown_s(200.0)
+    assert policy.cooldown_s == 200.0
+    # 原冷却 120 在 now-last=150 时会开口；新冷却 200 应静默
+    actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
+                            situation={"topic": "x", "sensitive": False},
+                            last_open_ts=0.0, now=150.0)
+    assert [a.name for a in actions] == ["stay_silent"]

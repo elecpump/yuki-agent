@@ -50,6 +50,13 @@ class DecisionPolicy:
         self._enabled = proactive_enabled
         self._table = policy_table if policy_table is not None else DEFAULT_POLICY_TABLE
 
+    @property
+    def cooldown_s(self) -> float:
+        return self._cooldown
+
+    def set_cooldown_s(self, value: float) -> None:
+        self._cooldown = value
+
     def tier_for(self, intent: Intent) -> Tier:
         return Tier.L2 if intent in L2_INTENTS else Tier.L1
 
