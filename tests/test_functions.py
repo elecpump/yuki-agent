@@ -70,3 +70,29 @@ def test_names_sorted(registry):
 def test_no_params_tool_ignores_args(registry):
     registry.tool("noop", description="无参", params=None)(lambda p: p)
     assert registry.call("noop", {"junk": 1}) is None
+
+
+from yuki.functions import FunctionError, FunctionRegistry, register_builtin_system
+
+
+def test_builtin_system_ping():
+    r = FunctionRegistry()
+    register_builtin_system(r)
+    assert "system.ping" in r.names()
+    result = r.call("system.ping")
+    assert result["ok"] is True
+    assert isinstance(result["ts"], float)
+
+
+def test_builtin_system_ping_dispatchable():
+    r = FunctionRegistry()
+    register_builtin_system(r)
+    schemas = r.tool_schemas()
+    assert any(s["function"]["name"] == "system.ping" for s in schemas)
+    out = r.dispatch({"name": "system.ping", "arguments": "{}"})
+    assert out["ok"] is True
+    assert isinstance(out["result"]["ts"], float)
+
+
+def test_package_exports_errors():
+    assert issubclass(FunctionError, Exception)
