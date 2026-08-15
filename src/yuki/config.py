@@ -69,6 +69,19 @@ class SedimenterConfig(BaseModel):
     topic_engagement_threshold: int = Field(3, ge=1)
 
 
+class PersonaConfig(BaseModel):
+    prompt: str = (
+        "你是{persona},一个温柔的中文语音陪伴 agent。"
+        "回复简短自然(1-3 句),贴合陪伴场景。"
+        "不替用户操作系统或浏览器。"
+        "用户提到自伤/自杀等危机时,优先表达关怀并建议求助。"
+        "可以用工具查询记忆,但不要捏造记忆内容。"
+    )
+    max_versions: int = Field(50, ge=1)
+    enable_llm_refine: bool = False
+    snapshots_path: str = "data/persona_snapshots.json"
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     persona_name: str = "yuki"
@@ -82,6 +95,7 @@ class Config(BaseModel):
     soul: SoulConfig = Field(default_factory=SoulConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     sedimenter: SedimenterConfig = Field(default_factory=SedimenterConfig)
+    persona: PersonaConfig = Field(default_factory=PersonaConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -106,6 +120,7 @@ class Config(BaseModel):
             ("soul", SoulConfig),
             ("context", ContextConfig),
             ("sedimenter", SedimenterConfig),
+            ("persona", PersonaConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:

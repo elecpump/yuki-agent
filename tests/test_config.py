@@ -162,3 +162,19 @@ def test_sedimenter_env_override(monkeypatch):
     config = Config.load(None)
     assert config.sedimenter.min_signals == 5
     assert config.sedimenter.confidence_threshold == 0.8
+
+
+def test_persona_defaults():
+    config = Config()
+    assert config.persona.max_versions == 50
+    assert config.persona.enable_llm_refine is False
+    assert config.persona.snapshots_path == "data/persona_snapshots.json"
+    assert "yuki" in config.persona.prompt or "{persona}" in config.persona.prompt
+
+
+def test_persona_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_PERSONA_MAX_VERSIONS", "100")
+    monkeypatch.setenv("YUKI_PERSONA_ENABLE_LLM_REFINE", "true")
+    config = Config.load(None)
+    assert config.persona.max_versions == 100
+    assert config.persona.enable_llm_refine is True
