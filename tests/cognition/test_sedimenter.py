@@ -36,6 +36,36 @@ def test_rhythm_not_sedimented_below_threshold(tmp_path):
     assert labels(memory) == []  # 仅 2 次，未达 3
 
 
+def test_rhythm_frequency_high_sediments(tmp_path):
+    sed, memory = make_sed(tmp_path, min_signals=3, confidence_threshold=0.6)
+    for _ in range(3):
+        sed.on_user_utterance("说得好", Intent.CHIT_CHAT)
+    assert LABEL_FREQUENCY_HIGH in labels(memory)
+
+
+def test_correction_resets_sediment_state(tmp_path):
+    sed, memory = make_sed(tmp_path, min_signals=3, confidence_threshold=0.6)
+    for _ in range(3):
+        sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
+    assert LABEL_FREQUENCY_LOW in labels(memory)
+    sed.on_user_utterance("说反了，我其实喜欢主动互动", Intent.SYSTEM)  # 纠正
+    assert LABEL_FREQUENCY_LOW not in labels(memory)
+    # 纠正后再来 1 次隐式负面，不得借助旧计数重新沉淀
+    sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
+    assert LABEL_FREQUENCY_LOW not in labels(memory)
+
+
+def test_persisted_feedback_preference_degradable_after_restart(tmp_path):
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    manager.write("preference", "用户不喜欢频繁主动开口", confidence=1.0, source="feedback",
+                  metadata={"label": LABEL_FREQUENCY_LOW})
+    # 新会话沉淀器从持久化 feedback 行种子恢复 _sedimented
+    sed = PreferenceSedimenter(manager, min_signals=3, confidence_threshold=0.6)
+    for _ in range(4):
+        sed.on_user_utterance("说得好", Intent.CHIT_CHAT)  # 反向信号 → 置信度 0 < 0.6 → 降级删除
+    assert LABEL_FREQUENCY_LOW not in labels(manager)
+
+
 def test_contradicting_signals_lower_confidence(tmp_path):
     sed, memory = make_sed(tmp_path, min_signals=3, confidence_threshold=0.6)
     for _ in range(3):

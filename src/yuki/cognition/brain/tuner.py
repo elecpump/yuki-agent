@@ -78,7 +78,7 @@ class FeedbackTuner:
         logger.info("tuned cooldown", cooldown_s=new, factor=factor)
 
     def set_cooldown_floor(self, value: float) -> None:
-        self._min_s = max(self._min_s, value)
+        self._min_s = min(max(self._min_s, value), self._max_s)
         if self._cooldown < self._min_s:
             self._cooldown = self._min_s
             self._policy.set_cooldown_s(self._cooldown)

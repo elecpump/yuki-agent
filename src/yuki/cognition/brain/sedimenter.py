@@ -33,6 +33,12 @@ class PreferenceSedimenter:
         self._counts: dict[str, dict] = {}
         self._topics: dict[str, int] = {}
         self._sedimented: set[str] = set()
+        self._written_conf: dict[str, float] = {}
+        for m in self._memory.list(memory_type="preference"):
+            if m.get("source") == "feedback":
+                label = m.get("metadata", {}).get("label")
+                if label:
+                    self._sedimented.add(label)
 
     def on_user_utterance(self, text: str, intent) -> None:
         text = text or ""
@@ -56,8 +62,9 @@ class PreferenceSedimenter:
             return
         label = f"yuki.topic.{topic}"
         self._topics[label] = self._topics.get(label, 0) + 1
-        if self._topics[label] == self._topic_threshold:
+        if self._topics[label] >= self._topic_threshold and label not in self._sedimented:
             self._write_preference(f"对{topic}话题感兴趣", label, source="feedback", confidence=0.8)
+            self._sedimented.add(label)
 
     def _reinforce(self, label: str, opposite: str | None) -> None:
         entry = self._counts.setdefault(label, {"hits": 0, "contradicts": 0})
@@ -73,14 +80,17 @@ class PreferenceSedimenter:
         total = entry["hits"] + entry["contradicts"]
         confidence = entry["hits"] / max(1, total)
         if entry["hits"] >= self._min_signals and confidence >= self._confidence_threshold:
-            self._write_preference(RHYTHM_CONTENTS[label], label, source="feedback", confidence=confidence)
-            self._sedimented.add(label)
-            if label == LABEL_FREQUENCY_LOW and self._tuner is not None:
-                self._tuner.set_cooldown_floor(self._frequency_floor_s)
-        elif label in self._sedimented:
-            # 已沉淀但被反向信号拉低 → 降级删除（计数器进程内，不误删旧会话沉淀）
+            if confidence > self._written_conf.get(label, 0.0):
+                self._write_preference(RHYTHM_CONTENTS[label], label, source="feedback", confidence=confidence)
+                self._written_conf[label] = confidence
+                self._sedimented.add(label)
+                if label == LABEL_FREQUENCY_LOW and self._tuner is not None:
+                    self._tuner.set_cooldown_floor(self._frequency_floor_s)
+        elif label in self._sedimented and confidence < self._confidence_threshold:
+            # 已沉淀但被反向信号拉低 → 降级删除（含跨会话：由持久化 feedback 行种子恢复）
             self._remove_by_label(label)
             self._sedimented.discard(label)
+            self._written_conf.pop(label, None)
 
     def _write_explicit(self, text: str) -> None:
         self._write_preference(text, "yuki.explicit", source="user", confidence=1.0)
@@ -90,6 +100,9 @@ class PreferenceSedimenter:
         for m in self._memory.list(memory_type="preference"):
             if m.get("source") == "feedback":
                 self._memory.delete(m["id"])
+        self._counts = {}
+        self._sedimented = set()
+        self._written_conf = {}
         self._write_explicit(text)
 
     def _write_preference(self, content: str, label: str, *, source: str, confidence: float) -> None:
