@@ -47,32 +47,40 @@ class WorkingContext:
 
 ## 4. CloudViewBuilder（view.py）
 
+**组装为「填充顺序 + 最低配额」模型**（`priority` 明确为**填充顺序**：高优先级节先放入；每节有最低配额保证，不可因预算被砍）：
+
 ```python
 def estimate_tokens(text: str) -> int: ...   # ceil(len/1.5)，字符启发式，零依赖
+
+# 配额常量
+SITUATION_TOKENS = 200          # 情境固定配额，不可裁剪
+MEMORY_MIN_TOKENS = 200         # 关键偏好（preference/strengthened）最小配额
+MAX_UTTERANCE_CHARS = 500       # utterance 恒保留但截断到该长度
 
 class CloudViewBuilder:
     def __init__(self, summarize: Callable[[list[str]], str] | None = None, *,
                  max_turns: int = 20, max_tokens: int = 1500,
-                 verbatim_turns: int = 6, memory_top_k: int = 3) -> None: ...
+                 verbatim_turns: int = 4, memory_top_k: int = 3) -> None: ...
     def build(self, utterance: str, context: WorkingContext | None,
               memory: MemoryManager | None) -> str: ...
 ```
 
-**组装与优先级**（自上而下，越靠前越优先吃预算；参与视图的轮次 = `context.recent_turns(max_turns)`，即最近 `max_turns` 轮为工作窗口）：
+**填充顺序与配额**（参与视图的轮次 = `context.recent_turns(max_turns)`，即最近 `max_turns` 轮为工作窗口）：
 
-1. 情境（`context.situation` 的 topic/summary/key_points）
-2. 窗口内最近 `verbatim_turns` 轮逐字（新→旧）
-3. 窗口内更旧轮 → **摘要折叠**（见下）
-4. 记忆检索 top-k（**过滤 `sensitivity == 2`**）
-5. 用户当前话语（utterance）
+| 顺序 | 节 | 配额保证 | 预算紧张时的处理 |
+|---|---|---|---|
+| 1 | **utterance** | 恒保留，`max_utterance_chars` 截断 | 永不裁剪（仅截断长度） |
+| 2 | **情境**（situation topic/summary/key_points） | 固定 `SITUATION_TOKENS`，不可裁剪 | 截断过长的 summary/key_points 到配额内 |
+| 3 | **逐字轮** | 恒保留最近 `verbatim_turns` 轮 | 永不裁剪（超出的轮转下一节折叠） |
+| 4 | **折叠轮**（窗口内更旧的轮） | 填充剩余预算 | **首个被压缩的对象**：摘要 → 更短摘要 → 计数占位 |
+| 5 | **记忆** | 关键偏好（`memory_type=="preference"` 或 `strengthened`）保证 `MEMORY_MIN_TOKENS`；其余检索 top-k（`memory_top_k`，**过滤 `sensitivity == 2`**）填充剩余 | 先砍次要检索记忆，再砍偏好配额（但不低于最低值） |
 
-**预算**：逐节估算 `estimate_tokens`，累计超过 `max_tokens` 即截断后续小节（utterance 恒保留）。
-
-**去重**：连续重复文本（相邻轮次同 content）只保留一次。
-
-**摘要折叠**：更旧轮非空时——
-- 缓存键 = 该段轮次内容的哈希；命中 → 复用缓存摘要。
-- 未命中：`summarize` 非 None → 调 `summarize(older_texts)` 得摘要并缓存；`summarize` 为 None 或抛异常 → 计数占位 `（之前聊了 N 轮）`，不失败。
+- **预算分配**：先计算固定配额节（utterance+情境+逐字轮+记忆最小配额）的估算总量；剩余预算给折叠轮（优先）与记忆检索节。总超预算时，按上表"预算紧张时的处理"列裁剪（折叠轮 → 记忆检索），固定配额节不动。
+- **去重**：连续重复文本（相邻轮次同 content）只保留一次。
+- **折叠轮**（窗口内、逐字轮之外且 ≤ `max_turns` 的轮）：非空时——
+  - 缓存键 = 该段轮次内容的哈希；命中 → 复用缓存摘要。
+  - 未命中：`summarize` 非 None → 调 `summarize(older_texts)` 得摘要并缓存；`summarize` 为 None 或抛异常 → 计数占位 `（之前聊了 N 轮）`，不失败。
+  - 若折叠摘要本身超预算 → 截断摘要；仍超 → 降为计数占位。
 
 ## 5. CloudBridge 改动
 
@@ -95,15 +103,15 @@ class CloudViewBuilder:
 context:
   max_turns: 20
   max_tokens: 1500
-  verbatim_turns: 6
+  verbatim_turns: 4
 ```
 
-env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBATIM_TURNS`。`memory_top_k` 沿用 `CLOUD_MEMORY_TOP_K`（3）；WorkingContext 轮次容量由 short_term（50）承载。
+env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBATIM_TURNS`。配额常量（`SITUATION_TOKENS`/`MEMORY_MIN_TOKENS`/`MAX_UTTERANCE_CHARS`）为代码常量；`memory_top_k` 沿用 `CLOUD_MEMORY_TOP_K`（3）；WorkingContext 轮次容量由 short_term（50）承载。
 
 ## 8. 测试
 
 - `test_working.py`：add_user/add_agent/update_situation/recent_turns 顺序（新→旧）与 kind、turn_count、situation 快照、TTL 逐出（经 short_term）。
-- `test_view.py`：优先级排序；预算截断；连续重复去重；折叠三态（缓存命中复用 / 调 summarize / summarize=None 或异常→计数占位）；记忆高敏过滤；无 context 退化。
+- `test_view.py`：填充顺序（utterance→情境→逐字轮→折叠轮→记忆）；固定配额（情境不裁剪、utterance 截断到 MAX_UTTERANCE_CHARS、逐字轮恒保留 verbatim_turns 轮）；预算紧张时先压缩折叠轮再砍次要记忆（关键偏好 `preference`/`strengthened` 保底 MEMORY_MIN_TOKENS）；连续重复去重；折叠三态（缓存命中复用 / 调 summarize / summarize=None 或异常→计数占位）；记忆高敏过滤；无 context 退化。
 - `test_bridge.py`：注入 fake view_builder → generate 用其输出；默认 builder 装配正常。
 - `test_hub.py`：context 喂入（add_user/add_agent/update_situation 被调）；context=None 行为不变。
 - `test_cognition.py`：agent 装配 WorkingContext。
@@ -122,7 +130,8 @@ env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBA
 |---|---|
 | WorkingContext 用 short_term | 工作记忆终于有消费者；统一内存工作状态 |
 | 会话轮次仅内存 | 持久化属会话记忆模块；本轮避免范围膨胀 |
-| 优先级 情境>逐字轮>折叠轮>记忆>utterance 恒保留 | 面向 LLM 的有效利用；关键信息不丢 |
+| 填充顺序 utterance→情境→逐字轮→折叠轮→记忆 | 面向 LLM 的有效利用；utterance/情境/逐字轮是关键上下文 |
+| 「填充顺序 + 最低配额」预算模型 | 高优先级先放、各节有保证配额；折叠轮与次要记忆吸收预算压力，长期画像（关键偏好）不先丢 |
 | 字符启发式估 token | 零依赖；够预算管理用 |
 | LLM 摘要折叠 + 缓存 | 长会话不爆窗口；缓存避免每次多一次 LLM 往返 |
 | 失败回退计数占位 | 摘要不可用不阻塞主响应 |
