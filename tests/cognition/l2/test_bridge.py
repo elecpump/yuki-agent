@@ -75,6 +75,14 @@ def test_generate_missing_message_key_raises_cloud_error():
         bridge.generate("x")
 
 
+def test_generate_wraps_context_errors_as_cloud_error():
+    client = TurnClient([{"choices": [{"message": {"content": "x"}}]}])
+    bridge = CloudBridge(client)
+    with pytest.raises(CloudError):
+        bridge.generate("x", context=ContextSnapshot(situation={"topic": "x", "key_points": [123]}))
+    assert client.calls == []
+
+
 def test_persona_prompt_contains_persona_name():
     from yuki.cognition.l2.bridge import DEFAULT_PERSONA_PROMPT
     assert "{persona}" in DEFAULT_PERSONA_PROMPT
