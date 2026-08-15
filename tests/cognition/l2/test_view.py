@@ -4,6 +4,7 @@ from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.view import (
     MAX_UTTERANCE_CHARS,
     SITUATION_TOKENS,
+    SUMMARIZE_MAX_FAILURES,
     CloudViewBuilder,
     estimate_tokens,
 )
@@ -59,11 +60,16 @@ def test_enrich_summarize_failure_placeholder_and_circuit_breaker():
         raise RuntimeError("summarize down")
 
     builder = CloudViewBuilder(summarize=boom, max_tokens=250)
-    turns = [turn(f"第{i}轮内容内容内容内容内容") for i in range(30)]
+    # 12 轮 → 折叠 8 轮 → 恰好 2 个折叠段（6+2），一次 enrich 触发 2 次失败（<3，不熔断）
+    turns = [turn(f"第{i}轮内容内容内容内容内容") for i in range(12)]
     snap = make_snapshot(turns=turns)
-    for _ in range(3):  # 连续失败 >= SUMMARIZE_MAX_FAILURES 后熔断
-        out = builder.enrich(snap, None, "x")
+    out = builder.enrich(snap, None, "x")
+    assert builder._summarize_failures == 2
+    assert builder._summarize_broken is False
     assert "之前聊了" in out.summaries[0]
+    # 失败结果不缓存 → 第二次 enrich 再失败 2 次，累计 4 >= 3 → 熔断
+    builder.enrich(snap, None, "x")
+    assert builder._summarize_failures >= SUMMARIZE_MAX_FAILURES
     assert builder._summarize_broken is True
 
 
@@ -78,13 +84,13 @@ def test_enrich_summarize_none_placeholder():
 def test_enrich_memory_filters_high_sensitivity(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     manager.write("preference", "喜欢安静", sensitivity=0)
-    manager.write("personal", "高敏机密", sensitivity=2)
+    manager.write("personal", "安静机密", sensitivity=2)
     builder = CloudViewBuilder()
     snap = make_snapshot()
     out = builder.enrich(snap, manager, "安静")
     contents = [m["content"] for m in out.long_term_memory]
     assert "喜欢安静" in contents
-    assert "高敏机密" not in contents
+    assert "安静机密" not in contents
 
 
 def test_format_order_and_quota():
