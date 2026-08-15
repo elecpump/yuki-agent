@@ -11,7 +11,7 @@ from yuki.cognition.brain.classifier import (
 from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
 from yuki.cognition.l1 import L1Engine
 from yuki.cognition.sensitive import SensitiveFilter
-from yuki.logger import get_decision_logger, get_logger
+from yuki.logger import get_audit_logger, get_decision_logger, get_logger
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.brain.hub")
@@ -51,7 +51,7 @@ class DecisionHub:
 
     def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
                  memory=None, registry=None, l1=None, executors=None, trace_logger=None,
-                 bridge=None, tuner=None, sensitive_filter=None) -> None:
+                 bridge=None, tuner=None, sensitive_filter=None, audit_logger=None) -> None:
         self._bus = bus
         self._intent_clf = intent_clf or RuleIntentClassifier()
         self._emotion_clf = emotion_clf or RuleEmotionClassifier()
@@ -61,6 +61,7 @@ class DecisionHub:
         self._l1 = l1 or L1Engine()
         self._executors = executors if executors is not None else ACTION_EXECUTORS
         self._trace_logger = trace_logger or get_decision_logger()
+        self._audit_logger = audit_logger or get_audit_logger()
         self._bridge = bridge
         self._tuner = tuner
         self._sensitive_filter = sensitive_filter or SensitiveFilter()
@@ -85,7 +86,10 @@ class DecisionHub:
         # 决策状态（context/last_open_ts）必须串行。
         with self._decision_lock:
             self._handle_locked(trigger, text, situation)
-    def _handle_locked(self, trigger: TriggerKind, text: str, situation: dict | None = None) -> None:
+
+    def _handle_locked(
+        self, trigger: TriggerKind, text: str, situation: dict | None = None
+    ) -> None:
         intent = Intent.UNKNOWN
         emotion = Emotion.NEUTRAL
         tier = Tier.L1
@@ -94,12 +98,13 @@ class DecisionHub:
             emotion = self._emotion_clf.classify(text)
             tier = self._policy.tier_for(intent)
 
-        pass  # 短期记忆在决策完成后统一追加，避免当前轮重复注入云端上下文
         actions: list = []
         rendered, spoke, reason = "", False, "silent"
-        l2_failed = False
-        if tier == Tier.L2 and self._bridge is not None:
+        l2_wanted = tier == Tier.L2
+        l2_unavailable = l2_wanted and self._bridge is None
+        if l2_wanted and self._bridge is not None:
             rendered, spoke, l2_failed = self._try_l2(text, situation or self._context)
+            l2_unavailable = l2_failed
             if spoke:
                 reason = "l2"
         if not spoke:
@@ -107,17 +112,18 @@ class DecisionHub:
                 trigger, intent, emotion, text=text, situation=situation or self._context,
                 last_open_ts=self._last_open_ts, now=time.time(),
             )
-            rendered, spoke = self._execute(actions, intent, emotion, text, situation or self._context)
-            if spoke and l2_failed:
-                rendered = f"{rendered}{L2_UNAVAILABLE_NOTICE}"
+            rendered, spoke = self._execute(
+                actions, intent, emotion, text, situation or self._context
+            )
+            reason = "l1" if spoke else "silent"
+            if l2_unavailable:
+                # §8.2：云端不可用时明确告知用户正在降级到本地，避免"哑巴"。
+                rendered = f"{rendered}{L2_UNAVAILABLE_NOTICE}" if spoke else L2_UNAVAILABLE_NOTICE
+                spoke = True
                 reason = "l2_unavailable_fallback"
-            else:
-                reason = "silent" if not spoke else "l1"
         if spoke:
             self._last_open_ts = time.time()
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
-
-            pass  # 短期记忆见下方统一追加
 
         if trigger == TriggerKind.UTTERANCE and self._memory is not None:
             if text and not self._sensitive_filter.is_sensitive(text):
@@ -137,8 +143,16 @@ class DecisionHub:
 
 
     def _try_l2(self, text: str, situation: dict | None) -> tuple[str, bool, bool]:
-        if self._sensitive_filter.is_sensitive(text):
-            logger.info("blocked L2 route for sensitive utterance")
+        hits = self._sensitive_filter.scan(text)
+        if hits:
+            # §9.3：审计只记录过滤动作（时间/规则编号/命中类别），不存原文。
+            self._audit_logger.info(
+                "filter_action",
+                action="block_l2_route",
+                ts=time.time(),
+                rules=hits,
+                categories=hits,
+            )
             return "", False, False
         try:
             reply = self._bridge.generate(text, situation, self._memory)
@@ -149,20 +163,6 @@ class DecisionHub:
         if not reply:
             return "", False, True
         return reply, True, False
-    def _try_l2_legacy(self, text: str, situation: dict | None):
-
-        if self._sensitive_filter.is_sensitive(text):
-            logger.info("blocked L2 route for sensitive utterance")
-            return "", False
-        try:
-            reply = self._bridge.generate(text, situation, self._memory)
-        except Exception:
-            logger.warning("L2 cloud bridge failed, falling back to L1", exc_info=True)
-            return "", False
-        reply = (reply or "").strip()
-        if not reply:
-            return "", False
-        return reply, True
 
     def _execute(self, actions, intent, emotion, text, situation):
         ctx = ActionContext(intent=intent, emotion=emotion, text=text,

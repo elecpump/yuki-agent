@@ -22,13 +22,6 @@ windows = [
 dev = ["pytest>=8", "grpcio-tools>=1.66"]
 ml = ["transformers", "torch", "qwen-vl-utils", "funasr"]
 
-[tool.yuki]
-legacy_comment = """
-
-[project.optional-dependencies]
-dev = ["pytest>=8", "grpcio-tools>=1.66"]
-"""
-
 [tool.setuptools.packages.find]
 where = ["src"]
 

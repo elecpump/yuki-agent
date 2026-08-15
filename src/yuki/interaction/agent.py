@@ -1,5 +1,7 @@
+import json
 import sys
 import time
+from pathlib import Path
 
 from yuki.config import Config
 from yuki.health import HealthStatus
@@ -24,10 +26,37 @@ class FocusManager:
 
 
 class VolumeController:
-    """三档位桩：恒 normal。Phase 4 实现安静/普通/活跃切换。"""
+    """三档位：quiet / normal / active。档位持久化到本地，进程重启后恢复（§8.1）。
+
+    Phase 4 接入真实系统音量控制，切换走 set_level。
+    """
+
+    LEVELS = ("quiet", "normal", "active")
+
+    def __init__(self, path: str | Path = "data/volume_tier.json") -> None:
+        self._path = Path(path)
+        self._level = self._restore()
+
+    def _restore(self) -> str:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            if data.get("level") in self.LEVELS:
+                return data["level"]
+        except (OSError, ValueError):
+            pass
+        return "normal"
 
     def level(self) -> str:
-        return "normal"
+        return self._level
+
+    def set_level(self, level: str) -> None:
+        if level not in self.LEVELS:
+            raise ValueError(f"unknown volume level: {level!r}")
+        self._level = level
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        self._path.write_text(
+            json.dumps({"level": level}, ensure_ascii=False), encoding="utf-8"
+        )
 
 
 class InteractionAgent(ProcessAgent):

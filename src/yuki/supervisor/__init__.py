@@ -22,6 +22,7 @@ class Child:
     restart_times: list[float] = field(default_factory=list)
     healthy_since: float = 0.0
     next_restart_at: float | None = None
+    gave_up: bool = False
 
 
 class Supervisor:
@@ -75,14 +76,10 @@ class Supervisor:
             if child.next_restart_at is None or now < child.next_restart_at:
                 continue
             child.next_restart_at = None
-            now_window = now - self.restart_window
-            child.restart_times = [t for t in child.restart_times if t >= now_window]
-            if len(child.restart_times) >= self.restart_max_per_window:
-                logger.critical(
-                    "giving up on process (too many restarts in window)",
-                    process=child.name,
-                )
+            if self._window_capped(child, now):
+                self._mark_given_up(child)
                 continue
+            child.gave_up = False
             child.restarts += 1
             child.attempts += 1
             child.restart_times.append(now)
@@ -101,11 +98,16 @@ class Supervisor:
                 # 存活：超过窗口无重启则清 attempts
                 if now - child.healthy_since >= self.restart_window:
                     child.attempts = 0
+                    child.gave_up = False
+                    child.restart_times = []
                     child.healthy_since = now
                 # 健康探活：bus_server 走内置 health/bus_server；未存活时跳过其余探活
                 if bus is not None:
                     if not bus_up:
-                        logger.info("health probes skipped (bus_server not alive)", process=child.name)
+                        logger.info(
+                            "health probes skipped (bus_server not alive)",
+                            process=child.name,
+                        )
                     else:
                         try:
                             result = bus.request(
@@ -146,7 +148,10 @@ class Supervisor:
                         except BusError as exc:
                             if str(exc) == "service not found":
                                 # 子进程仍在启动/注册：hub 就绪但服务未注册属瞬时状态，不重启
-                                logger.info("health probe pending (service not registered)", process=child.name)
+                                logger.info(
+                                    "health probe pending (service not registered)",
+                                    process=child.name,
+                                )
 
                                 if now - child.healthy_since > self.startup_grace_s:
                                     logger.warning(
@@ -171,7 +176,7 @@ class Supervisor:
         if self._async_restarts:
             scheduled = {c.name for c in self._children if c.next_restart_at is not None}
             restarted = [name for name in restarted if name not in scheduled]
-        return restarted
+        return list(dict.fromkeys(restarted))
 
     def _stop_proc(self, child: Child, grace: float = 2.0) -> None:
         proc = child.proc
@@ -202,10 +207,18 @@ class Supervisor:
         now_window = now - self.restart_window
         child.restart_times = [t for t in child.restart_times if t >= now_window]
         if len(child.restart_times) >= self.restart_max_per_window:
-            logger.critical("giving up on process (too many restarts in window)", process=child.name)
+            logger.critical(
+                "giving up on process (too many restarts in window)",
+                process=child.name,
+            )
             return
         delay = min(self.restart_base_delay * (2 ** child.attempts), self.restart_max_delay)
-        logger.warning("restarting process", process=child.name, attempt=child.attempts, next_delay=delay)
+        logger.warning(
+            "restarting process",
+            process=child.name,
+            attempt=child.attempts,
+            next_delay=delay,
+        )
         # 先停旧进程再退避，避免假死进程在退避期间继续提供坏服务。
         self._stop_proc(child)
         self._sleep(delay)
@@ -214,38 +227,38 @@ class Supervisor:
         child.restart_times.append(now)
         child.proc = self._spawn(child.cmd)
         child.healthy_since = now
-    def _restart(self, child: Child, now: float) -> None:
-        if getattr(self, "_async_restarts"):  # async path
-            if child.next_restart_at is not None:
-                return
-            delay = min(
-                self.restart_base_delay * (2 ** child.attempts),
-                self.restart_max_delay,
-            )
-            logger.warning("scheduling restart", process=child.name, next_delay=delay)
-            self._stop_proc(child)
-            child.next_restart_at = now + delay
-            return
-        if self._async_restarts:
-            pass  # legacy guard: async path already returned above
-
-        return self._restart_impl(child, now)
+    def _window_capped(self, child: Child, now: float) -> bool:
         now_window = now - self.restart_window
         child.restart_times = [t for t in child.restart_times if t >= now_window]
-        if len(child.restart_times) >= self.restart_max_per_window:
-            logger.critical("giving up on process (too many restarts in window)", process=child.name)
-            return
-        delay = min(self.restart_base_delay * (2 ** child.attempts), self.restart_max_delay)
-        logger.warning("restarting process", process=child.name, attempt=child.attempts, next_delay=delay)
+        return len(child.restart_times) >= self.restart_max_per_window
 
+    def _mark_given_up(self, child: Child) -> None:
+        if child.gave_up:
+            return
+        child.gave_up = True
+        logger.critical(
+            "giving up on process (too many restarts in window)",
+            process=child.name,
+        )
+
+    def _restart(self, child: Child, now: float) -> None:
+        if not getattr(self, "_async_restarts"):  # sync path
+            self._restart_impl(child, now)
+            return
+        if child.next_restart_at is not None:
+            return
+        if self._window_capped(child, now):
+            self._mark_given_up(child)
+            return
+        child.gave_up = False
+        delay = min(
+            self.restart_base_delay * (2 ** child.attempts),
+            self.restart_max_delay,
+        )
+        logger.warning("scheduling restart", process=child.name, next_delay=delay)
+        # 先停旧进程再退避，避免假死进程在退避期间继续提供坏服务。
         self._stop_proc(child)
-        self._sleep(delay)
-        child.restarts += 1
-        child.attempts += 1
-        child.restart_times.append(now)
-        self._stop_proc(child)
-        child.proc = self._spawn(child.cmd)
-        child.healthy_since = now
+        child.next_restart_at = now + delay
 
     def terminate_children(self, timeout: float = 5.0) -> None:
         for child in self._children:

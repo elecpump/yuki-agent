@@ -126,9 +126,14 @@ class FakeBridge:
 class FakeSensitive:
     def __init__(self, flag: bool = False):
         self.flag = flag
+        self.scanned = []
 
     def is_sensitive(self, text: str) -> bool:
         return self.flag
+
+    def scan(self, text: str) -> list[str]:
+        self.scanned.append(text)
+        return ["test_rule"] if self.flag else []
 
 
 def test_l2_blocked_for_sensitive_utterance(hub):
@@ -169,6 +174,25 @@ def test_l2_intent_without_bridge_uses_l1(hub):
     h, bus, _ = hub
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
     assert _reply_text(bus)
+
+
+def test_l2_intent_without_bridge_notifies_offline(hub):
+    h, bus, _ = hub
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    text = _reply_text(bus)
+    assert "云端暂时不可用" in text  # §8.2：未配置云端也要明确告知降级
+
+
+def test_sensitive_l2_block_is_audited(hub):
+    h, bus, _ = hub
+    records = []
+    h._audit_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
+    h._bridge = FakeBridge(reply="不应被调用")
+    h._sensitive_filter = FakeSensitive(True)
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
+    assert records and records[0]["action"] == "block_l2_route"
+    assert records[0]["categories"] == ["test_rule"]
+    assert "ts" in records[0]  # §9.3：审计含时间/规则编号/命中类别，不存原文
 
 
 def test_l1_intent_never_calls_bridge(hub):

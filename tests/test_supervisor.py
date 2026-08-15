@@ -461,3 +461,42 @@ def test_async_restart_schedules_then_spawns_at_due_time():
     clock["now"] = 5.0
     assert sup.tick() == ["a"]
     assert len(created) == 2
+
+
+def test_async_restart_gives_up_once_without_thrashing():
+    created = []
+    critical_logs = []
+
+    from yuki.supervisor import logger as slog
+
+    orig_critical = slog.critical
+    slog.critical = lambda *a, **k: (critical_logs.append(a), orig_critical(*a, **k))
+
+    class DeadProc:
+        def poll(self):
+            return 1
+
+    def factory(cmd, env=None, creationflags=None):
+        created.append(DeadProc())
+        return created[-1]
+
+    clock = {"now": 0.0}
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_base_delay=1.0,
+        clock=lambda: clock["now"],
+        sleep=lambda s: None,
+        restart_window=100,
+        restart_max_per_window=2,
+        async_restarts=True,
+    )
+    try:
+        for _ in range(15):
+            clock["now"] += 1
+            sup.tick()
+    finally:
+        slog.critical = orig_critical
+    assert len(created) == 3  # 初始 + 窗口内 2 次重启后放弃，不再反复调度
+    assert len(critical_logs) == 1  # "giving up" 只记一次，不刷屏

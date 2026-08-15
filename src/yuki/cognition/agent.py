@@ -1,7 +1,4 @@
 import os
-from yuki.logger import get_logger
-
-logger = get_logger("yuki.cognition.agent")
 
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
@@ -16,12 +13,15 @@ from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
+from yuki.functions.system import register_builtin_system
 from yuki.health import HealthStatus
+from yuki.logger import get_logger
 from yuki.memory.manager import MemoryManager
 from yuki.memory.service import register_memory_services
 from yuki.memory.store import MemoryStore
 from yuki.process import ProcessAgent
-from yuki.functions.system import register_builtin_system
+
+logger = get_logger("yuki.cognition.agent")
 
 
 class CognitionAgent(ProcessAgent):
@@ -145,12 +145,13 @@ class CognitionAgent(ProcessAgent):
         enabled = self.config.cloud.enabled
         configured = bool(self.config.cloud.base_url and self.config.cloud.model)
         api_key_present = bool(os.environ.get(self.config.cloud.api_key_env))
-        ok = (not enabled) or (
-            self._bridge is not None and configured and api_key_present
-        )
-        return HealthStatus(ok, {
+        installed = self._bridge is not None
+        # §8.2：云端不可用是设计内的降级路径（L1 兜底），不是进程故障，不触发重启。
+        degraded = enabled and not (installed and configured and api_key_present)
+        return HealthStatus(True, {
             "enabled": enabled,
-            "installed": self._bridge is not None,
+            "degraded": degraded,
+            "installed": installed,
             "configured": configured,
             "api_key_present": api_key_present,
         })

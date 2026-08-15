@@ -31,7 +31,11 @@ def test_collect_reports_process_and_uptime():
 def test_collect_marks_unhealthy_when_bus_threads_stale():
     class StaleBus(FakeBus):
         def bus_health(self):
-            return {"healthy": False, "threads": {"pub": 9.0, "dealer": 0.0, "sub": 0.0}, "dropped_count": 0}
+            return {
+                "healthy": False,
+                "threads": {"pub": 9.0, "dealer": 0.0, "sub": 0.0},
+                "dropped_count": 0,
+            }
 
     reporter = HealthReporter(StaleBus(), process="cognition")
     data = reporter.collect()

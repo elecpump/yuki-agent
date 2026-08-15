@@ -59,8 +59,6 @@ _user32.CallNextHookEx.argtypes = [
     wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
 ]
 
-pass  # kernel32 initialized above
-
 
 class _ScrollHookState:
     def __init__(self) -> None:

@@ -13,7 +13,7 @@ def _require(value, message):
     return {"memory": value}
 
 def _strip_high_sensitivity(items: list[dict]) -> list[dict]:
-    """REQ/REP 读路径的隐私硬约束：sensitivity==2 不出认知进程边界。"""
+    """检索路径的隐私过滤：sensitivity==2 的记忆不进生成上下文（§5.3）。"""
     return [item for item in items if item.get("sensitivity", 0) != 2]
 
 
@@ -39,18 +39,16 @@ def register_memory_services(bus, manager: MemoryManager) -> None:
         )}
 
     def on_list(payload: dict) -> dict:
-        return {"results": _strip_high_sensitivity(manager.list(
+        # 用户可查看任意记忆（§5.4）：list/get 不按敏感度过滤，仅检索路径过滤。
+        return {"results": manager.list(
             memory_type=payload.get("type"),
             min_sensitivity=payload.get("min_sensitivity", 0),
         )
-        )}
+        }
 
 
     def on_get(payload: dict) -> dict:
-        mem = manager.get(payload["id"])
-        if mem is not None and mem.get("sensitivity") == 2:
-            return {"memory": None}
-        return _require(mem, "memory not found")
+        return _require(manager.get(payload["id"]), "memory not found")
     bus.respond("memory/write", on_write)
     bus.respond("memory/query", on_query)
     bus.respond("memory/list", on_list)

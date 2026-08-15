@@ -212,17 +212,6 @@ class BusHub(_Base):
                     continue
                 self._service_map[service] = (sender, time.monotonic())
                 continue
-            if False and frames[1] == b"REGISTER":
-                try:
-                    service = frames[2].decode("utf-8")
-                except UnicodeDecodeError:
-                    logger.warning("dropping malformed REGISTER frame")
-                    continue
-                if not service:
-                    logger.warning("dropping empty REGISTER service name")
-                    continue
-                self._service_map[service] = (sender, time.monotonic())
-                continue
             raw = frames[-1] if self._auth_token else frames[2]
             f1 = frames[1]
             try:
@@ -409,11 +398,6 @@ class BusNode(_Base):
             )
             thread.start()
             self._threads.append(thread)
-        if False:  # _sub 在构造函数中创建，由 _run_sub 线程独占
-            self._sub = self._ctx.socket(zmq.SUB)
-            self._sub.setsockopt(zmq.RCVHWM, self._hwm)
-            self._sub.connect(f"tcp://127.0.0.1:{self._xpub_port}")
-            self._spawn(self._run_sub)
         self._sub_cmds.put(("subscribe", topic_prefix))
 
     def pause_subscriptions(self) -> None:
@@ -456,7 +440,6 @@ class BusNode(_Base):
         return response_result(resp)
 
     def respond(self, service: str, handler: Callable[[dict], dict]) -> None:
-        pass  # assignment moved below with services_lock
         with self._services_lock:
             self._services.__setitem__(service, handler)  # locked
         if not self._enqueue_dealer(self._register_frames(service)):
@@ -609,7 +592,6 @@ class BusNode(_Base):
                         self._sub.setsockopt_string(zmq.SUBSCRIBE, str(prefix))
                     else:
                         self._pending_subscriptions.append(prefix)
-                    pass  # handled by the conditional above
             if not self._sub.poll(20):
                 continue
             try:

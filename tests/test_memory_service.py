@@ -48,12 +48,12 @@ def test_delete_strengthen_wipe(bus_and_manager):
     rid2 = bus.request("memory/write", {"memory_type": "preference", "content": "x"})["id"]
     assert bus.request("memory/wipe", {})["deleted_count"] == 1
 
-def test_read_services_strip_high_sensitivity(bus_and_manager):
+def test_read_services_filter_high_sensitivity_from_retrieval_only(bus_and_manager):
     bus, _ = bus_and_manager
     rid = bus.request("memory/write", {
         "memory_type": "personal", "content": "银行卡密码",
         "sensitivity": 2,
     })["id"]
     assert bus.request("memory/query", {"text": "银行卡", "top_k": 5})["results"] == []
-    assert bus.request("memory/list", {})["results"] == []
-    assert bus.request("memory/get", {"id": rid})["memory"] is None
+    assert bus.request("memory/list", {})["results"][0]["sensitivity"] == 2
+    assert bus.request("memory/get", {"id": rid})["memory"]["sensitivity"] == 2
