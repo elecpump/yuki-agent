@@ -3,6 +3,7 @@ import math
 from typing import Callable
 
 from yuki.cognition.context.snapshot import ContextSnapshot
+from yuki.cognition.sensitive import SensitiveFilter
 from yuki.memory.manager import MemoryManager
 
 SITUATION_TOKENS = 200
@@ -29,23 +30,29 @@ class CloudViewBuilder:
 
     def __init__(self, summarize: Callable[[list[str]], str] | None = None, *,
                  max_turns: int = 20, max_tokens: int = 1500,
-                 verbatim_turns: int = 4, memory_top_k: int = 3) -> None:
+                 verbatim_turns: int = 4, memory_top_k: int = 3,
+                 sensitive_filter: SensitiveFilter | None = None) -> None:
         self._summarize = summarize
         self._max_turns = max_turns
         self._max_tokens = max_tokens
         self._verbatim_turns = verbatim_turns
         self._memory_top_k = memory_top_k
+        self._sensitive_filter = sensitive_filter or SensitiveFilter()
         self._summary_cache: dict[str, str] = {}
         self._summarize_failures = 0
         self._summarize_broken = False
 
     def enrich(self, snapshot: ContextSnapshot, memory: MemoryManager | None,
                utterance: str) -> ContextSnapshot:
-        summaries = self._fold(snapshot.recent_turns, utterance)
+        safe_turns = tuple(
+            t for t in snapshot.recent_turns
+            if not self._sensitive_filter.is_sensitive(t.get("content", ""))
+        )
+        summaries = self._fold(safe_turns, utterance)
         memories = self._retrieve_memory(memory, utterance)
         return ContextSnapshot(
             situation=snapshot.situation,
-            recent_turns=snapshot.recent_turns,
+            recent_turns=safe_turns,
             summaries=tuple(summaries),
             long_term_memory=tuple(memories),
         )

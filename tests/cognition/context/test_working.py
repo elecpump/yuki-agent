@@ -65,6 +65,14 @@ def test_snapshot_path_none_does_not_write(tmp_path):
     assert not list(tmp_path.glob("*.json"))
 
 
+def test_close_without_content_does_not_write_snapshot(tmp_path):
+    manager = make_store(tmp_path)
+    path = tmp_path / "empty_snap.json"
+    ctx = WorkingContext(manager, snapshot_path=path)
+    ctx.close()
+    assert not path.exists()
+
+
 def test_snapshot_write_failure_warns(tmp_path):
     manager = make_store(tmp_path)
     path = tmp_path / "no_dir" / "snap.json"  # 父目录不存在 → snapshot 应自动创建

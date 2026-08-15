@@ -4,6 +4,8 @@ from yuki.cognition.brain.actions import DEFAULT_JOKES
 from yuki.cognition.brain.hub import DecisionHub, build_brain
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.brain.policy import DecisionPolicy
+from yuki.cognition.context.store import ShortTermTurnStore
+from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.client import CloudError
 from yuki.functions.registry import FunctionRegistry
 from yuki.memory.manager import MemoryManager
@@ -289,6 +291,25 @@ def test_hub_writes_context_and_uses_projection(hub):
     assert ctx.users == ["你好"]
     assert proj.last is ctx
     assert ctx.agents == ["l1:你好"]
+
+
+def test_single_turn_writer_no_double_write(tmp_path):
+    bus = FakeBus()
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    working = WorkingContext(ShortTermTurnStore(manager), snapshot_path=None)
+    h = DecisionHub(
+        bus,
+        policy=DecisionPolicy(proactive_cooldown_s=120.0),
+        memory=manager,
+        l1=FakeL1(),
+        context=working,
+    )
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
+    assert working.turn_count() == 2
+    contents = [it["content"] for it in working.items()]
+    assert "你好" in contents
+    assert "l1:你好" in contents
+    manager.close()
 
 
 def test_hub_context_situation_used_for_situation_update(hub):

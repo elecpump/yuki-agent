@@ -110,3 +110,21 @@ def test_format_empty_snapshot():
     builder = CloudViewBuilder()
     text = builder.format(make_snapshot(), "")
     assert "用户说：" in text
+
+
+def test_enrich_drops_sensitive_turns_from_cloud_view():
+    builder = CloudViewBuilder()
+    snap = make_snapshot(turns=[
+        turn("今天天气不错", "user"),
+        turn("我的银行卡号是 6222021234567890", "user"),
+        turn("周末想去看电影", "agent"),
+    ])
+    out = builder.enrich(snap, None, "天气")
+    contents = [t["content"] for t in out.recent_turns]
+    assert "我的银行卡号是 6222021234567890" not in contents
+    assert "今天天气不错" in contents
+    assert "周末想去看电影" in contents
+    formatted = builder.format(out, "天气")
+    assert "6222021234567890" not in formatted
+    assert "今天天气不错" in formatted
+    assert "周末想去看电影" in formatted

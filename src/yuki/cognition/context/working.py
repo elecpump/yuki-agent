@@ -83,4 +83,5 @@ class WorkingContext:
             self._situation = situation
 
     def close(self) -> None:
-        self.snapshot()
+        if self._store.items() or self._situation is not None:
+            self.snapshot()

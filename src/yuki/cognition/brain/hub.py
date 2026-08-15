@@ -10,7 +10,6 @@ from yuki.cognition.brain.classifier import (
 )
 from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
 from yuki.cognition.l1 import L1Engine
-from yuki.cognition.l2.client import CloudError
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.logger import get_audit_logger, get_decision_logger, get_logger
 from yuki.topics import Topics
@@ -145,11 +144,6 @@ class DecisionHub:
             if spoke:
                 self._context_wrapper.add_agent(rendered)
 
-        if trigger == TriggerKind.UTTERANCE and self._memory is not None:
-            if text and not self._sensitive_filter.is_sensitive(text):
-                self._memory.short_term_add(text, kind="user")
-            if spoke and rendered:
-                self._memory.short_term_add(rendered, kind="assistant")
         if self._tuner is not None:
             if trigger == TriggerKind.SITUATION and spoke:
                 self._tuner.on_proactive_open()
