@@ -110,10 +110,24 @@ class CloudViewBuilder:
 
 - **预算分配**：先计算固定配额节（utterance+情境+逐字轮+记忆最小配额）的估算总量；剩余预算给折叠轮（优先）与记忆检索节。总超预算时，按上表"预算紧张时的处理"列裁剪（折叠轮 → 记忆检索），固定配额节不动。
 - **去重**：连续重复文本（相邻轮次同 content）只保留一次。
-- **折叠轮**（窗口内、逐字轮之外且 ≤ `max_turns` 的轮）：非空时——
-  - 缓存键 = 该段轮次内容的哈希；命中 → 复用缓存摘要。
-  - 未命中：`summarize` 非 None → 调 `summarize(older_texts)` 得摘要并缓存；`summarize` 为 None 或抛异常 → 计数占位 `（之前聊了 N 轮）`，不失败。
-  - 若折叠摘要本身超预算 → 截断摘要；仍超 → 降为计数占位。
+
+**折叠轮（窗口内、逐字轮之外且 ≤ `max_turns` 的轮）——固定折叠单元 + 预算触发 + 缓存 + 熔断**：
+
+```python
+FOLD_UNIT_SIZE = 6            # 每 6 轮为一个折叠单元
+SUMMARIZE_TIMEOUT_S = 2.0     # 摘要调用独立超时（短于主响应）
+SUMMARIZE_MAX_FAILURES = 3    # 连续失败阈值 → 熔断禁用 L2 摘要
+
+# CloudViewBuilder 内部状态
+self._summary_cache: dict[str, str] = {}   # 折叠单元键 → 摘要
+self._summarize_failures: int = 0          # 连续失败计数
+self._summarize_broken: bool = False       # 熔断后置位
+```
+
+1. **固定折叠单元**：折叠轮按轮序每 `FOLD_UNIT_SIZE` 轮切成一个单元（最旧单元在前）。**单元内容一旦脱离逐字窗口即固定，新消息只追加到最新单元**——已折叠单元不受影响，缓存命中率高。缓存键 = 该单元轮次内容序列的哈希（`hashlib.sha256`）。
+2. **预算触发（不固定轮数触发）**：仅当逐字保留折叠轮文本会超出预算时，才从最旧单元起逐一折叠；预算足够时（短会话）**不调摘要**，减少无谓 LLM 往返。
+3. **折叠单元处理**：命中缓存 → 复用；未命中且 `summarize` 可用且未熔断 → 调 `summarize(segment_texts)`（**独立 `SUMMARIZE_TIMEOUT_S` 超时**）→ 缓存摘要；失败/超时 → 计数占位 `（之前聊了 N 轮）`，连续失败计数 +1。
+4. **熔断**：`_summarize_failures >= SUMMARIZE_MAX_FAILURES` → `_summarize_broken = True`，之后不再调摘要，一律计数占位（规则截断降级），避免每次响应都被慢/失败的摘要拖累；成功一次重置计数。
 
 ## 5. CloudBridge 改动
 
@@ -121,7 +135,7 @@ class CloudViewBuilder:
 - `generate(utterance, context: ContextSnapshot | None = None, memory=None) -> str`：
   - `snapshot = view_builder.enrich(context, memory, utterance)`（`context=None` 时退化为仅含 utterance 的快照）；`view = view_builder.format(snapshot, utterance)`。
   - 其余（messages 组装/工具多轮/CloudError 降级）不变。
-- 默认 view_builder 的 `summarize` 由 bridge 注入：闭包调 `self._client.chat([system=SUMMARIZE_PROMPT, user=older_texts])` 取 `choices[0].message.content`；失败向上抛由 view 层回退计数占位。
+- 默认 view_builder 的 `summarize` 由 bridge 注入：闭包调 `self._client.chat([system=SUMMARIZE_PROMPT, user=older_texts], timeout_s=SUMMARIZE_TIMEOUT_S)` 取 `choices[0].message.content`；超时/失败向上抛由 view 层回退计数占位并计入熔断。为此 `CloudClient.chat` 增可选 `timeout_s` 参数（缺省用客户端超时），其余不变。
 - `SUMMARIZE_PROMPT`（代码常量）：把对话压缩成简短中文摘要，保留关键事实与用户偏好。
 
 ## 6. DecisionHub 接线
@@ -141,13 +155,13 @@ context:
   snapshot_path: "data/context_snapshot.json"   # 空串 = 纯内存，接受重启丢失
 ```
 
-env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBATIM_TURNS` / `YUKI_CONTEXT_SNAPSHOT_PATH`。配额常量（`SITUATION_TOKENS`/`MEMORY_MIN_TOKENS`/`MAX_UTTERANCE_CHARS`）与 `snapshot_interval` 为代码常量；`memory_top_k` 沿用 `CLOUD_MEMORY_TOP_K`（3）；WorkingContext 轮次容量由 short_term（50）承载。
+env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBATIM_TURNS` / `YUKI_CONTEXT_SNAPSHOT_PATH`。配额常量（`SITUATION_TOKENS`/`MEMORY_MIN_TOKENS`/`MAX_UTTERANCE_CHARS`）与折叠常量（`FOLD_UNIT_SIZE`/`SUMMARIZE_TIMEOUT_S`/`SUMMARIZE_MAX_FAILURES`）、`snapshot_interval` 为代码常量；`memory_top_k` 沿用 `CLOUD_MEMORY_TOP_K`（3）；WorkingContext 轮次容量由 short_term（50）承载。
 
 ## 8. 测试
 
 - `test_working.py`：WorkingContext 写侧（add_user/add_agent/update_situation）；snapshot/restore 往返（写文件→新实例恢复→TTL 过滤过期轮次→situation 恢复）；`snapshot_path=None` 时不写文件；快照写失败仅告警。
 - `test_snapshot.py`：ContextProjector 投影（新→旧、`max_turns` 裁剪、连续去重、situation 最新快照）；**快照为 frozen 只读**；`TurnStore` 协议可用自定义 store 注入（可替换性验证）。
-- `test_view.py`：`enrich`/`format` 两阶段（输入 ContextSnapshot）；填充顺序（utterance→情境→逐字轮→折叠轮→记忆）；固定配额（情境不裁剪、utterance 截断到 MAX_UTTERANCE_CHARS、逐字轮恒保留 verbatim_turns 轮）；预算紧张时先压缩折叠轮再砍次要记忆（关键偏好 `preference`/`strengthened` 保底 MEMORY_MIN_TOKENS）；连续重复去重；折叠三态（缓存命中复用 / 调 summarize / summarize=None 或异常→计数占位）；记忆高敏过滤；无快照退化。
+- `test_view.py`：`enrich`/`format` 两阶段（输入 ContextSnapshot）；填充顺序（utterance→情境→逐字轮→折叠轮→记忆）；固定配额（情境不裁剪、utterance 截断到 MAX_UTTERANCE_CHARS、逐字轮恒保留 verbatim_turns 轮）；预算紧张时先压缩折叠轮再砍次要记忆（关键偏好 `preference`/`strengthened` 保底 MEMORY_MIN_TOKENS）；连续重复去重；**折叠**：固定单元切分、单元缓存命中复用（新轮次不影响已折叠单元）、预算触发（短会话不调摘要）、摘要独立超时、失败计数占位、连续失败 `SUMMARIZE_MAX_FAILURES` 后熔断（不再调摘要、成功重置）；记忆高敏过滤；无快照退化。
 - `test_bridge.py`：注入 fake view_builder → generate 用其 enrich/format 输出；默认 builder 装配正常。
 - `test_hub.py`：context 写侧喂入（add_user/add_agent/update_situation 被调）+ 决策用投影快照；context=None 行为不变。
 - `test_cognition.py`：agent 装配 WorkingContext + ContextProjector。
@@ -175,5 +189,9 @@ env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBA
 | 填充顺序 utterance→情境→逐字轮→折叠轮→记忆 | 面向 LLM 的有效利用；utterance/情境/逐字轮是关键上下文 |
 | 「填充顺序 + 最低配额」预算模型 | 高优先级先放、各节有保证配额；折叠轮与次要记忆吸收预算压力，长期画像（关键偏好）不先丢 |
 | 字符启发式估 token | 零依赖；够预算管理用 |
-| LLM 摘要折叠 + 缓存 | 长会话不爆窗口；缓存避免每次多一次 LLM 往返 |
+| 固定折叠单元（每 6 轮）+ 单元缓存 | 新消息不使已折叠单元失效，缓存命中率高 |
+| 预算触发折叠（非固定轮数） | 短会话不调摘要，减少无谓 LLM 往返 |
+| 摘要独立短超时（2s） | 摘要延迟不拖垮主响应 |
+| 熔断（连续失败 ≥3 禁用摘要，回退计数占位） | 避免每次响应被慢/失败的摘要拖累 |
+| LLM 摘要折叠 + 缓存 | 长会话不爆窗口；缓存避免重复调用 |
 | 失败回退计数占位 | 摘要不可用不阻塞主响应 |
