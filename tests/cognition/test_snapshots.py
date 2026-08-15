@@ -80,9 +80,33 @@ def test_unknown_version_raises(tmp_path):
         store.lock(99)
 
 
+def test_diff_unknown_version_raises(tmp_path):
+    store = make(tmp_path)
+    store.save("a", {})
+    store.save("b", {})
+    with pytest.raises(ValueError):
+        store.diff(1, 99)
+    with pytest.raises(ValueError):
+        store.diff(99, 1)
+    with pytest.raises(ValueError):
+        store.diff(99, 100)
+
+
 def test_corrupt_file_returns_empty(tmp_path):
     path = tmp_path / "snapshots.json"
     path.write_text("{broken", encoding="utf-8")
+    store = PersonaStore(path)
+    assert store.active() is None
+    assert store.list_versions() == []
+
+
+def test_load_wrong_schema_tolerated(tmp_path):
+    path = tmp_path / "snapshots.json"
+    path.write_text("[1, 2, 3]", encoding="utf-8")
+    store = PersonaStore(path)
+    assert store.active() is None
+    assert store.list_versions() == []
+    path.write_text('{"versions": [{"version": 1}]}', encoding="utf-8")
     store = PersonaStore(path)
     assert store.active() is None
     assert store.list_versions() == []

@@ -38,8 +38,13 @@ class PersonaStore:
         except (OSError, ValueError):
             logger.warning("persona store load failed")
             return
+        if not isinstance(data, dict):
+            logger.warning("persona store load failed: bad schema")
+            return
         for v in data.get("versions") or []:
-            if isinstance(v, dict) and isinstance(v.get("version"), int):
+            if (isinstance(v, dict)
+                    and isinstance(v.get("version"), int)
+                    and isinstance(v.get("persona_prompt"), str)):
                 self._versions[v["version"]] = v
         self._active = data.get("active")
 
@@ -115,6 +120,10 @@ class PersonaStore:
         self._persist()
 
     def diff(self, v1: int, v2: int) -> str:
+        if v1 not in self._versions:
+            raise ValueError(f"unknown version: {v1}")
+        if v2 not in self._versions:
+            raise ValueError(f"unknown version: {v2}")
         a = self._versions[v1]["persona_prompt"].splitlines()
         b = self._versions[v2]["persona_prompt"].splitlines()
         return "\n".join(difflib.unified_diff(a, b, fromfile=f"v{v1}", tofile=f"v{v2}"))
