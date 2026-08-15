@@ -116,3 +116,33 @@ def test_cognition_agent_builds_tuner(tmp_path):
         assert agent._hub._policy is agent._hub._tuner._policy
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_builds_context_and_projector(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(context={"snapshot_path": str(tmp_path / "snap.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        assert agent._hub._context_wrapper is not None
+        assert agent._hub._projector is not None
+    finally:
+        agent.teardown()
+
+
+def test_cognition_agent_teardown_closes_context(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(context={"snapshot_path": str(tmp_path / "snap.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    agent.teardown()
+    # teardown 已调用 context.close()（写入快照到 data/context_snapshot.json 或按 config）
+    # 本测试仅验证不抛异常

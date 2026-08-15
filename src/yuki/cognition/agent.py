@@ -4,6 +4,9 @@ from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.brain.hub import build_brain
 from yuki.cognition.brain.policy import DecisionPolicy
+from yuki.cognition.context.snapshot import ContextProjector
+from yuki.cognition.context.store import ShortTermTurnStore
+from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.l1 import L1Engine
@@ -44,6 +47,7 @@ class CognitionAgent(ProcessAgent):
         self._registry = registry
         self._hub = None
         self._bridge = None
+        self._context = None
 
     def setup(self) -> None:
         if self._pipeline is None:
@@ -90,6 +94,13 @@ class CognitionAgent(ProcessAgent):
         soul = SoulStore(self.config.soul.path, self.config.persona_name)
         tuner = FeedbackTuner(policy, soul)
         tuner.load_soul()
+        context = WorkingContext(
+            ShortTermTurnStore(self._memory),
+            snapshot_path=self.config.context.snapshot_path or None,
+        )
+        context.restore()
+        projector = ContextProjector(max_turns=self.config.context.max_turns)
+        self._context = context
         self._bridge = bridge
         self._hub = build_brain(
             self.bus,
@@ -99,9 +110,14 @@ class CognitionAgent(ProcessAgent):
             policy=policy,
             bridge=bridge,
             tuner=tuner,
+            context=context,
+            projector=projector,
         )
 
     def teardown(self) -> None:
+        if self._context is not None:
+            self._context.close()
+            self._context = None
         if self._memory is not None:
             self._memory.close()
             self._memory = None
