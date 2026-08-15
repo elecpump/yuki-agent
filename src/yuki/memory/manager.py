@@ -137,11 +137,14 @@ class MemoryManager:
     def ping(self) -> bool:
         return self._store.ping()
 
-    def short_term_add(self, content: str, *, kind: str = "event") -> None:
-        self._short_term.add(content, kind=kind)
+    def short_term_add(self, content: str, *, kind: str = "event", at: float | None = None) -> None:
+        self._short_term.add(content, kind=kind, at=at)
 
     def short_term_items(self) -> list[dict]:
         return self._short_term.items()
+
+    def short_term_clear(self) -> None:
+        self._short_term.clear()
 
     def close(self) -> None:
         self._store.close()

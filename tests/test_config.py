@@ -131,3 +131,19 @@ def test_soul_env_override(monkeypatch):
     monkeypatch.setenv("YUKI_SOUL_PATH", "tmp/soul.json")
     config = Config.load(None)
     assert config.soul.path == "tmp/soul.json"
+
+
+def test_context_defaults():
+    config = Config()
+    assert config.context.max_turns == 20
+    assert config.context.max_tokens == 1500
+    assert config.context.verbatim_turns == 4
+    assert config.context.snapshot_path == "data/context_snapshot.json"
+
+
+def test_context_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_CONTEXT_MAX_TURNS", "30")
+    monkeypatch.setenv("YUKI_CONTEXT_SNAPSHOT_PATH", "tmp/snap.json")
+    config = Config.load(None)
+    assert config.context.max_turns == 30
+    assert config.context.snapshot_path == "tmp/snap.json"

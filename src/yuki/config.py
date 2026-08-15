@@ -56,6 +56,13 @@ class SoulConfig(BaseModel):
     path: str = "data/soul.json"
 
 
+class ContextConfig(BaseModel):
+    max_turns: int = Field(20, ge=1)
+    max_tokens: int = Field(1500, ge=100)
+    verbatim_turns: int = Field(4, ge=1)
+    snapshot_path: str = "data/context_snapshot.json"
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     persona_name: str = "yuki"
@@ -67,6 +74,7 @@ class Config(BaseModel):
     brain: BrainConfig = Field(default_factory=BrainConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
+    context: ContextConfig = Field(default_factory=ContextConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -89,6 +97,7 @@ class Config(BaseModel):
             ("brain", BrainConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
+            ("context", ContextConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:

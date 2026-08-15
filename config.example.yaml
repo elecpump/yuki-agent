@@ -35,3 +35,8 @@ cloud:
   max_turns: 3
 soul:
   path: data/soul.json
+context:
+  max_turns: 20
+  max_tokens: 1500
+  verbatim_turns: 4
+  snapshot_path: data/context_snapshot.json

@@ -110,3 +110,15 @@ def test_manager_short_term_ttl_param_honored(tmp_path):
     m.short_term_add("a")
     assert m.short_term_items() == []
     m.close()
+
+
+def test_short_term_add_with_at_and_clear():
+    manager = MemoryManager(MemoryStore(":memory:"))
+    t0 = time.time()
+    manager.short_term_add("a", kind="turn", at=t0)
+    manager.short_term_add("b", kind="turn", at=t0 + 100.0)
+    items = manager.short_term_items()
+    assert [it["content"] for it in items] == ["b", "a"]
+    assert items[1]["ts"] == t0
+    manager.short_term_clear()
+    assert manager.short_term_items() == []
