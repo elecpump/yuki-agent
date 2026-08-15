@@ -19,7 +19,27 @@ HC_ACTION = 0
 
 HOOKPROC = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
 
-_user32 = ctypes.windll.user32
+class _UnavailableApi:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError(f"win32 API {self.name} unavailable on this platform")
+
+
+class _UnavailableWin32:
+    def __getattr__(self, name: str):
+        api = _UnavailableApi(name)
+        setattr(self, name, api)
+        return api
+
+
+try:
+    _user32 = ctypes.windll.user32
+    _kernel32 = getattr(ctypes.windll, "kernel32")
+except (AttributeError, OSError):
+    _user32 = _UnavailableWin32()
+    _kernel32 = _UnavailableWin32()
 _user32.SetWindowsHookExW.restype = wintypes.HHOOK
 _user32.SetWindowsHookExW.argtypes = [
     ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD
@@ -39,7 +59,7 @@ _user32.CallNextHookEx.argtypes = [
     wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM
 ]
 
-_kernel32 = ctypes.windll.kernel32
+pass  # kernel32 initialized above
 
 
 class _ScrollHookState:

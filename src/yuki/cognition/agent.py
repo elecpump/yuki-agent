@@ -1,4 +1,7 @@
 import os
+from yuki.logger import get_logger
+
+logger = get_logger("yuki.cognition.agent")
 
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
@@ -103,6 +106,18 @@ class CognitionAgent(ProcessAgent):
             self._memory.close()
             self._memory = None
 
+    def loop(self) -> None:
+        # 定期执行衰减清理；进程存活期间不会无限积累已过期记忆。
+        while not self.shutdown.shutdown_requested:
+            self.shutdown.wait(timeout=self.config.memory.cleanup_interval_s)
+            if self._memory is not None:
+                try:
+                    deleted = self._memory.cleanup()
+                    if deleted:
+                        logger.info("memory cleanup finished", deleted=deleted)
+                except Exception:
+                    logger.warning("memory cleanup failed", exc_info=True)
+
     def health_components(self):
         return {
             "vlm": self._health_vlm,
@@ -129,11 +144,15 @@ class CognitionAgent(ProcessAgent):
     def _health_l2(self) -> HealthStatus:
         enabled = self.config.cloud.enabled
         configured = bool(self.config.cloud.base_url and self.config.cloud.model)
-        ok = (not enabled) or (self._bridge is not None and configured)
+        api_key_present = bool(os.environ.get(self.config.cloud.api_key_env))
+        ok = (not enabled) or (
+            self._bridge is not None and configured and api_key_present
+        )
         return HealthStatus(ok, {
             "enabled": enabled,
             "installed": self._bridge is not None,
             "configured": configured,
+            "api_key_present": api_key_present,
         })
 
     def _health_pipeline(self) -> HealthStatus:

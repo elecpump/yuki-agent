@@ -1,4 +1,7 @@
 import logging
+import os
+import queue
+import time
 import threading
 import uuid
 from typing import Callable
@@ -19,6 +22,17 @@ from yuki.proto.codec import (
 )
 
 logger = get_logger("yuki.bus")
+
+# Hub 侧服务路由租约：provider 必须周期性 REGISTER 续租，过期后转为
+# service not found，而不是把请求路由到已经死掉的 DEALER identity。
+SERVICE_TTL_S = 30.0
+
+# BusHub 内置 liveness 服务。bus_server 进程不挂普通 health responder，
+# Supervisor 通过它区分“进程活着但总线已经死掉”的假活状态。
+BUS_HEALTH_SERVICE = "health/bus_server"
+
+# proxy 线程超过该时长未更新心跳即视为总线发布面不健康。
+PROXY_STALE_S = 5.0
 
 
 class BusError(Exception):
@@ -42,16 +56,22 @@ class _Base:
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
 
-    def _spawn(self, target) -> None:
-        thread = threading.Thread(target=target, daemon=True)
+    def _spawn(self, target, name: str | None = None) -> threading.Thread:
+        thread = threading.Thread(target=target, daemon=True, name=name)
         thread.start()
         self._threads.append(thread)
+        return thread
+
+    def _on_stop(self) -> None:
+        """子类在 join 线程前唤醒阻塞中的 worker（如放 sentinel）。"""
+        pass
 
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
         self._stop.set()
+        self._on_stop()
         for thread in self._threads:
             thread.join(timeout=2.0)
         self._close_socket(getattr(self, "_xsub", None))
@@ -83,7 +103,10 @@ class BusHub(_Base):
         self._xsub_port = base_port
         self._xpub_port = base_port + 1
         self._router_port = base_port + 2
-        self._service_map: dict[str, bytes] = {}
+        self._service_map: dict[str, tuple[bytes, float]] = {}
+
+        self._last_proxy_activity = time.monotonic()
+        self._started_at = time.time()
         self._xsub = self._ctx.socket(zmq.XSUB)
         self._xsub.bind(f"tcp://127.0.0.1:{self._xsub_port}")
         self._xpub = self._ctx.socket(zmq.XPUB)
@@ -96,6 +119,8 @@ class BusHub(_Base):
 
     def _proxy_loop(self) -> None:
         while not self._stop.is_set():
+
+            self._last_proxy_activity = time.monotonic()
             poller = zmq.Poller()
             poller.register(self._xsub, zmq.POLLIN)
             poller.register(self._xpub, zmq.POLLIN)
@@ -112,8 +137,34 @@ class BusHub(_Base):
         self._close_socket(self._xsub)
         self._close_socket(self._xpub)
 
+
+    def _purge_stale_services(self, now: float) -> None:
+        stale = [
+            service
+            for service, (_, registered_at) in self._service_map.items()
+            if now - registered_at > SERVICE_TTL_S
+        ]
+        for service in stale:
+            self._service_map.pop(service, None)
+            logger.warning("service route expired", service=service)
+
+    def _collect_health(self) -> dict:
+        proxy_age = time.monotonic() - self._last_proxy_activity
+        proxy_alive = proxy_age < PROXY_STALE_S
+        return {
+            "process": "bus_server",
+            "pid": os.getpid(),
+            "uptime_s": round(time.time() - self._started_at, 2),
+            "error_count": 0,
+            "healthy": proxy_alive,
+            "components": {
+                "proxy": {"ok": proxy_alive, "last_activity_s": round(proxy_age, 3)},
+                "router": {"ok": True},
+            },
+        }
     def _router_loop(self) -> None:
         while not self._stop.is_set():
+            self._purge_stale_services(time.monotonic())
             if not self._router.poll(100):
                 continue
             try:
@@ -124,7 +175,15 @@ class BusHub(_Base):
                 continue
             sender = frames[0]
             if frames[1] == b"REGISTER":
-                self._service_map[frames[2].decode()] = sender
+                try:
+                    service = frames[2].decode("utf-8")
+                except UnicodeDecodeError:
+                    logger.warning("dropping malformed REGISTER frame")
+                    continue
+                if not service:
+                    logger.warning("dropping empty REGISTER service name")
+                    continue
+                self._service_map[service] = (sender, time.monotonic())
                 continue
             f1, f2 = frames[1], frames[2]
             try:
@@ -134,9 +193,21 @@ class BusHub(_Base):
                 continue
             kind = envelope.WhichOneof("body")
             if kind == "request":
-                provider = self._service_map.get(envelope.request.service, "")
+                service = envelope.request.service
+                if service == BUS_HEALTH_SERVICE:
+                    reply = build_response_result(
+                        envelope.request.request_id, self._collect_health(),
+                        trace_id=envelope.trace_id,
+                    )
+                    self._router.send_multipart([sender, reply.SerializeToString()])
+                    continue
+                entry = self._service_map.get(service)
+                provider = entry[0] if entry else None
                 if not provider:
-                    err = build_response_error(envelope.request.request_id, "service not found")
+                    err = build_response_error(
+                        envelope.request.request_id, "service not found",
+                        trace_id=envelope.trace_id,
+                    )
                     self._router.send_multipart([sender, err.SerializeToString()])
                 else:
                     self._router.send_multipart([provider, sender, f2])
@@ -153,17 +224,40 @@ class BusNode(_Base):
         base_port: int = 5555,
         hwm: int = 1000,
         register_interval: float = 10.0,
+        subscriber_queue_size: int = 256,
     ) -> None:
         super().__init__()
         self._xsub_port = base_port
         self._xpub_port = base_port + 1
         self._router_port = base_port + 2
         self._hwm = hwm
+        self._subscriber_queue_size = max(1, subscriber_queue_size)
         self._register_interval = register_interval
         self._handlers: dict[str, list[Callable[[str, dict], None]]] = {}
         self._services: dict[str, Callable[[dict], dict]] = {}
         self._pending: dict[str, dict] = {}
-        self._lock = threading.Lock()
+        self._handlers_lock = threading.Lock()
+        # 兼容旧代码路径：订阅/请求/响应共用一把互斥锁即可满足
+        # 多线程安全；新代码优先使用语义更明确的分区锁。
+        self._lock = self._handlers_lock
+        self._handler_queues: dict[int, queue.Queue] = {}
+        self._services_lock = threading.Lock()
+        self._pending_lock = threading.Lock()
+        self._error_count = 0
+        self._dropped_count = 0
+        self._counts_lock = threading.Lock()
+
+        self._pub_queue: queue.Queue = queue.Queue(maxsize=max(1, hwm))
+        self._dealer_outbox: queue.Queue = queue.Queue(maxsize=max(1, hwm * 2))
+        self._sub_cmds: queue.Queue = queue.Queue()
+        self._loop_heartbeats = {
+            "pub": time.monotonic(),
+            "dealer": time.monotonic(),
+            "sub": time.monotonic(),
+        }
+        self._subscriptions_enabled = threading.Event()
+        self._subscriptions_enabled.set()
+        self._pending_subscriptions: list[str] = []
         self._error_count = 0
 
         self._pub = self._ctx.socket(zmq.PUB)
@@ -174,27 +268,95 @@ class BusNode(_Base):
         self._dealer.setsockopt(zmq.SNDHWM, hwm)
         self._dealer.setsockopt(zmq.RCVHWM, hwm)
         self._dealer.connect(f"tcp://127.0.0.1:{self._router_port}")
-        self._spawn(self._dealer_loop)
-        self._spawn(self._register_loop)
+        self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.RCVHWM, hwm)
+        self._sub.connect(f"tcp://127.0.0.1:{self._xpub_port}")
+
+        self._spawn(self._pub_loop, name="yuki-bus-pub")
+        self._spawn(self._dealer_loop, name="yuki-bus-dealer")
+        self._spawn(self._register_loop, name="yuki-bus-register")
+        self._spawn(self._run_sub, name="yuki-bus-sub")
 
     @property
     def error_count(self) -> int:
-        return self._error_count
+        with self._counts_lock:
+            return self._error_count
 
-    def publish(self, topic: str, payload: dict) -> None:
-        envelope = build_event(topic, payload)
-        self._pub.send_multipart([topic.encode(), envelope.SerializeToString()])
+    @property
+    def dropped_count(self) -> int:
+        with self._counts_lock:
+            return self._dropped_count
+
+
+    def bus_health(self) -> dict:
+        now = time.monotonic()
+        with self._counts_lock:
+            ages = {
+                name: round(now - heartbeat, 3)
+                for name, heartbeat in self._loop_heartbeats.items()
+            }
+            dropped = self._dropped_count
+        return {
+            "healthy": all(age < PROXY_STALE_S for age in ages.values()),
+            "threads": ages,
+            "dropped_count": dropped,
+        }
+    def _bump_error(self, n: int = 1) -> None:
+        with self._counts_lock:
+            self._error_count += n
+
+    def _bump_dropped(self, n: int = 1) -> None:
+        with self._counts_lock:
+            self._dropped_count += n
+
+    def _enqueue_dealer(self, frames: list, timeout_s: float | None = None) -> bool:
+        try:
+            if timeout_s is None:
+                self._dealer_outbox.put_nowait(frames)
+            else:
+                self._dealer_outbox.put(frames, timeout=timeout_s)
+            return True
+        except queue.Full:
+            return False
+
+    def publish(self, topic: str, payload: dict, *, trace_id: str | None = None) -> None:
+        envelope = build_event(topic, payload, trace_id=trace_id)
+        frames = [topic.encode(), envelope.SerializeToString()]
+        try:
+            self._pub_queue.put_nowait(frames)
+        except queue.Full:
+            self._bump_dropped()
+            logger.warning("publish queue full, dropping event", topic=topic)
 
     def subscribe(self, topic_prefix: str, handler: Callable[[str, dict], None]) -> None:
         with self._lock:
             handlers = self._handlers.setdefault(topic_prefix, [])
             handlers.append(handler)
-        if not hasattr(self, "_sub"):
+
+            worker_queue: queue.Queue = queue.Queue(maxsize=self._subscriber_queue_size)
+            self._handler_queues[id(handler)] = worker_queue
+            thread = threading.Thread(
+                target=self._handler_worker,
+                args=(handler, worker_queue),
+                daemon=True,
+                name=f"yuki-bus-handler:{topic_prefix}",
+            )
+            thread.start()
+            self._threads.append(thread)
+        if False:  # _sub 在构造函数中创建，由 _run_sub 线程独占
             self._sub = self._ctx.socket(zmq.SUB)
             self._sub.setsockopt(zmq.RCVHWM, self._hwm)
             self._sub.connect(f"tcp://127.0.0.1:{self._xpub_port}")
             self._spawn(self._run_sub)
-        self._sub.setsockopt_string(zmq.SUBSCRIBE, topic_prefix)
+        self._sub_cmds.put(("subscribe", topic_prefix))
+
+    def pause_subscriptions(self) -> None:
+        """暂缓应用 SUBSCRIBE，用于 setup 期间装配多个订阅而不漏早期事件。"""
+        self._subscriptions_enabled.clear()
+
+    def resume_subscriptions(self) -> None:
+        self._subscriptions_enabled.set()
+        self._sub_cmds.put(("resume", None))
 
     def request(self, service: str, payload: dict, timeout_ms: int = 2000) -> dict:
         rid = uuid.uuid4().hex
@@ -203,24 +365,87 @@ class BusNode(_Base):
         envelope = build_request(service, rid, trace_id, payload)
         with self._lock:
             self._pending[rid] = {"event": event, "result": None}
-        self._dealer.send_multipart([service.encode(), envelope.SerializeToString()])
+        frames = [service.encode(), envelope.SerializeToString()]
+        if not self._enqueue_dealer(
+            frames, timeout_s=min(max(timeout_ms / 1000.0, 0.1), 2.0)
+        ):
+            with self._lock:
+                self._pending.pop(rid, None)
+            raise BusTimeoutError(
+                f"request to {service!r} dropped: dealer outbox full"
+            )
         if not event.wait(timeout_ms / 1000.0):
             with self._lock:
                 self._pending.pop(rid, None)
             raise BusTimeoutError(f"request to {service!r} timed out after {timeout_ms}ms")
         with self._lock:
             resp = self._pending.pop(rid)["result"]
+        if resp is None:
+            raise BusTimeoutError(f"request to {service!r} timed out after {timeout_ms}ms")
         if resp.response.HasField("error"):
             raise BusError(resp.response.error)
         return response_result(resp)
 
     def respond(self, service: str, handler: Callable[[dict], dict]) -> None:
-        self._services[service] = handler
-        self._dealer.send_multipart([b"REGISTER", service.encode()])
+        pass  # assignment moved below with services_lock
+        with self._services_lock:
+            self._services.__setitem__(service, handler)  # locked
+        if not self._enqueue_dealer([b"REGISTER", service.encode()]):
+            logger.warning(
+                "REGISTER frame dropped (dealer outbox full)", service=service
+            )
 
+
+    def _on_stop(self) -> None:
+        with self._handlers_lock:
+            for worker_queue in self._handler_queues.values():
+                try:
+                    worker_queue.put_nowait(None)
+                except queue.Full:
+                    # 队列已满时 worker 正在退出或积压；关闭阶段由 daemon 线程兜底。
+                    pass
+
+    def _handler_worker(self, handler, worker_queue: queue.Queue) -> None:
+        while True:
+            item = worker_queue.get()
+            if item is None:
+                return
+            topic, payload = item
+            try:
+                handler(topic, payload)
+            except Exception:
+                logger.error("subscriber handler failed", topic=topic, exc_info=True)
+                self._bump_error()
+
+    def _pub_loop(self) -> None:
+        self._loop_heartbeats["pub"] = time.monotonic()
+        while not self._stop.is_set():
+            self._loop_heartbeats["pub"] = time.monotonic()
+            try:
+                frames = self._pub_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self._pub.send_multipart(frames)
+            except zmq.ZMQError:
+                logger.error("pub loop stopped", exc_info=True)
+                self._bump_error()
+                return
     def _dealer_loop(self) -> None:
         while not self._stop.is_set():
-            if not self._dealer.poll(100):
+            self._loop_heartbeats["dealer"] = time.monotonic()
+            while True:
+                try:
+                    frames = self._dealer_outbox.get_nowait()
+                except queue.Empty:
+                    break
+                try:
+                    self._dealer.send_multipart(frames)
+                except zmq.ZMQError:
+                    logger.error("dealer loop stopped", exc_info=True)
+                    self._bump_error()
+                    return
+            if not self._dealer.poll(50):
                 continue
             try:
                 frames = self._dealer.recv_multipart()
@@ -238,17 +463,27 @@ class BusNode(_Base):
                     if envelope.trace_id:
                         unbind_trace_id()
                     continue
-                handler = self._services.get(envelope.request.service)
+                with self._services_lock:
+                    handler = self._services.get(envelope.request.service)
                 if handler is None:
-                    reply = build_response_error(envelope.request.request_id, "service not found")
+                    reply = build_response_error(
+                        envelope.request.request_id, "service not found",
+                        trace_id=envelope.trace_id,
+                    )
                 else:
                     try:
                         result = handler(request_payload(envelope))
-                        reply = build_response_result(envelope.request.request_id, result)
+                        reply = build_response_result(
+                            envelope.request.request_id, result,
+                            trace_id=envelope.trace_id,
+                        )
                     except Exception:
                         logger.error("responder handler failed", service=envelope.request.service)
-                        self._error_count += 1
-                        reply = build_response_error(envelope.request.request_id, "handler error")
+                        self._bump_error()
+                        reply = build_response_error(
+                            envelope.request.request_id, "handler error",
+                            trace_id=envelope.trace_id,
+                        )
                 self._dealer.send_multipart([client_id, reply.SerializeToString()])
                 if envelope.trace_id:
                     unbind_trace_id()
@@ -270,24 +505,53 @@ class BusNode(_Base):
     def _register_loop(self) -> None:
         while not self._stop.is_set():
             self._stop.wait(timeout=self._register_interval)
-            services = list(self._services.keys())
+            if self._stop.is_set():
+                return
+            with self._services_lock:
+                services = list(self._services.keys())
             if not services:
                 continue
             try:
                 for service in services:
-                    self._dealer.send_multipart([b"REGISTER", service.encode()])
+                    if not self._enqueue_dealer([b"REGISTER", service.encode()]):
+                        logger.warning(
+                            "REGISTER refresh dropped (dealer outbox full)",
+                            service=service,
+                        )
             except zmq.ZMQError:
                 return
 
     def _run_sub(self) -> None:
         while not self._stop.is_set():
-            if not self._sub.poll(100):
+            self._loop_heartbeats["sub"] = time.monotonic()
+            while True:
+                try:
+                    command = self._sub_cmds.get_nowait()
+                except queue.Empty:
+                    break
+                if command[0] == "resume":
+                    for pending_prefix in self._pending_subscriptions:
+                        self._sub.setsockopt_string(zmq.SUBSCRIBE, pending_prefix)
+                    self._pending_subscriptions.clear()
+                    continue
+                kind, prefix = command
+                if kind == "subscribe":
+                    if self._subscriptions_enabled.is_set():
+                        self._sub.setsockopt_string(zmq.SUBSCRIBE, str(prefix))
+                    else:
+                        self._pending_subscriptions.append(prefix)
+                    pass  # handled by the conditional above
+            if not self._sub.poll(20):
                 continue
             try:
                 raw_topic, raw_payload = self._sub.recv_multipart()
             except zmq.ZMQError:
                 return
-            topic = raw_topic.decode()
+            try:
+                topic = raw_topic.decode("utf-8")
+            except UnicodeDecodeError:
+                logger.warning("dropping message with malformed topic")
+                continue
             try:
                 envelope = parse_envelope(raw_payload)
             except DecodeError:
@@ -305,9 +569,18 @@ class BusNode(_Base):
                     for h in handlers
                 ]
             for handler in matching:
+                worker_queue = self._handler_queues.get(id(handler))
                 try:
-                    handler(topic, payload)
+                    if worker_queue is None:
+                        continue
+                    try:
+                        worker_queue.put_nowait((topic, payload))
+                    except queue.Full:
+                        self._bump_dropped()
+                        logger.warning(
+                            "subscriber queue full, dropping event", topic=topic
+                        )
                 except Exception:
                     logger.error("subscriber handler failed", topic=topic)
-                    self._error_count += 1
+                    self._bump_error()
         self._close_socket(getattr(self, "_sub", None))

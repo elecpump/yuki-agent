@@ -14,6 +14,12 @@ class FakeBus:
     def subscribe(self, prefix, handler):
         self.subscriptions.setdefault(prefix, []).append(handler)
 
+    def pause_subscriptions(self):
+        pass
+
+    def resume_subscriptions(self):
+        pass
+
     def publish(self, topic, payload):
         self.published.append((topic, payload))
 

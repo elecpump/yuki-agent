@@ -12,7 +12,7 @@ Windows 上的纯语音陪伴 agent（开发中）。第一期：浏览/阅读�
 ## 运行
 
 ```bash
-pip install -e ".[dev]"
+pip install -e ".[dev,windows]"
 # 终端 1
 python -m yuki.cognition
 # 终端 2（触发一次呼叫）

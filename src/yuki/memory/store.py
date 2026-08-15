@@ -70,7 +70,11 @@ class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self._path), check_same_thread=False)
+        self._conn = sqlite3.connect(
+            str(self._path), check_same_thread=False, timeout=5.0
+        )
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.Lock()
         _ensure_schema(self._conn)
@@ -196,7 +200,11 @@ class MemoryStore:
             params.append(int(top_k))
             with self._lock:
                 rows = self._conn.execute(sql, params).fetchall()
-            return [(self._row(r), 1.0 / (1.0 + abs(r["bm25"]))) for r in rows]
+            ranked = []
+            for r in rows:
+                relevance = max(0.0, -float(r["bm25"]))
+                ranked.append((self._row(r), 1.0 - 1.0 / (1.0 + relevance)))
+            return ranked
         escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         sql = (
             "SELECT * FROM memories "

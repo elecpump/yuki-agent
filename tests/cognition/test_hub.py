@@ -123,6 +123,23 @@ class FakeBridge:
         return self._reply
 
 
+class FakeSensitive:
+    def __init__(self, flag: bool = False):
+        self.flag = flag
+
+    def is_sensitive(self, text: str) -> bool:
+        return self.flag
+
+
+def test_l2_blocked_for_sensitive_utterance(hub):
+    h, bus, _ = hub
+    bridge = FakeBridge(reply="不应被调用")
+    h._bridge = bridge
+    h._sensitive_filter = FakeSensitive(True)
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "我的密码是123456", "duration_s": 1.0, "ts": 0.0})
+    assert bridge.calls == []
+    assert _reply_text(bus)  # 本地 L1 兜底，仍然有回应
+
 def test_l2_intent_routes_to_bridge(hub):
     h, bus, _ = hub
     h._bridge = FakeBridge(reply="云端深度回答")

@@ -6,13 +6,28 @@ build-backend = "setuptools.build_meta"
 name = "yuki"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["pyzmq>=25", "structlog>=24", "pydantic>=2", "PyYAML>=6", "protobuf>=7.35.1",
-                "windows-capture>=2.0", "sounddevice>=0.5", "numpy>=1.26", "comtypes>=1.2",
-                "uiautomation>=2", "pywin32>=306", "Pillow>=10", "psutil>=5.9",
+dependencies = ["pyzmq>=25", "structlog>=24", "pydantic>=2", "PyYAML>=6",
+                "protobuf>=7.35.1,<8", "numpy>=1.26", "Pillow>=10", "psutil>=5.9",
                 "webrtcvad-wheels>=2.0.12"]
 
 [project.optional-dependencies]
+windows = [
+    "windows-capture>=2.0",
+    "sounddevice>=0.5",
+    "comtypes>=1.2",
+    "uiautomation>=2",
+    "pywin32>=306",
+                "webrtcvad-wheels>=2.0.12"]
+
 dev = ["pytest>=8", "grpcio-tools>=1.66"]
+ml = ["transformers", "torch", "qwen-vl-utils", "funasr"]
+
+[tool.yuki]
+legacy_comment = """
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "grpcio-tools>=1.66"]
+"""
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -21,3 +36,7 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = ["-m", "not e2e", "--import-mode=importlib"]
 markers = ["e2e: end-to-end integration test that spawns real processes"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

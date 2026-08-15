@@ -121,3 +121,13 @@ def test_struct_number_fidelity_boundary():
     env = build_request("svc", "r1", "t1", {"n": 2**53 + 1})
     parsed = parse_envelope(env.SerializeToString())
     assert request_payload(parsed) == {"n": 2**53}
+
+
+def test_response_and_event_carry_trace_id():
+    resp = build_response_result("rid-1", {"ok": True}, trace_id="trace-resp")
+    parsed = parse_envelope(resp.SerializeToString())
+    assert parsed.trace_id == "trace-resp"
+
+    event = build_event("event/awake", {"source": "hotkey"}, trace_id="trace-event")
+    parsed = parse_envelope(event.SerializeToString())
+    assert parsed.trace_id == "trace-event"

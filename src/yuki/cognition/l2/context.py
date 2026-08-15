@@ -22,4 +22,9 @@ def build_cloud_context(
         safe = [m for m in hits if m.get("sensitivity", 0) != 2]
         if safe:
             parts.append("相关记忆：\n" + "\n".join(f"- {m['content']}" for m in safe))
+        recent = memory.short_term_items()
+        if recent:
+            parts.append("最近对话：\n" + "\n".join(
+                f"- [{item['kind']}] {item['content']}" for item in recent
+            ))
     return "\n".join(parts)

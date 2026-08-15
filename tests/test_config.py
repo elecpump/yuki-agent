@@ -44,6 +44,10 @@ def test_validation_rejects_bad_port():
     with pytest.raises(ValidationError):
         Config(bus={"base_port": 99})
 
+def test_validation_rejects_unknown_section():
+    with pytest.raises(ValidationError):
+        Config(unknown_section={"x": 1})
+
 
 def test_load_autodiscovers_config_yaml_in_cwd(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text(
@@ -64,6 +68,7 @@ def test_memory_defaults():
     assert config.memory.decay_threshold == 0.02
     assert config.memory.short_term_ttl_s == 1800
     assert config.memory.short_term_capacity == 50
+    assert config.memory.cleanup_interval_s == 300.0
 
 
 def test_memory_env_override(monkeypatch):

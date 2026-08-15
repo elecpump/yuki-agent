@@ -1,6 +1,7 @@
 import json
 import time
 from pathlib import Path
+import threading
 
 
 class Session:
@@ -13,13 +14,15 @@ class Session:
         self.events_path = self.dir / "events.jsonl"
         self._frame_seq = 0
         self._closed = False
+        self._lock = threading.Lock()
 
     def record_event(self, topic: str, payload: dict) -> None:
         if self._closed:
             raise RuntimeError("session closed")
         line = json.dumps({"ts": time.time(), "topic": topic, "payload": payload}, ensure_ascii=False)
-        with self.events_path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+        with self._lock:
+            with self.events_path.open("a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
 
     def save_frame(self, image_bytes: bytes, fmt: str = "png") -> Path:
         if self._closed:

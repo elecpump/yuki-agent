@@ -386,3 +386,44 @@ def test_probe_service_not_found_does_not_restart():
     sup.tick(bus=ProbeBus(), health_timeout_ms=200)
     assert len(procs) == 1  # 服务未注册属瞬时状态，不重启
     assert procs[0].terminated == 0
+
+def test_unhealthy_health_result_restarts_process():
+    created = []
+
+    class Proc:
+        def __init__(self):
+            self.terminated = 0
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated += 1
+
+        def wait(self, timeout=None):
+            return 0
+
+        def kill(self):
+            pass
+
+    def factory(cmd, env=None, creationflags=None):
+        p = Proc()
+        created.append(p)
+        return p
+
+    class ProbeBus:
+        def request(self, service, payload, timeout_ms=2000):
+            return {"healthy": False, "process": service.removeprefix("health/")}
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        env=None,
+        clock=lambda: 0.0,
+        sleep=lambda s: None,
+    )
+    restarted = sup.tick(bus=ProbeBus(), health_timeout_ms=200)
+    assert restarted == ["a"]
+    assert len(created) == 2
+    assert created[0].terminated == 1

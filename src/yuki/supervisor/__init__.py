@@ -5,7 +5,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable
 
-from yuki.bus import BusError, BusTimeoutError, BusNode
+from yuki.bus import BUS_HEALTH_SERVICE, BusError, BusTimeoutError, BusNode
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.supervisor")
@@ -36,6 +36,7 @@ class Supervisor:
         restart_max_delay: float = 60.0,
         restart_window: int = 600,
         restart_max_per_window: int = 5,
+        startup_grace_s: float = 20.0,
     ) -> None:
         self._popen = popen_factory
         self._restart_delay = restart_delay
@@ -46,8 +47,15 @@ class Supervisor:
         self.restart_max_delay = restart_max_delay
         self.restart_window = restart_window
         self.restart_max_per_window = restart_max_per_window
+        self.startup_grace_s = startup_grace_s
         self._children: list[Child] = [
-            Child(name=name, cmd=cmd, proc=self._spawn(cmd)) for name, cmd in cmds
+            Child(
+                name=name,
+                cmd=cmd,
+                proc=self._spawn(cmd),
+                healthy_since=self._clock(),
+            )
+            for name, cmd in cmds
         ]
 
     def _spawn(self, cmd: list[str]) -> "subprocess.Popen":
@@ -69,25 +77,69 @@ class Supervisor:
                 if now - child.healthy_since >= self.restart_window:
                     child.attempts = 0
                     child.healthy_since = now
-                # 健康探活（bus_server 只靠 poll 判定，不探活；bus_server 未存活时跳过其余探活）
-                if bus is not None and child.name != "bus_server":
+                # 健康探活：bus_server 走内置 health/bus_server；未存活时跳过其余探活
+                if bus is not None:
                     if not bus_up:
                         logger.info("health probes skipped (bus_server not alive)", process=child.name)
                     else:
                         try:
-                            bus.request(f"health/{child.name}", {}, timeout_ms=health_timeout_ms)
+                            result = bus.request(
+                                BUS_HEALTH_SERVICE
+                                if child.name == "bus_server"
+                                else f"health/{child.name}",
+                                {},
+                                timeout_ms=health_timeout_ms,
+                            )
+                            if result.get("healthy") is False:
+                                logger.warning(
+                                    "health probe reported unhealthy",
+                                    process=child.name,
+                                    result=result,
+                                )
+                                self._restart(child, now)
+                                restarted.append(child.name)
+                                if child.name == "bus_server":
+                                    bus_up = False
+                                continue
                         except BusTimeoutError:
+
+                            if (
+                                child.name == "bus_server"
+                                and now - child.healthy_since <= self.startup_grace_s
+                            ):
+                                logger.info(
+                                    "health probe pending (bus_server starting)",
+                                    process=child.name,
+                                )
+                                continue
                             logger.warning("health probe failed", process=child.name)
                             self._restart(child, now)
                             restarted.append(child.name)
+
+                            if child.name == "bus_server":
+                                bus_up = False
                         except BusError as exc:
                             if str(exc) == "service not found":
                                 # 子进程仍在启动/注册：hub 就绪但服务未注册属瞬时状态，不重启
                                 logger.info("health probe pending (service not registered)", process=child.name)
+
+                                if now - child.healthy_since > self.startup_grace_s:
+                                    logger.warning(
+                                        "health probe pending too long, restarting",
+                                        process=child.name,
+                                        pending_s=round(now - child.healthy_since, 2),
+                                    )
+                                    self._restart(child, now)
+                                    restarted.append(child.name)
+                                    if child.name == "bus_server":
+                                        bus_up = False
                             else:
                                 logger.warning("health probe failed", process=child.name)
                                 self._restart(child, now)
                                 restarted.append(child.name)
+
+                                if child.name == "bus_server":
+                                    bus_up = False
                 continue
             self._restart(child, now)
             restarted.append(child.name)
@@ -117,7 +169,8 @@ class Supervisor:
                 except OSError:
                     pass
 
-    def _restart(self, child: Child, now: float) -> None:
+
+    def _restart_impl(self, child: Child, now: float) -> None:
         now_window = now - self.restart_window
         child.restart_times = [t for t in child.restart_times if t >= now_window]
         if len(child.restart_times) >= self.restart_max_per_window:
@@ -125,6 +178,26 @@ class Supervisor:
             return
         delay = min(self.restart_base_delay * (2 ** child.attempts), self.restart_max_delay)
         logger.warning("restarting process", process=child.name, attempt=child.attempts, next_delay=delay)
+        # 先停旧进程再退避，避免假死进程在退避期间继续提供坏服务。
+        self._stop_proc(child)
+        self._sleep(delay)
+        child.restarts += 1
+        child.attempts += 1
+        child.restart_times.append(now)
+        child.proc = self._spawn(child.cmd)
+        child.healthy_since = now
+    def _restart(self, child: Child, now: float) -> None:
+
+        return self._restart_impl(child, now)
+        now_window = now - self.restart_window
+        child.restart_times = [t for t in child.restart_times if t >= now_window]
+        if len(child.restart_times) >= self.restart_max_per_window:
+            logger.critical("giving up on process (too many restarts in window)", process=child.name)
+            return
+        delay = min(self.restart_base_delay * (2 ** child.attempts), self.restart_max_delay)
+        logger.warning("restarting process", process=child.name, attempt=child.attempts, next_delay=delay)
+
+        self._stop_proc(child)
         self._sleep(delay)
         child.restarts += 1
         child.attempts += 1

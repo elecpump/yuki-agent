@@ -5,6 +5,9 @@ from yuki.cognition.brain.classifier import Emotion, Intent
 from yuki.cognition.l1 import L1Engine
 from yuki.functions.registry import FunctionRegistry
 from yuki.memory.manager import MemoryManager
+from yuki.logger import get_logger
+
+logger = get_logger("yuki.cognition.brain.actions")
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,7 @@ def _call_function(action: Action, ctx: ActionContext) -> str:
         try:
             ctx.registry.call(name, args)
         except Exception:
+            logger.warning("function action failed", name=name, exc_info=True)
             pass
     return ""
 

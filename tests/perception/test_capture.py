@@ -1,4 +1,5 @@
 import base64
+import pytest
 import io
 import sys
 import types
@@ -246,6 +247,7 @@ def test_wgc_on_frame_callback_stores_real_png():
 
 
 def test_window_info_resolves_from_given_hwnd(monkeypatch):
+    pytest.importorskip("win32gui")
     import win32gui as _wg
 
     sensitive_hwnd, normal_hwnd = 1001, 2002
@@ -266,6 +268,7 @@ def test_window_info_resolves_from_given_hwnd(monkeypatch):
 
 
 def test_frame_gating_uses_captured_hwnd_not_foreground(monkeypatch):
+    pytest.importorskip("win32gui")
     import win32gui as _wg
 
     sensitive_hwnd, normal_hwnd = 1001, 2002

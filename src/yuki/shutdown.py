@@ -1,6 +1,9 @@
 import signal
 import threading
 from typing import Callable
+from yuki.logger import get_logger
+
+logger = get_logger("yuki.shutdown")
 
 
 class ShutdownManager:
@@ -14,10 +17,11 @@ class ShutdownManager:
         self._cleanups.append((priority, name, fn))
 
     def run_cleanups(self) -> None:
-        for _, _, fn in sorted(self._cleanups, key=lambda item: item[0], reverse=True):
+        for _, name, fn in sorted(self._cleanups, key=lambda item: item[0], reverse=True):
             try:
                 fn()
             except Exception:
+                logger.warning("cleanup failed", name=name, exc_info=True)
                 pass
 
     def register_signal_handlers(self) -> None:

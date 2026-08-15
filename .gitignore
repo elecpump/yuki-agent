@@ -7,3 +7,7 @@ dist/
 logs/
 .worktrees/
 data/
+
+# 临时文件：当前 WSL 9p 挂载无法删除，Windows 侧可手动移除
+src/yuki/.test_delete
+docs/superpowers

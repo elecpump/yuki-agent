@@ -44,6 +44,13 @@ class HealthReporter:
                 status = HealthStatus(False, {"error": "check raised"})
             components[name] = {"ok": status.ok, "detail": status.detail}
             healthy = healthy and status.ok
+        if hasattr(self._bus, "bus_health"):
+            bus_health = self._bus.bus_health()
+            components["bus"] = {
+                "ok": bus_health.get("healthy", True),
+                "detail": bus_health,
+            }
+            healthy = healthy and bus_health.get("healthy", True)
         return {
             "process": self._process,
             "pid": os.getpid(),

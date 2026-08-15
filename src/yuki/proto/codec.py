@@ -50,25 +50,34 @@ def build_request(
 
 
 def build_response_result(
-    request_id: str, result: dict, version: int = VERSION
+    request_id: str, result: dict, version: int = VERSION,
+    trace_id: str | None = None,
 ) -> yuki_pb2.Envelope:
     env = yuki_pb2.Envelope(version=version)
+    if trace_id:
+        env.trace_id = trace_id
     env.response.request_id = request_id
     env.response.result.CopyFrom(_to_struct(result))
     return env
 
 
 def build_response_error(
-    request_id: str, error: str, version: int = VERSION
+    request_id: str, error: str, version: int = VERSION,
+    trace_id: str | None = None,
 ) -> yuki_pb2.Envelope:
     env = yuki_pb2.Envelope(version=version)
+    if trace_id:
+        env.trace_id = trace_id
     env.response.request_id = request_id
     env.response.error = error
     return env
 
 
-def build_event(topic: str, payload: dict, version: int = VERSION) -> yuki_pb2.Envelope:
+def build_event(topic: str, payload: dict, version: int = VERSION,
+                trace_id: str | None = None) -> yuki_pb2.Envelope:
     env = yuki_pb2.Envelope(version=version)
+    if trace_id:
+        env.trace_id = trace_id
     env.event.topic = topic
     env.event.payload.CopyFrom(_to_struct(payload))
     return env

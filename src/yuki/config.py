@@ -2,11 +2,11 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BusConfig(BaseModel):
-    base_port: int = Field(5555, ge=1024, le=65535)
+    base_port: int = Field(5555, ge=1024, le=65533)  # base_port+2 为 ROUTER 端口
     hwm: int = Field(1000, ge=1)
 
 
@@ -33,6 +33,7 @@ class MemoryConfig(BaseModel):
     decay_threshold: float = Field(0.02, ge=0.0)
     short_term_ttl_s: float = Field(1800, ge=1)
     short_term_capacity: int = Field(50, ge=1)
+    cleanup_interval_s: float = Field(300.0, ge=10.0)
 
 
 class BrainConfig(BaseModel):
@@ -54,6 +55,7 @@ class SoulConfig(BaseModel):
 
 
 class Config(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     persona_name: str = "yuki"
     bus: BusConfig = Field(default_factory=BusConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

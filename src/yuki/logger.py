@@ -5,9 +5,38 @@ from pathlib import Path
 import structlog
 
 _configured = False
+_configured_level = "INFO"
+
+def configure_logging(level: str = "INFO", *, force: bool = False) -> None:
+    """配置日志；force=True 允许在进程启动后应用 config.logging.level。"""
+    global _configured, _configured_level
+    normalized = level.upper()
+    if _configured and (not force or _configured_level == normalized):
+        return
+    logging.basicConfig(
+        level=getattr(logging, normalized, logging.INFO),
+        format="%(message)s",
+        stream=sys.stderr,
+        force=force,
+    )
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.processors.StackInfoRenderer(),
+            structlog.processors.format_exc_info,
+            structlog.processors.JSONRenderer(),
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(logging.NOTSET),
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        cache_logger_on_first_use=True,
+    )
+    _configured = True
+    _configured_level = normalized
 
 
-def configure_logging(level: str = "INFO") -> None:
+def _configure_logging_once(level: str = "INFO") -> None:
     global _configured
     if _configured:
         return

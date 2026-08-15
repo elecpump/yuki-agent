@@ -16,6 +16,8 @@ class FocusChangedPayload(TypedDict):
     app: str
     url: str
     title: str
+    # Phase 4 UI Automation 才能可靠提供；当前采集层暂不发布该字段。
+    scroll_percent: NotRequired[float]
 
 
 class SituationUpdatePayload(TypedDict):

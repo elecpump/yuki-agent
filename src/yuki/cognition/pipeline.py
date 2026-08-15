@@ -76,7 +76,12 @@ class PerceptionPipeline:
         if image is None:
             return
         source_id = payload.get("url") or payload.get("title") or "unknown"
-        cache_key = f"{source_id}|{scroll_band(payload.get('scroll_percent'))}"
+        scroll_percent = payload.get("scroll_percent")
+        cache_key = (
+            f"{source_id}|{scroll_band(scroll_percent)}"
+            if scroll_percent is not None
+            else source_id
+        )
         context = self._vlm.understand(image, cache_key=cache_key)
         text = " ".join([
             context.get("topic", ""),
@@ -89,7 +94,7 @@ class PerceptionPipeline:
             return
         self._publish_situation({
             "source_id": source_id,
-            "scroll_band": scroll_band(payload.get("scroll_percent")),
+            "scroll_band": scroll_band(scroll_percent),
             "topic": context.get("topic", ""),
             "summary": context.get("summary", ""),
             "content_type": context.get("content_type", "unknown"),

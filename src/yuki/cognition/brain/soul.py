@@ -1,5 +1,6 @@
 import json
 import time
+import os
 from pathlib import Path
 
 from yuki.logger import get_logger
@@ -45,7 +46,11 @@ class SoulStore:
         }
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
-            self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp_path = self._path.with_suffix(self._path.suffix + ".tmp")
+            tmp_path.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            os.replace(tmp_path, self._path)
         except OSError as exc:
             logger.warning("soul write failed", error=str(exc))
 
