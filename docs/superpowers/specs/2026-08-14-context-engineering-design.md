@@ -10,7 +10,8 @@
 
 **已确认决策**：
 - **两者都做**：结构化工作上下文 + 预算/压缩的云端提示视图。
-- **会话轮次存 ShortTermMemory**：`MemoryManager.short_term_add/items`（TTL 30min/容量 50），仅内存，重启清空（对话持久化属未来会话记忆）。
+- **会话轮次存 ShortTermMemory**：`MemoryManager.short_term_add/items`（TTL 30min/容量 50），经 `TurnStore` 协议抽象（默认 `ShortTermTurnStore`），未来可换 Redis 实现。
+- **尽力持久化**：会话轮次定期快照 + 进程退出前 flush 到本地文件（`data/context_snapshot.json`），重启恢复（TTL 过滤）；`snapshot_path` 为 None 时明确接受重启丢失。
 - **含 LLM 摘要折叠**：更旧轮次超预算时用云端摘要压缩，带缓存；失败回退计数占位。
 
 **范围外**：会话历史的 SQLite 持久化、环2 偏好沉淀、L2 决策链、跨进程函数服务。
@@ -31,19 +32,38 @@ src/yuki/cognition/brain/hub.py — 用 WorkingContext 替代 self._context
 
 ## 3. WorkingContext（working.py）
 
+**存储接口可替换**（多实例/未来 Redis 演进）：`TurnStore` 协议抽象会话轮次存取，WorkingContext 依赖协议而非 MemoryManager；默认实现 `ShortTermTurnStore` 包装 `MemoryManager.short_term`。
+
 ```python
+class TurnStore(Protocol):
+    def add(self, content: str, kind: str, ts: float) -> None: ...
+    def items(self) -> list[dict]: ...     # [{"content", "kind", "ts"}]
+    def clear(self) -> None: ...
+
+class ShortTermTurnStore:
+    """默认实现：包装 MemoryManager.short_term（TTL 30min/容量 50）。"""
+
 class WorkingContext:
-    def __init__(self, manager: MemoryManager) -> None: ...
-    def add_user(self, text: str) -> None: ...        # manager.short_term_add(text, kind="turn")
+    def __init__(self, store: TurnStore, *, snapshot_path: str | Path | None = None,
+                 snapshot_interval: int = 5, ttl_s: float = 1800.0) -> None: ...
+    def add_user(self, text: str) -> None: ...        # store.add(text, "turn", now)
     def add_agent(self, text: str) -> None: ...       # 同上
     def update_situation(self, payload: dict) -> None: ...  # 存最新情境快照
-    def recent_turns(self, n: int) -> list[dict]: ... # [{"content", "kind", "ts"}], 新→旧
+    def recent_turns(self, n: int) -> list[dict]: ... # 新→旧
     def situation(self) -> dict | None: ...
     def turn_count(self) -> int: ...
+    def snapshot(self) -> None: ...                   # 尽力持久化到 snapshot_path
+    def restore(self) -> None: ...                    # 启动恢复（TTL 过滤）
+    def close(self) -> None: ...                      # 进程退出前 flush 最终快照
 ```
 
-- 轮次 = 工作记忆（short_term），终于有消费者；`kind="turn"` 区分于其他事件。
-- 仅内存；TTL 由 short_term 自带。
+- 轮次 = 工作记忆（`ShortTermTurnStore` 包装 short_term），`kind="turn"` 区分于其他事件。
+- **尽力持久化（会话不因重启断崖）**：
+  - `snapshot_path` 非 None（默认 `data/context_snapshot.json`）时：每 `snapshot_interval` 次 add 后 `snapshot()`；`close()`（进程退出前，经 `CognitionAgent.teardown`）写最终快照。
+  - `snapshot()` 写 `{turns: [{content, kind, ts}], situation, saved_at}`；`restore()` 读回 → **按 `ttl_s` 过滤过期轮次** → 经 `store.add` 回填 → 恢复 situation。
+  - `snapshot_path` 为 None → 不持久化，明确接受重启丢失（纯内存模式）。
+  - 快照读写失败仅告警（尽力而为），不影响主流程。
+- **已知限制（明确记录）**：会话轮次为单机状态，多实例间不共享；`TurnStore` 协议已预留替换（未来 Redis 实现同协议即可换入，无需改 WorkingContext）。
 
 ## 4. CloudViewBuilder（view.py）
 
@@ -95,7 +115,7 @@ class CloudViewBuilder:
 
 - `DecisionHub` 增 `context: WorkingContext | None = None`（None → 行为不变，`self._context` 照旧）。
 - 有 context 时：UTTERANCE → `context.add_user(text)`；spoke → `context.add_agent(rendered)`；SITUATION → `context.update_situation(payload)`；`_handle` 读取情境改经 `context.situation()`。
-- `build_brain`/agent 装配 `WorkingContext` 并传给 hub + bridge。
+- `build_brain`/agent 装配 `WorkingContext`（`ShortTermTurnStore(memory)` + `config.context.snapshot_path`）并传给 hub + bridge；`CognitionAgent.teardown` 调 `context.close()` 写最终快照。
 
 ## 7. 配置
 
@@ -104,13 +124,14 @@ context:
   max_turns: 20
   max_tokens: 1500
   verbatim_turns: 4
+  snapshot_path: "data/context_snapshot.json"   # 空串 = 纯内存，接受重启丢失
 ```
 
-env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBATIM_TURNS`。配额常量（`SITUATION_TOKENS`/`MEMORY_MIN_TOKENS`/`MAX_UTTERANCE_CHARS`）为代码常量；`memory_top_k` 沿用 `CLOUD_MEMORY_TOP_K`（3）；WorkingContext 轮次容量由 short_term（50）承载。
+env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBATIM_TURNS` / `YUKI_CONTEXT_SNAPSHOT_PATH`。配额常量（`SITUATION_TOKENS`/`MEMORY_MIN_TOKENS`/`MAX_UTTERANCE_CHARS`）与 `snapshot_interval` 为代码常量；`memory_top_k` 沿用 `CLOUD_MEMORY_TOP_K`（3）；WorkingContext 轮次容量由 short_term（50）承载。
 
 ## 8. 测试
 
-- `test_working.py`：add_user/add_agent/update_situation/recent_turns 顺序（新→旧）与 kind、turn_count、situation 快照、TTL 逐出（经 short_term）。
+- `test_working.py`：add_user/add_agent/update_situation/recent_turns 顺序（新→旧）与 kind、turn_count、situation 快照；**snapshot/restore 往返（写文件→新实例恢复→TTL 过滤过期轮次→situation 恢复）**；`snapshot_path=None` 时不写文件；快照写失败仅告警；`TurnStore` 协议可用自定义 store 实现注入（可替换性验证）。
 - `test_view.py`：填充顺序（utterance→情境→逐字轮→折叠轮→记忆）；固定配额（情境不裁剪、utterance 截断到 MAX_UTTERANCE_CHARS、逐字轮恒保留 verbatim_turns 轮）；预算紧张时先压缩折叠轮再砍次要记忆（关键偏好 `preference`/`strengthened` 保底 MEMORY_MIN_TOKENS）；连续重复去重；折叠三态（缓存命中复用 / 调 summarize / summarize=None 或异常→计数占位）；记忆高敏过滤；无 context 退化。
 - `test_bridge.py`：注入 fake view_builder → generate 用其输出；默认 builder 装配正常。
 - `test_hub.py`：context 喂入（add_user/add_agent/update_situation 被调）；context=None 行为不变。
@@ -119,17 +140,20 @@ env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBA
 
 ## 9. 风险与兼容
 
-- 零协议变更（REPLY 主题/载荷不变）；零新依赖（stdlib hashlib/math）。
+- 零协议变更（REPLY 主题/载荷不变）；零新依赖（stdlib hashlib/math/json）。
 - `context=None` / `view_builder=None` 时行为与现在一致；云摘要失败 → 计数占位，不崩。
-- 摘要为启发式折叠，非完整对话记忆；对话持久化留待会话记忆模块。
-- **后续接入点**（明确范围外）：会话历史 SQLite 持久化、环2 偏好沉淀、摘要质量提升（更长窗口/分级摘要）、L1 侧用 WorkingContext 增强动作（ask 引用历史）。
+- 摘要为启发式折叠，非完整对话记忆；完整对话持久化留待会话记忆模块。
+- **尽力持久化是"尽力"**：崩溃时最近未快照的轮次会丢（尾部丢失，非全丢）；快照读写失败仅告警。
+- **已知限制（明确记录）**：会话轮次为单机内存状态，多实例不共享；`TurnStore` 协议已预留替换（Redis 等实现同协议即可换入）。
+- **后续接入点**（明确范围外）：会话历史 SQLite 持久化、环2 偏好沉淀、摘要质量提升（更长窗口/分级摘要）、L1 侧用 WorkingContext 增强动作（ask 引用历史）、多实例共享存储（Redis TurnStore）。
 
 ## 10. 关键决策记录（ADR 摘要）
 
 | 决策 | 理由 |
 |---|---|
-| WorkingContext 用 short_term | 工作记忆终于有消费者；统一内存工作状态 |
-| 会话轮次仅内存 | 持久化属会话记忆模块；本轮避免范围膨胀 |
+| WorkingContext 用 short_term（经 TurnStore 协议） | 工作记忆终于有消费者；存储接口可替换（未来 Redis） |
+| 尽力持久化（定期快照 + 退出 flush + 重启恢复） | 避免重启断崖；崩溃仅丢尾部 |
+| 快照 TTL 过滤 | 恢复时不复活过期轮次 |
 | 填充顺序 utterance→情境→逐字轮→折叠轮→记忆 | 面向 LLM 的有效利用；utterance/情境/逐字轮是关键上下文 |
 | 「填充顺序 + 最低配额」预算模型 | 高优先级先放、各节有保证配额；折叠轮与次要记忆吸收预算压力，长期画像（关键偏好）不先丢 |
 | 字符启发式估 token | 零依赖；够预算管理用 |
