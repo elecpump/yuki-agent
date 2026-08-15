@@ -10,6 +10,7 @@ from yuki.cognition.brain.classifier import (
 )
 from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
 from yuki.cognition.l1 import L1Engine
+from yuki.cognition.l2.client import CloudError
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.logger import get_audit_logger, get_decision_logger, get_logger
 from yuki.topics import Topics
@@ -51,7 +52,8 @@ class DecisionHub:
 
     def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
                  memory=None, registry=None, l1=None, executors=None, trace_logger=None,
-                 bridge=None, tuner=None, sensitive_filter=None, audit_logger=None) -> None:
+                 bridge=None, tuner=None, sensitive_filter=None, audit_logger=None,
+                 context=None, projector=None) -> None:
         self._bus = bus
         self._intent_clf = intent_clf or RuleIntentClassifier()
         self._emotion_clf = emotion_clf or RuleEmotionClassifier()
@@ -68,8 +70,12 @@ class DecisionHub:
         self._decision_lock = threading.Lock()
         self._context = None
         self._last_open_ts = None
+        self._context_wrapper = context
+        self._projector = projector
 
     def on_situation_update(self, topic: str, payload: dict) -> None:
+        if self._context_wrapper is not None:
+            self._context_wrapper.update_situation(payload)
         self._context = payload
         self._handle(TriggerKind.SITUATION, "", situation=payload)
 
@@ -90,6 +96,14 @@ class DecisionHub:
     def _handle_locked(
         self, trigger: TriggerKind, text: str, situation: dict | None = None
     ) -> None:
+        snapshot = None
+        if self._context_wrapper is not None and self._projector is not None:
+            snapshot = self._projector.build(self._context_wrapper)
+        effective_situation = situation
+        if effective_situation is None:
+            effective_situation = (
+                getattr(snapshot, "situation", None) if snapshot is not None else self._context)
+
         intent = Intent.UNKNOWN
         emotion = Emotion.NEUTRAL
         tier = Tier.L1
@@ -103,17 +117,17 @@ class DecisionHub:
         l2_wanted = tier == Tier.L2
         l2_unavailable = l2_wanted and self._bridge is None
         if l2_wanted and self._bridge is not None:
-            rendered, spoke, l2_failed = self._try_l2(text, situation or self._context)
+            rendered, spoke, l2_failed = self._try_l2(text, effective_situation, snapshot)
             l2_unavailable = l2_failed
             if spoke:
                 reason = "l2"
         if not spoke:
             actions = self._policy.decide(
-                trigger, intent, emotion, text=text, situation=situation or self._context,
+                trigger, intent, emotion, text=text, situation=effective_situation,
                 last_open_ts=self._last_open_ts, now=time.time(),
             )
             rendered, spoke = self._execute(
-                actions, intent, emotion, text, situation or self._context
+                actions, intent, emotion, text, effective_situation
             )
             reason = "l1" if spoke else "silent"
             if l2_unavailable:
@@ -124,6 +138,12 @@ class DecisionHub:
         if spoke:
             self._last_open_ts = time.time()
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
+
+        if self._context_wrapper is not None:
+            if trigger == TriggerKind.UTTERANCE:
+                self._context_wrapper.add_user(text)
+            if spoke:
+                self._context_wrapper.add_agent(rendered)
 
         if trigger == TriggerKind.UTTERANCE and self._memory is not None:
             if text and not self._sensitive_filter.is_sensitive(text):
@@ -142,7 +162,7 @@ class DecisionHub:
         ).to_dict())
 
 
-    def _try_l2(self, text: str, situation: dict | None) -> tuple[str, bool, bool]:
+    def _try_l2(self, text: str, situation: dict | None, snapshot=None) -> tuple[str, bool, bool]:
         hits = self._sensitive_filter.scan(text)
         if hits:
             # §9.3：审计只记录过滤动作（时间/规则编号/命中类别），不存原文。
@@ -155,7 +175,7 @@ class DecisionHub:
             )
             return "", False, False
         try:
-            reply = self._bridge.generate(text, situation, self._memory)
+            reply = self._bridge.generate(text, snapshot, self._memory)
         except Exception:
             logger.warning("L2 cloud bridge failed, falling back to L1", exc_info=True)
             return "", False, True
@@ -180,7 +200,7 @@ class DecisionHub:
 
 def build_brain(bus, *, memory=None, registry=None, config=None,
                 intent_clf=None, emotion_clf=None, policy=None, bridge=None,
-                tuner=None) -> DecisionHub:
+                tuner=None, context=None, projector=None) -> DecisionHub:
     from yuki.config import Config
     cfg = config or Config.from_env()
     hub = DecisionHub(
@@ -195,6 +215,8 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         registry=registry,
         bridge=bridge,
         tuner=tuner,
+        context=context,
+        projector=projector,
     )
     bus.subscribe(Topics.AWAKE, hub.on_awake)
     bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance)

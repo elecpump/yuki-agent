@@ -2,6 +2,7 @@ import pytest
 
 from yuki.cognition.brain.actions import DEFAULT_JOKES
 from yuki.cognition.brain.hub import DecisionHub, build_brain
+from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.l2.client import CloudError
 from yuki.functions.registry import FunctionRegistry
@@ -246,3 +247,55 @@ def test_hub_feeds_utterance_to_tuner(hub):
     h._tuner = tuner
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
     assert tuner.utterances == ["你好"]
+
+
+class FakeContext:
+    def __init__(self):
+        self.users = []
+        self.agents = []
+        self.situations = []
+        self.snap = None
+
+    def set_snapshot(self, snap):
+        self.snap = snap
+
+    def add_user(self, text):
+        self.users.append(text)
+
+    def add_agent(self, text):
+        self.agents.append(text)
+
+    def update_situation(self, payload):
+        self.situations.append(payload)
+
+
+class FakeProjector:
+    def __init__(self):
+        self.last = None
+
+    def build(self, working):
+        self.last = working
+        return working.snap
+
+
+def test_hub_writes_context_and_uses_projection(hub):
+    h, bus, _ = hub
+    ctx = FakeContext()
+    ctx.set_snapshot(ContextSnapshot(situation={"topic": "量子计算", "sensitive": False}))
+    proj = FakeProjector()
+    h._context_wrapper = ctx
+    h._projector = proj
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
+    assert ctx.users == ["你好"]
+    assert proj.last is ctx
+    assert ctx.agents == ["l1:你好"]
+
+
+def test_hub_context_situation_used_for_situation_update(hub):
+    h, bus, _ = hub
+    ctx = FakeContext()
+    ctx.set_snapshot(ContextSnapshot())
+    h._context_wrapper = ctx
+    h._projector = FakeProjector()
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
+    assert ctx.situations == [{"topic": "量子计算", "sensitive": False, "ts": 0.0}]
