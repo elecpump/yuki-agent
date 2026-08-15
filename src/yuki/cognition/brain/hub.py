@@ -52,7 +52,7 @@ class DecisionHub:
     def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
                  memory=None, registry=None, l1=None, executors=None, trace_logger=None,
                  bridge=None, tuner=None, sensitive_filter=None, audit_logger=None,
-                 context=None, projector=None) -> None:
+                 context=None, projector=None, sedimenter=None) -> None:
         self._bus = bus
         self._intent_clf = intent_clf or RuleIntentClassifier()
         self._emotion_clf = emotion_clf or RuleEmotionClassifier()
@@ -71,6 +71,7 @@ class DecisionHub:
         self._last_open_ts = None
         self._context_wrapper = context
         self._projector = projector
+        self._sedimenter = sedimenter
 
     def on_situation_update(self, topic: str, payload: dict) -> None:
         if self._context_wrapper is not None:
@@ -149,6 +150,11 @@ class DecisionHub:
                 self._tuner.on_proactive_open()
             if trigger == TriggerKind.UTTERANCE:
                 self._tuner.on_user_utterance(text)
+        if self._sedimenter is not None and trigger == TriggerKind.UTTERANCE:
+            self._sedimenter.on_user_utterance(text, intent)
+            topic = (effective_situation or {}).get("topic")
+            if topic:
+                self._sedimenter.on_engagement(topic)
         self._trace_logger.info("decision", **DecisionTrace(
             ts=time.time(), trigger=trigger.value, intent=intent.value, emotion=emotion.value,
             actions=actions, rendered=rendered, reason=reason, tier=tier.value,
@@ -194,7 +200,7 @@ class DecisionHub:
 
 def build_brain(bus, *, memory=None, registry=None, config=None,
                 intent_clf=None, emotion_clf=None, policy=None, bridge=None,
-                tuner=None, context=None, projector=None) -> DecisionHub:
+                tuner=None, context=None, projector=None, sedimenter=None) -> DecisionHub:
     from yuki.config import Config
     cfg = config or Config.from_env()
     hub = DecisionHub(
@@ -211,6 +217,7 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         tuner=tuner,
         context=context,
         projector=projector,
+        sedimenter=sedimenter,
     )
     bus.subscribe(Topics.AWAKE, hub.on_awake)
     bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance)

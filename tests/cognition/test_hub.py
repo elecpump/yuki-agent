@@ -320,3 +320,32 @@ def test_hub_context_situation_used_for_situation_update(hub):
     h._projector = FakeProjector()
     h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
     assert ctx.situations == [{"topic": "量子计算", "sensitive": False, "ts": 0.0}]
+
+
+class FakeSedimenter:
+    def __init__(self):
+        self.utterances = []
+        self.topics = []
+
+    def on_user_utterance(self, text, intent):
+        self.utterances.append((text, intent))
+
+    def on_engagement(self, topic):
+        self.topics.append(topic)
+
+
+def test_hub_feeds_sedimenter(hub):
+    h, bus, _ = hub
+    sed = FakeSedimenter()
+    h._sedimenter = sed
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "太吵了", "duration_s": 1.0, "ts": 0.0})
+    assert sed.utterances and sed.utterances[0][0] == "太吵了"
+
+
+def test_hub_feeds_engagement_topic(hub):
+    h, bus, _ = hub
+    sed = FakeSedimenter()
+    h._sedimenter = sed
+    h._context = {"topic": "量子计算", "sensitive": False}
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
+    assert "量子计算" in sed.topics

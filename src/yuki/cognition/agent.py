@@ -9,6 +9,7 @@ from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.tuner import FeedbackTuner
+from yuki.cognition.brain.sedimenter import PreferenceSedimenter
 from yuki.cognition.l1 import L1Engine
 from yuki.cognition.pipeline import build_pipeline
 from yuki.cognition.stt import SpeechRecognizer
@@ -100,6 +101,13 @@ class CognitionAgent(ProcessAgent):
         )
         context.restore()
         projector = ContextProjector(max_turns=self.config.context.max_turns)
+        sedimenter = PreferenceSedimenter(
+            self._memory,
+            tuner=tuner,
+            min_signals=self.config.sedimenter.min_signals,
+            confidence_threshold=self.config.sedimenter.confidence_threshold,
+            topic_engagement_threshold=self.config.sedimenter.topic_engagement_threshold,
+        )
         self._context = context
         self._bridge = bridge
         self._hub = build_brain(
@@ -112,6 +120,7 @@ class CognitionAgent(ProcessAgent):
             tuner=tuner,
             context=context,
             projector=projector,
+            sedimenter=sedimenter,
         )
 
     def teardown(self) -> None:

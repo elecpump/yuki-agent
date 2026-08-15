@@ -146,3 +146,18 @@ def test_cognition_agent_teardown_closes_context(tmp_path):
     agent.teardown()
     # teardown 已调用 context.close()（写入快照到 data/context_snapshot.json 或按 config）
     # 本测试仅验证不抛异常
+
+
+def test_cognition_agent_builds_sedimenter(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(context={"snapshot_path": str(tmp_path / "snap.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        assert agent._hub._sedimenter is not None
+    finally:
+        agent.teardown()
