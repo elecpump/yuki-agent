@@ -118,3 +118,18 @@ def test_generate_default_view_builder_assembles():
     out = bridge.generate("你好", context=None, memory=None)
     assert out == "回答"
     assert "用户说：你好" in client.calls[0][0][1]["content"]
+
+
+def test_generate_uses_provided_system_prompt_as_is():
+    client = TurnClient([{"choices": [{"message": {"content": "回答"}}]}])
+    bridge = CloudBridge(client, system_prompt="你好呀{persona}保持这样")  # 不做 .format
+    bridge.generate("你好", context=None, memory=None)
+    assert client.calls[0][0][0]["content"] == "你好呀{persona}保持这样"
+
+
+def test_set_system_prompt_updates():
+    client = TurnClient([{"choices": [{"message": {"content": "回答"}}]}])
+    bridge = CloudBridge(client, system_prompt="初始")
+    bridge.set_system_prompt("新的系统提示")
+    bridge.generate("你好", context=None, memory=None)
+    assert client.calls[0][0][0]["content"] == "新的系统提示"

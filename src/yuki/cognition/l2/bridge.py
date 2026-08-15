@@ -35,8 +35,11 @@ class CloudBridge:
         self._client = client
         self._registry = registry
         self._max_turns = max_turns
-        self._system = (system_prompt or DEFAULT_PERSONA_PROMPT).format(persona=persona_name)
+        self._system = system_prompt or DEFAULT_PERSONA_PROMPT.format(persona=persona_name)
         self._view_builder = view_builder or CloudViewBuilder(summarize=self._summarize_closure)
+
+    def set_system_prompt(self, text: str) -> None:
+        self._system = text
 
     def _summarize_closure(self, texts: list[str]) -> str:
         messages = [

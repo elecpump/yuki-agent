@@ -118,3 +118,11 @@ def test_frequency_preference_sets_tuner_floor(tmp_path):
         sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
     assert tuner._min_s >= 120.0
     assert tuner.cooldown_s >= 120.0
+
+
+def test_on_sedimented_callback_fires_on_write(tmp_path):
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    fired = []
+    sed = PreferenceSedimenter(memory, min_signals=1, on_sedimented=lambda: fired.append(1))
+    sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
+    assert fired  # 沉淀即回调

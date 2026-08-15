@@ -161,3 +161,20 @@ def test_cognition_agent_builds_sedimenter(tmp_path):
         assert agent._hub._sedimenter is not None
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_assembles_persona(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")},
+               context={"snapshot_path": str(tmp_path / "ctx.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        assert agent._persona_store is not None
+        assert agent._hub._sedimenter._on_sedimented is not None
+    finally:
+        agent.teardown()

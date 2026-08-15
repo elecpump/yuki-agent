@@ -1,3 +1,5 @@
+from typing import Callable
+
 from yuki.cognition.brain.classifier import Intent
 from yuki.cognition.brain.tuner import FeedbackTuner, detect_polarity
 from yuki.memory.manager import MemoryManager
@@ -23,9 +25,11 @@ class PreferenceSedimenter:
     def __init__(self, memory: MemoryManager, *, tuner: FeedbackTuner | None = None,
                  min_signals: int = 3, confidence_threshold: float = 0.6,
                  topic_engagement_threshold: int = 3,
-                 frequency_floor_s: float = 120.0) -> None:
+                 frequency_floor_s: float = 120.0,
+                 on_sedimented: Callable[[], None] | None = None) -> None:
         self._memory = memory
         self._tuner = tuner
+        self._on_sedimented = on_sedimented
         self._min_signals = min_signals
         self._confidence_threshold = confidence_threshold
         self._topic_threshold = topic_engagement_threshold
@@ -109,6 +113,8 @@ class PreferenceSedimenter:
         self._remove_by_label(label)
         self._memory.write("preference", content, confidence=confidence, source=source,
                            metadata={"label": label})
+        if self._on_sedimented is not None:
+            self._on_sedimented()
 
     def _remove_by_label(self, label: str) -> None:
         for m in self._memory.list(memory_type="preference"):

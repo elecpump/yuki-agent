@@ -2,7 +2,9 @@ import os
 
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
+from yuki.cognition.brain.persona import generate as generate_persona
 from yuki.cognition.brain.hub import build_brain
+from yuki.cognition.brain.snapshots import PersonaStore
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
@@ -49,6 +51,8 @@ class CognitionAgent(ProcessAgent):
         self._hub = None
         self._bridge = None
         self._context = None
+        self._persona_store = None
+        self._persona_refresh = None
 
     def setup(self) -> None:
         if self._pipeline is None:
@@ -88,6 +92,24 @@ class CognitionAgent(ProcessAgent):
                 max_turns=self.config.cloud.max_turns,
                 persona_name=self.config.persona_name,
             )
+        self._persona_store = PersonaStore(
+            self.config.persona.snapshots_path,
+            max_versions=self.config.persona.max_versions,
+            persona_name=self.config.persona_name,
+        )
+
+        def persona_refresh() -> None:
+            prefs = [m for m in self._memory.list(memory_type="preference")
+                     if m.get("sensitivity", 0) != 2]
+            prompt = generate_persona(
+                self.config.persona_name, prefs, {},
+                base_prompt=self.config.persona.prompt,
+            )
+            snap = self._persona_store.save(prompt, {})
+            if snap is not None and bridge is not None:
+                bridge.set_system_prompt(snap.persona_prompt)
+        self._persona_refresh = persona_refresh
+
         policy = DecisionPolicy(
             proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
             proactive_enabled=self.config.brain.proactive_enabled,
@@ -107,6 +129,7 @@ class CognitionAgent(ProcessAgent):
             min_signals=self.config.sedimenter.min_signals,
             confidence_threshold=self.config.sedimenter.confidence_threshold,
             topic_engagement_threshold=self.config.sedimenter.topic_engagement_threshold,
+            on_sedimented=persona_refresh,
         )
         self._context = context
         self._bridge = bridge
@@ -122,6 +145,11 @@ class CognitionAgent(ProcessAgent):
             projector=projector,
             sedimenter=sedimenter,
         )
+        active = self._persona_store.active()
+        if bridge is not None:
+            bridge.set_system_prompt(active.persona_prompt if active
+                                     else self.config.persona.prompt.format(persona=self.config.persona_name))
+        persona_refresh()
 
     def teardown(self) -> None:
         if self._context is not None:
