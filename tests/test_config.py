@@ -147,3 +147,18 @@ def test_context_env_override(monkeypatch):
     config = Config.load(None)
     assert config.context.max_turns == 30
     assert config.context.snapshot_path == "tmp/snap.json"
+
+
+def test_sedimenter_defaults():
+    config = Config()
+    assert config.sedimenter.min_signals == 3
+    assert config.sedimenter.confidence_threshold == 0.6
+    assert config.sedimenter.topic_engagement_threshold == 3
+
+
+def test_sedimenter_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_SEDIMENTER_MIN_SIGNALS", "5")
+    monkeypatch.setenv("YUKI_SEDIMENTER_CONFIDENCE_THRESHOLD", "0.8")
+    config = Config.load(None)
+    assert config.sedimenter.min_signals == 5
+    assert config.sedimenter.confidence_threshold == 0.8

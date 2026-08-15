@@ -12,6 +12,15 @@ POSITIVE_KEYWORDS = ("说得好", "好听", "有意思", "继续", "再来", "�
 COOLDOWN_KEY = "proactive_cooldown_s"
 
 
+def detect_polarity(text: str) -> str:
+    lowered = (text or "").lower()
+    if any(kw in lowered for kw in NEGATIVE_KEYWORDS):
+        return "negative"
+    if any(kw in lowered for kw in POSITIVE_KEYWORDS):
+        return "positive"
+    return "neutral"
+
+
 class FeedbackTuner:
     """环1 参数自调：隐式回应 + 显式话语 → 调整主动开口冷却，持久化到 soul。"""
 
@@ -41,12 +50,12 @@ class FeedbackTuner:
 
     def on_user_utterance(self, text: str) -> None:
         self._check_timeout()
-        lowered = (text or "").lower()
-        if any(kw in lowered for kw in NEGATIVE_KEYWORDS):
+        polarity = detect_polarity(text)
+        if polarity == "negative":
             self.adjust(1.5)
             self._open_ts = None
             return
-        if any(kw in lowered for kw in POSITIVE_KEYWORDS):
+        if polarity == "positive":
             self.adjust(0.8)
             self._open_ts = None
             return
@@ -67,3 +76,10 @@ class FeedbackTuner:
         self._policy.set_cooldown_s(new)
         self._soul.save({COOLDOWN_KEY: new})
         logger.info("tuned cooldown", cooldown_s=new, factor=factor)
+
+    def set_cooldown_floor(self, value: float) -> None:
+        self._min_s = max(self._min_s, value)
+        if self._cooldown < self._min_s:
+            self._cooldown = self._min_s
+            self._policy.set_cooldown_s(self._cooldown)
+            self._soul.save({COOLDOWN_KEY: self._cooldown})

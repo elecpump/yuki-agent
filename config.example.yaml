@@ -40,3 +40,7 @@ context:
   max_tokens: 1500
   verbatim_turns: 4
   snapshot_path: data/context_snapshot.json
+sedimenter:
+  min_signals: 3
+  confidence_threshold: 0.6
+  topic_engagement_threshold: 3

@@ -94,3 +94,32 @@ def test_load_soul_restores_cooldown(tmp_path):
     tuner.load_soul()
     assert tuner.cooldown_s == 240.0
     assert policy.cooldown_s == 240.0
+
+
+def test_detect_polarity():
+    from yuki.cognition.brain.tuner import detect_polarity
+    assert detect_polarity("太吵了") == "negative"
+    assert detect_polarity("说得好") == "positive"
+    assert detect_polarity("随便聊聊") == "neutral"
+    assert detect_polarity("") == "neutral"
+
+
+def test_set_cooldown_floor_raises_min(tmp_path):
+    policy = DecisionPolicy(120.0)
+    soul = SoulStore(tmp_path / "s.json", "yuki")
+    tuner = FeedbackTuner(policy, soul, cooldown_min_s=30.0)
+    tuner.set_cooldown_floor(200.0)
+    assert tuner.cooldown_s == 200.0   # 当前 120 < 200 → 提升
+    assert policy.cooldown_s == 200.0
+    assert soul.load()["proactive_cooldown_s"] == pytest.approx(200.0)
+    # 后续 adjust 不再低于 floor
+    tuner.adjust(0.5)
+    assert tuner.cooldown_s >= 200.0
+
+
+def test_set_cooldown_floor_lower_than_min_noop(tmp_path):
+    policy = DecisionPolicy(120.0)
+    tuner = FeedbackTuner(policy, SoulStore(tmp_path / "s.json", "yuki"), cooldown_min_s=30.0)
+    tuner.set_cooldown_floor(20.0)  # 低于现有 min → no-op
+    assert tuner._min_s == 30.0
+    assert tuner.cooldown_s == 120.0

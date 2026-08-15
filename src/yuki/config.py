@@ -63,6 +63,12 @@ class ContextConfig(BaseModel):
     snapshot_path: str = "data/context_snapshot.json"
 
 
+class SedimenterConfig(BaseModel):
+    min_signals: int = Field(3, ge=1)
+    confidence_threshold: float = Field(0.6, ge=0.0, le=1.0)
+    topic_engagement_threshold: int = Field(3, ge=1)
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     persona_name: str = "yuki"
@@ -75,6 +81,7 @@ class Config(BaseModel):
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
+    sedimenter: SedimenterConfig = Field(default_factory=SedimenterConfig)
 
     @classmethod
     def load(cls, config_file: str | Path | None = None) -> "Config":
@@ -98,6 +105,7 @@ class Config(BaseModel):
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
             ("context", ContextConfig),
+            ("sedimenter", SedimenterConfig),
         ):
             section = data.setdefault(section_name, {})
             for field_name in section_cls.model_fields:
