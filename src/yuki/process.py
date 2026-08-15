@@ -31,7 +31,12 @@ class ProcessAgent(ABC):
         )
 
     def _make_bus(self) -> BusNode:
-        return BusNode(base_port=self.config.bus.base_port, hwm=self.config.bus.hwm)
+        return BusNode(
+            base_port=self.config.bus.base_port,
+            hwm=self.config.bus.hwm,
+            auth_token=self.config.bus.auth_token,
+            max_msg_size=self.config.bus.max_msg_size,
+        )
 
     @abstractmethod
     def setup(self) -> None: ...

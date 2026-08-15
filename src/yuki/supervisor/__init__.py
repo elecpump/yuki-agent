@@ -21,6 +21,7 @@ class Child:
     last_restart: float = 0.0
     restart_times: list[float] = field(default_factory=list)
     healthy_since: float = 0.0
+    next_restart_at: float | None = None
 
 
 class Supervisor:
@@ -37,6 +38,7 @@ class Supervisor:
         restart_window: int = 600,
         restart_max_per_window: int = 5,
         startup_grace_s: float = 20.0,
+        async_restarts: bool = False,
     ) -> None:
         self._popen = popen_factory
         self._restart_delay = restart_delay
@@ -48,6 +50,7 @@ class Supervisor:
         self.restart_window = restart_window
         self.restart_max_per_window = restart_max_per_window
         self.startup_grace_s = startup_grace_s
+        self._async_restarts = async_restarts
         self._children: list[Child] = [
             Child(
                 name=name,
@@ -66,9 +69,31 @@ class Supervisor:
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         return self._popen(cmd, **kwargs)
 
+
+    def _run_due_restarts(self, now: float, restarted: list[str]) -> None:
+        for child in self._children:
+            if child.next_restart_at is None or now < child.next_restart_at:
+                continue
+            child.next_restart_at = None
+            now_window = now - self.restart_window
+            child.restart_times = [t for t in child.restart_times if t >= now_window]
+            if len(child.restart_times) >= self.restart_max_per_window:
+                logger.critical(
+                    "giving up on process (too many restarts in window)",
+                    process=child.name,
+                )
+                continue
+            child.restarts += 1
+            child.attempts += 1
+            child.restart_times.append(now)
+            child.proc = self._spawn(child.cmd)
+            child.healthy_since = now
+            restarted.append(child.name)
     def tick(self, bus: BusNode | None = None, health_timeout_ms: int = 2000) -> list[str]:
         restarted: list[str] = []
         now = self._clock()
+        if self._async_restarts:
+            self._run_due_restarts(now, restarted)
         bus_server = next((c for c in self._children if c.name == "bus_server"), None)
         bus_up = bus_server is None or bus_server.proc.poll() is None
         for child in self._children:
@@ -143,6 +168,9 @@ class Supervisor:
                 continue
             self._restart(child, now)
             restarted.append(child.name)
+        if self._async_restarts:
+            scheduled = {c.name for c in self._children if c.next_restart_at is not None}
+            restarted = [name for name in restarted if name not in scheduled]
         return restarted
 
     def _stop_proc(self, child: Child, grace: float = 2.0) -> None:
@@ -187,6 +215,19 @@ class Supervisor:
         child.proc = self._spawn(child.cmd)
         child.healthy_since = now
     def _restart(self, child: Child, now: float) -> None:
+        if getattr(self, "_async_restarts"):  # async path
+            if child.next_restart_at is not None:
+                return
+            delay = min(
+                self.restart_base_delay * (2 ** child.attempts),
+                self.restart_max_delay,
+            )
+            logger.warning("scheduling restart", process=child.name, next_delay=delay)
+            self._stop_proc(child)
+            child.next_restart_at = now + delay
+            return
+        if self._async_restarts:
+            pass  # legacy guard: async path already returned above
 
         return self._restart_impl(child, now)
         now_window = now - self.restart_window

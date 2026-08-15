@@ -3,6 +3,8 @@ persona_name: yuki
 bus:
   base_port: 5555
   hwm: 1000
+  auth_token: ""
+  max_msg_size: 10485760
 logging:
   level: INFO
 supervisor:

@@ -246,3 +246,54 @@ def test_wire_frame_second_part_is_envelope():
     finally:
         node.close()
         probe.close(linger=0)
+
+def test_auth_token_authorized_request_and_wrong_token_rejected():
+    port = 6911
+    hub = BusHub(base_port=port, hwm=10, auth_token="secret")
+    node = BusNode(base_port=port, hwm=10, auth_token="secret")
+    bad = BusNode(base_port=port, hwm=10, auth_token="wrong")
+    try:
+        node.respond("svc", lambda p: {"echo": p["msg"]})
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            try:
+                assert node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
+                break
+            except (BusError, BusTimeoutError):
+                time.sleep(0.1)
+        else:
+            pytest.fail("authorized request did not complete")
+
+        with pytest.raises(BusError, match="unauthorized"):
+            bad.request("svc", {"msg": "hi"}, timeout_ms=1000)
+    finally:
+        bad.close()
+        node.close()
+        hub.close()
+
+
+def test_auth_token_events_roundtrip_and_foreign_events_ignored():
+    port = 6912
+    hub = BusHub(base_port=port, hwm=10, auth_token="secret")
+    node = BusNode(base_port=port, hwm=10, auth_token="secret")
+    bad = BusNode(base_port=port, hwm=10, auth_token="wrong")
+    received = []
+
+    def on_event(topic, payload):
+        received.append(payload)
+
+    try:
+        node.subscribe("event/", on_event)
+        time.sleep(0.1)
+        bad.publish("event/foreign", {"bad": True})
+        time.sleep(0.1)
+        assert received == []
+        node.publish("event/ok", {"ok": True})
+        deadline = time.time() + 2.0
+        while not received and time.time() < deadline:
+            time.sleep(0.05)
+        assert received == [{"ok": True}]
+    finally:
+        bad.close()
+        node.close()
+        hub.close()

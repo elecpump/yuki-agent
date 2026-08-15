@@ -47,14 +47,22 @@ def main() -> None:
     env = dict(os.environ)
     env["YUKI_BUS_BASE_PORT"] = str(config.bus.base_port)
     env["YUKI_BUS_HWM"] = str(config.bus.hwm)
+    env["YUKI_BUS_AUTH_TOKEN"] = config.bus.auth_token
+    env["YUKI_BUS_MAX_MSG_SIZE"] = str(config.bus.max_msg_size)
 
-    bus = BusNode(base_port=config.bus.base_port, hwm=config.bus.hwm)
+    bus = BusNode(
+        base_port=config.bus.base_port,
+        hwm=config.bus.hwm,
+        auth_token=config.bus.auth_token,
+        max_msg_size=config.bus.max_msg_size,
+    )
     supervisor = Supervisor(
         build_children_cmds(extra),
         env=env,
         restart_base_delay=config.supervisor.restart_base_delay,
         restart_max_delay=config.supervisor.restart_max_delay,
         restart_window=config.supervisor.restart_window,
+        async_restarts=True,
         restart_max_per_window=config.supervisor.restart_max_per_window,
     )
     try:

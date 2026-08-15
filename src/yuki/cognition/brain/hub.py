@@ -16,6 +16,8 @@ from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.brain.hub")
 
+L2_UNAVAILABLE_NOTICE = "（云端暂时不可用，我先用本地模式陪你。）"
+
 
 class DecisionTrace:
     def __init__(self, *, ts, trigger, intent, emotion, actions, rendered, reason,
@@ -95,8 +97,9 @@ class DecisionHub:
         pass  # 短期记忆在决策完成后统一追加，避免当前轮重复注入云端上下文
         actions: list = []
         rendered, spoke, reason = "", False, "silent"
+        l2_failed = False
         if tier == Tier.L2 and self._bridge is not None:
-            rendered, spoke = self._try_l2(text, situation or self._context)
+            rendered, spoke, l2_failed = self._try_l2(text, situation or self._context)
             if spoke:
                 reason = "l2"
         if not spoke:
@@ -105,7 +108,11 @@ class DecisionHub:
                 last_open_ts=self._last_open_ts, now=time.time(),
             )
             rendered, spoke = self._execute(actions, intent, emotion, text, situation or self._context)
-            reason = "silent" if not spoke else "l1"
+            if spoke and l2_failed:
+                rendered = f"{rendered}{L2_UNAVAILABLE_NOTICE}"
+                reason = "l2_unavailable_fallback"
+            else:
+                reason = "silent" if not spoke else "l1"
         if spoke:
             self._last_open_ts = time.time()
             self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
@@ -128,7 +135,21 @@ class DecisionHub:
             cooldown_state={"last_open_ts": self._last_open_ts},
         ).to_dict())
 
-    def _try_l2(self, text: str, situation: dict | None):
+
+    def _try_l2(self, text: str, situation: dict | None) -> tuple[str, bool, bool]:
+        if self._sensitive_filter.is_sensitive(text):
+            logger.info("blocked L2 route for sensitive utterance")
+            return "", False, False
+        try:
+            reply = self._bridge.generate(text, situation, self._memory)
+        except Exception:
+            logger.warning("L2 cloud bridge failed, falling back to L1", exc_info=True)
+            return "", False, True
+        reply = (reply or "").strip()
+        if not reply:
+            return "", False, True
+        return reply, True, False
+    def _try_l2_legacy(self, text: str, situation: dict | None):
 
         if self._sensitive_filter.is_sensitive(text):
             logger.info("blocked L2 route for sensitive utterance")

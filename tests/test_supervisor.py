@@ -427,3 +427,37 @@ def test_unhealthy_health_result_restarts_process():
     assert restarted == ["a"]
     assert len(created) == 2
     assert created[0].terminated == 1
+
+def test_async_restart_schedules_then_spawns_at_due_time():
+    class Proc:
+        def __init__(self):
+            self.alive = False
+
+        def poll(self):
+            return None if self.alive else 1
+
+    created = []
+
+    def factory(cmd, env=None, creationflags=None):
+        p = Proc()
+        p.alive = True
+        created.append(p)
+        return p
+
+    clock = {"now": 0.0}
+
+    sup = Supervisor(
+        [("a", ["a"])],
+        popen_factory=factory,
+        restart_base_delay=5.0,
+        clock=lambda: clock["now"],
+        sleep=lambda s: None,
+        async_restarts=True,
+    )
+    created[0].alive = False
+    assert sup.tick() == []
+    clock["now"] = 4.0
+    assert sup.tick() == []
+    clock["now"] = 5.0
+    assert sup.tick() == ["a"]
+    assert len(created) == 2

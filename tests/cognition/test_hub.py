@@ -151,7 +151,9 @@ def test_l2_failure_falls_back_to_l1(hub):
     h, bus, _ = hub
     h._bridge = FakeBridge(error=CloudError("boom"))
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
-    assert _reply_text(bus) == DEFAULT_JOKES[0]  # L1 动作链兜底
+    text = _reply_text(bus)
+    assert text.startswith(DEFAULT_JOKES[0])  # L1 动作链兜底
+    assert "云端暂时不可用" in text
 
 
 def test_l2_empty_reply_falls_back_to_l1(hub):

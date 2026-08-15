@@ -9,6 +9,8 @@ def test_defaults():
     assert config.persona_name == "yuki"
     assert config.bus.base_port == 5555
     assert config.bus.hwm == 1000
+    assert config.bus.auth_token == ""
+    assert config.bus.max_msg_size == 10 * 1024 * 1024
     assert config.logging.level == "INFO"
     assert config.supervisor.restart_base_delay == 1.0
     assert config.supervisor.restart_max_delay == 60.0
@@ -28,6 +30,13 @@ def test_from_env_merges_env_overrides(monkeypatch):
     assert config.bus.hwm == 500
     assert config.logging.level == "DEBUG"
     assert config.persona_name == "aki"
+
+def test_bus_auth_and_size_env_overrides(monkeypatch):
+    monkeypatch.setenv("YUKI_BUS_AUTH_TOKEN", "secret")
+    monkeypatch.setenv("YUKI_BUS_MAX_MSG_SIZE", "2048")
+    config = Config.load(None)
+    assert config.bus.auth_token == "secret"
+    assert config.bus.max_msg_size == 2048
 
 
 def test_yaml_then_env_merge(tmp_path, monkeypatch):

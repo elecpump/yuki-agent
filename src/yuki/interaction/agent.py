@@ -68,5 +68,8 @@ class InteractionAgent(ProcessAgent):
     def health_components(self):
         return {
             "tts": lambda: HealthStatus(True, {"output": "console"}),
-            "hotkeys": lambda: HealthStatus(True, {"installed": True}),
+            "hotkeys": lambda: HealthStatus(
+                "trigger" in getattr(self._hotkeys, "_handlers", {}),
+                {"installed": "trigger" in getattr(self._hotkeys, "_handlers", {})},
+            ),
         }

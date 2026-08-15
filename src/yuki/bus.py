@@ -1,6 +1,7 @@
 import logging
 import os
 import queue
+import hmac
 import time
 import threading
 import uuid
@@ -33,6 +34,13 @@ BUS_HEALTH_SERVICE = "health/bus_server"
 
 # proxy 线程超过该时长未更新心跳即视为总线发布面不健康。
 PROXY_STALE_S = 5.0
+
+def _token_ok(expected: str, actual: bytes | str) -> bool:
+    if not expected:
+        return True
+    if isinstance(actual, str):
+        actual = actual.encode("utf-8")
+    return hmac.compare_digest(expected.encode("utf-8"), actual)
 
 
 class BusError(Exception):
@@ -98,21 +106,27 @@ class _Base:
 class BusHub(_Base):
     """枢纽：XSUB/XPUB/ROUTER，只做转发与 REQ/REP 路由。"""
 
-    def __init__(self, base_port: int = 5555, hwm: int = 1000) -> None:
+    def __init__(self, base_port: int = 5555, hwm: int = 1000,
+                 auth_token: str = "", max_msg_size: int = 10 * 1024 * 1024) -> None:
         super().__init__()
         self._xsub_port = base_port
         self._xpub_port = base_port + 1
         self._router_port = base_port + 2
         self._service_map: dict[str, tuple[bytes, float]] = {}
+        self._auth_token = auth_token
+        self._max_msg_size = max_msg_size
 
         self._last_proxy_activity = time.monotonic()
         self._started_at = time.time()
         self._xsub = self._ctx.socket(zmq.XSUB)
+        self._xsub.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
         self._xsub.bind(f"tcp://127.0.0.1:{self._xsub_port}")
         self._xpub = self._ctx.socket(zmq.XPUB)
+        self._xpub.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
         self._xpub.bind(f"tcp://127.0.0.1:{self._xpub_port}")
         self._router = self._ctx.socket(zmq.ROUTER)
         self._router.setsockopt(zmq.RCVHWM, hwm)
+        self._router.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
         self._router.bind(f"tcp://127.0.0.1:{self._router_port}")
         self._spawn(self._proxy_loop)
         self._spawn(self._router_loop)
@@ -128,6 +142,11 @@ class BusHub(_Base):
             try:
                 if self._xsub in events:
                     frames = self._xsub.recv_multipart()
+                    if self._auth_token and (
+                        len(frames) != 3 or not _token_ok(self._auth_token, frames[1])
+                    ):
+                        logger.warning("dropping unauthorized publish")
+                        continue
                     self._xpub.send_multipart(frames)
                 if self._xpub in events:
                     frames = self._xpub.recv_multipart()
@@ -174,7 +193,26 @@ class BusHub(_Base):
             if len(frames) < 3:
                 continue
             sender = frames[0]
-            if frames[1] == b"REGISTER":
+
+            if b"REGISTER" == frames[1]:  # auth-aware registration
+                if self._auth_token:
+                    if len(frames) != 4 or not _token_ok(self._auth_token, frames[2]):
+                        logger.warning("dropping unauthorized REGISTER")
+                        continue
+                    service_frame = frames[3]
+                else:
+                    service_frame = frames[2]
+                try:
+                    service = service_frame.decode("utf-8")
+                except UnicodeDecodeError:
+                    logger.warning("dropping malformed REGISTER frame")
+                    continue
+                if not service:
+                    logger.warning("dropping empty REGISTER service name")
+                    continue
+                self._service_map[service] = (sender, time.monotonic())
+                continue
+            if False and frames[1] == b"REGISTER":
                 try:
                     service = frames[2].decode("utf-8")
                 except UnicodeDecodeError:
@@ -185,14 +223,25 @@ class BusHub(_Base):
                     continue
                 self._service_map[service] = (sender, time.monotonic())
                 continue
-            f1, f2 = frames[1], frames[2]
+            raw = frames[-1] if self._auth_token else frames[2]
+            f1 = frames[1]
             try:
-                envelope = parse_envelope(f2)
+                envelope = parse_envelope(raw)
             except DecodeError:
                 logger.warning("dropping malformed envelope from %s", sender)
                 continue
             kind = envelope.WhichOneof("body")
             if kind == "request":
+                if self._auth_token and (
+                    len(frames) != 4 or not _token_ok(self._auth_token, frames[2])
+                ):
+                    logger.warning("rejecting unauthorized request")
+                    err = build_response_error(
+                        envelope.request.request_id, "unauthorized",
+                        trace_id=envelope.trace_id,
+                    )
+                    self._router.send_multipart([sender, err.SerializeToString()])
+                    continue
                 service = envelope.request.service
                 if service == BUS_HEALTH_SERVICE:
                     reply = build_response_result(
@@ -210,9 +259,9 @@ class BusHub(_Base):
                     )
                     self._router.send_multipart([sender, err.SerializeToString()])
                 else:
-                    self._router.send_multipart([provider, sender, f2])
+                    self._router.send_multipart([provider, sender, raw])
             elif kind == "response":
-                self._router.send_multipart([f1, f2])
+                self._router.send_multipart([f1, raw])
         self._close_socket(self._router)
 
 
@@ -225,6 +274,8 @@ class BusNode(_Base):
         hwm: int = 1000,
         register_interval: float = 10.0,
         subscriber_queue_size: int = 256,
+        auth_token: str = "",
+        max_msg_size: int = 10 * 1024 * 1024,
     ) -> None:
         super().__init__()
         self._xsub_port = base_port
@@ -232,6 +283,8 @@ class BusNode(_Base):
         self._router_port = base_port + 2
         self._hwm = hwm
         self._subscriber_queue_size = max(1, subscriber_queue_size)
+        self._auth_token = auth_token
+        self._max_msg_size = max_msg_size
         self._register_interval = register_interval
         self._handlers: dict[str, list[Callable[[str, dict], None]]] = {}
         self._services: dict[str, Callable[[dict], dict]] = {}
@@ -262,13 +315,16 @@ class BusNode(_Base):
 
         self._pub = self._ctx.socket(zmq.PUB)
         self._pub.setsockopt(zmq.SNDHWM, hwm)
+        self._pub.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
         self._pub.connect(f"tcp://127.0.0.1:{self._xsub_port}")
 
         self._dealer = self._ctx.socket(zmq.DEALER)
         self._dealer.setsockopt(zmq.SNDHWM, hwm)
         self._dealer.setsockopt(zmq.RCVHWM, hwm)
+        self._dealer.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
         self._dealer.connect(f"tcp://127.0.0.1:{self._router_port}")
         self._sub = self._ctx.socket(zmq.SUB)
+        self._sub.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
         self._sub.setsockopt(zmq.RCVHWM, hwm)
         self._sub.connect(f"tcp://127.0.0.1:{self._xpub_port}")
 
@@ -319,9 +375,19 @@ class BusNode(_Base):
         except queue.Full:
             return False
 
+    def _register_frames(self, service: str) -> list:
+        frames = [b"REGISTER"]
+        if self._auth_token:
+            frames.append(self._auth_token.encode("utf-8"))
+        frames.append(service.encode())
+        return frames
+
     def publish(self, topic: str, payload: dict, *, trace_id: str | None = None) -> None:
         envelope = build_event(topic, payload, trace_id=trace_id)
-        frames = [topic.encode(), envelope.SerializeToString()]
+        frames = [topic.encode()]
+        if self._auth_token:
+            frames.append(self._auth_token.encode("utf-8"))
+        frames.append(envelope.SerializeToString())
         try:
             self._pub_queue.put_nowait(frames)
         except queue.Full:
@@ -365,7 +431,10 @@ class BusNode(_Base):
         envelope = build_request(service, rid, trace_id, payload)
         with self._lock:
             self._pending[rid] = {"event": event, "result": None}
-        frames = [service.encode(), envelope.SerializeToString()]
+        frames = [service.encode()]
+        if self._auth_token:
+            frames.append(self._auth_token.encode("utf-8"))
+        frames.append(envelope.SerializeToString())
         if not self._enqueue_dealer(
             frames, timeout_s=min(max(timeout_ms / 1000.0, 0.1), 2.0)
         ):
@@ -390,7 +459,7 @@ class BusNode(_Base):
         pass  # assignment moved below with services_lock
         with self._services_lock:
             self._services.__setitem__(service, handler)  # locked
-        if not self._enqueue_dealer([b"REGISTER", service.encode()]):
+        if not self._enqueue_dealer(self._register_frames(service)):
             logger.warning(
                 "REGISTER frame dropped (dealer outbox full)", service=service
             )
@@ -513,7 +582,7 @@ class BusNode(_Base):
                 continue
             try:
                 for service in services:
-                    if not self._enqueue_dealer([b"REGISTER", service.encode()]):
+                    if not self._enqueue_dealer(self._register_frames(service)):
                         logger.warning(
                             "REGISTER refresh dropped (dealer outbox full)",
                             service=service,
@@ -544,7 +613,18 @@ class BusNode(_Base):
             if not self._sub.poll(20):
                 continue
             try:
-                raw_topic, raw_payload = self._sub.recv_multipart()
+                frames = self._sub.recv_multipart()
+                raw_topic = frames[0]
+                if self._auth_token:
+                    if len(frames) != 3 or not _token_ok(self._auth_token, frames[1]):
+                        logger.warning("dropping unauthorized event")
+                        continue
+                    raw_payload = frames[2]
+                else:
+                    if len(frames) not in (2, 3):
+                        logger.warning("dropping malformed event frame count")
+                        continue
+                    raw_payload = frames[-1]
             except zmq.ZMQError:
                 return
             try:

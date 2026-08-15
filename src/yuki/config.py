@@ -8,6 +8,8 @@ from pydantic import BaseModel, ConfigDict, Field
 class BusConfig(BaseModel):
     base_port: int = Field(5555, ge=1024, le=65533)  # base_port+2 为 ROUTER 端口
     hwm: int = Field(1000, ge=1)
+    auth_token: str = ""
+    max_msg_size: int = Field(10 * 1024 * 1024, ge=1024)
 
 
 class LoggingConfig(BaseModel):
