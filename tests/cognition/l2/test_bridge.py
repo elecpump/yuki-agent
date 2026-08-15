@@ -14,8 +14,8 @@ class TurnClient:
         self._responses = list(responses)
         self.calls = []
 
-    def chat(self, messages, tools=None):
-        self.calls.append((messages, tools))
+    def chat(self, messages, tools=None, timeout_s=None):
+        self.calls.append((messages, tools, timeout_s))
         return self._responses.pop(0)
 
 
@@ -133,3 +133,16 @@ def test_set_system_prompt_updates():
     bridge.set_system_prompt("新的系统提示")
     bridge.generate("你好", context=None, memory=None)
     assert client.calls[0][0][0]["content"] == "新的系统提示"
+
+
+def test_refine_persona_calls_client():
+    client = TurnClient([{"choices": [{"message": {"content": "  润色后的文本  "}}]}])
+    bridge = CloudBridge(client)
+    out = bridge.refine_persona("原始描述")
+    assert out == "润色后的文本"
+    system_msg, user_msg = client.calls[0][0]
+    assert system_msg["role"] == "system"
+    assert "润色" in system_msg["content"]
+    assert user_msg["content"] == "原始描述"
+    assert client.calls[0][1] is None  # 精修不带 tools
+    assert client.calls[0][2] == 5.0

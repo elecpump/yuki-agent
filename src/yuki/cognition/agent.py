@@ -101,9 +101,13 @@ class CognitionAgent(ProcessAgent):
         def persona_refresh() -> None:
             prefs = [m for m in self._memory.list(memory_type="preference")
                      if m.get("sensitivity", 0) != 2]
+            refine = None
+            if self.config.persona.enable_llm_refine and bridge is not None:
+                refine = bridge.refine_persona
             prompt = generate_persona(
                 self.config.persona_name, prefs, {},
                 base_prompt=self.config.persona.prompt,
+                refine=refine,
             )
             snap = self._persona_store.save(prompt, {})
             if snap is not None and bridge is not None:
