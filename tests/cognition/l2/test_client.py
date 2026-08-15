@@ -96,3 +96,17 @@ def test_default_post_maps_http_error_to_cloud_error(monkeypatch):
     client = CloudClient("https://api.example.com/v1", "m1", timeout_s=5.0)
     with pytest.raises(CloudError, match="429"):
         client.chat([{"role": "user", "content": "x"}])
+
+
+def test_chat_accepts_per_call_timeout():
+    captured = {}
+
+    def fake_post(url, headers, payload, timeout):
+        captured["timeout"] = timeout
+        return {"choices": [{"message": {"content": "hi"}}]}
+
+    client = CloudClient("https://api.example.com/v1", "m1", timeout_s=10.0, post=fake_post)
+    client.chat([{"role": "user", "content": "x"}], timeout_s=2.0)
+    assert captured["timeout"] == 2.0
+    client.chat([{"role": "user", "content": "x"}])
+    assert captured["timeout"] == 10.0

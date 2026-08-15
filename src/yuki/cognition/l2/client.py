@@ -37,15 +37,17 @@ class CloudClient:
         self._timeout = timeout_s
         self._post = post or _default_post
 
-    def chat(self, messages: list[dict], tools: list[dict] | None = None) -> dict:
+    def chat(self, messages: list[dict], tools: list[dict] | None = None,
+             timeout_s: float | None = None) -> dict:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         payload: dict = {"model": self._model, "messages": messages}
         if tools:
             payload["tools"] = tools
+        timeout = self._timeout if timeout_s is None else timeout_s
         try:
-            raw = self._post(f"{self._base}/chat/completions", headers, payload, self._timeout)
+            raw = self._post(f"{self._base}/chat/completions", headers, payload, timeout)
         except CloudError:
             raise
         except Exception as exc:
