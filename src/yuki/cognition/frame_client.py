@@ -11,9 +11,15 @@ class FrameClient:
         self._bus = bus
         self._timeout_ms = timeout_ms
 
-    def get_latest(self) -> dict:
+    def _request(self, payload: dict) -> dict:
         try:
-            return self._bus.request("frame", {}, timeout_ms=self._timeout_ms)
+            return self._bus.request("frame", payload, timeout_ms=self._timeout_ms)
         except (BusError, BusTimeoutError):
             logger.warning("frame request failed, degrading to empty")
             return {}
+
+    def get_latest(self) -> dict:
+        return self._request({})
+
+    def get_by_id(self, frame_id: int) -> dict:
+        return self._request({"frame_id": frame_id})

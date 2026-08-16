@@ -49,6 +49,7 @@ payload 数值经 google.protobuf.Struct 以 double 存储，整数精确到 2^5
 | event/awake | 交互层→总线 | {"source":"hotkey"\|"wakeword","ts":float,"confidence":0..1}（confidence/wakeword 为 Phase 3 预留；当前仅发 hotkey+ts） |
 | event/reply | 认知层→总线 | {"text":str,"ts":float} |
 | event/focus_changed | 采集层→总线 | {"app":str,"url":str,"title":str}（Phase 2b） |
+| event/perception/content_ready | 采集层→总线 | {"app":str,"url":str,"title":str,"reason":"focus_changed"\|"scroll_idle","frame_id":int,"ts":float,"frame_ts":float,"frame_width":int,"frame_height":int,"sensitive":bool,"scroll_percent"?:float} |
 | event/heartbeat | 各层→总线 | {"process":str,"ts":float}（可选） |
 
 ## 5. 帧主题与格式
@@ -59,6 +60,11 @@ payload 数值经 google.protobuf.Struct 以 double 存储，整数精确到 2^5
 
 ### frame/request（REQ/REP，Phase 2b 启用）
 - 服务名 `frame`；超时 2000ms；失败按降级链
+- 请求 `{}` 返回最新帧；请求 `{"frame_id":int}` 返回最近缓存中的指定帧。
+- 响应：`{"frame_id":int,"png":base64,"width":int,"height":int,"ts":float,"sensitive":bool}`。
+- 尚无帧时 latest 返回占位帧：`{"png":"","width":0,"height":0,"ts":0.0,"sensitive":false}`。
+- 指定 `frame_id` 不存在或已被淘汰时返回 `{}`，调用方按无帧降级。
+- 认知层处理 `event/perception/content_ready` 时必须优先按 `frame_id` 拉取对应帧；`event/focus_changed` 是原始信号，不能作为稳定画面证据。
 
 ## 6. 健康检查
 

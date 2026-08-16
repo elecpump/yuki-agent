@@ -37,7 +37,7 @@ class FakeSTT:
 
 
 class FakeFrameClient:
-    def __init__(self, png=None):
+    def __init__(self, png=None, frames=None):
         self.latest = {
             "png": _png_b64() if png is None else png,
             "width": 4,
@@ -45,9 +45,17 @@ class FakeFrameClient:
             "ts": 1.0,
             "sensitive": False,
         }
+        self.frames = frames or {}
+        self.latest_requests = 0
+        self.requested_ids = []
 
     def get_latest(self):
+        self.latest_requests += 1
         return dict(self.latest)
+
+    def get_by_id(self, frame_id):
+        self.requested_ids.append(frame_id)
+        return dict(self.frames.get(frame_id, {}))
 
 
 class FakeSpeechBuffer:
@@ -89,6 +97,69 @@ def test_pipeline_focus_publishes_situation_update():
     assert payload["degraded"] is False
     # 管线不直接回复
     assert not any(t == Topics.REPLY for t, _ in bus.published)
+
+
+def test_pipeline_content_ready_publishes_situation_update():
+    bus = FakeBus()
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    bus.subscriptions[Topics.CONTENT_READY][0](
+        "event/perception/content_ready",
+        {"app": "chrome", "url": "https://x.com/a", "title": "A", "reason": "scroll_idle"},
+    )
+    payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
+    assert payload["topic"] == "climate"
+    assert payload["source_id"] == "https://x.com/a"
+
+
+def test_pipeline_content_ready_reads_bound_frame_id():
+    bus = FakeBus()
+    frame_client = FakeFrameClient(
+        png="",
+        frames={
+            42: {
+                "frame_id": 42,
+                "png": _png_b64(),
+                "width": 4,
+                "height": 4,
+                "ts": 1.0,
+                "sensitive": False,
+            }
+        },
+    )
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=frame_client)
+
+    bus.subscriptions[Topics.CONTENT_READY][0](
+        "event/perception/content_ready",
+        {
+            "app": "chrome",
+            "url": "https://x.com/a",
+            "title": "A",
+            "reason": "scroll_idle",
+            "frame_id": 42,
+        },
+    )
+
+    assert frame_client.latest_requests == 0
+    assert frame_client.requested_ids == [42]
+    assert any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
+
+
+def test_pipeline_ignores_deferred_focus_changed():
+    bus = FakeBus()
+    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
+                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    bus.subscriptions[Topics.FOCUS_CHANGED][0](
+        "event/focus_changed",
+        {
+            "app": "chrome",
+            "url": "https://x.com/a",
+            "title": "A",
+            "content_ready_deferred": True,
+        },
+    )
+    assert not any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
 
 
 def test_pipeline_awake_no_direct_reply():

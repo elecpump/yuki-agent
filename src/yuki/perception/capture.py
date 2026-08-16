@@ -3,6 +3,7 @@ import io
 import threading
 import time
 from abc import ABC, abstractmethod
+from collections import OrderedDict
 from typing import Callable
 
 from PIL import Image
@@ -143,6 +144,60 @@ def _window_info_from_hwnd(hwnd: int) -> Callable[[], tuple[str, str] | None]:
     return info
 
 
+class FrameStore:
+    """Keeps recent captured frames addressable by stable frame_id."""
+
+    def __init__(self, max_frames: int = 32) -> None:
+        self._max_frames = max(1, max_frames)
+        self._latest: dict = {
+            "png": "",
+            "width": 0,
+            "height": 0,
+            "ts": 0.0,
+            "sensitive": False,
+        }
+        self._frames: OrderedDict[int, dict] = OrderedDict()
+        self._next_frame_id = 0
+        self._lock = threading.Lock()
+
+    def store(
+        self,
+        *,
+        png_b64: str,
+        width: int,
+        height: int,
+        ts: float,
+        sensitive: bool,
+    ) -> dict:
+        with self._lock:
+            self._next_frame_id += 1
+            snapshot = {
+                "frame_id": self._next_frame_id,
+                "png": png_b64,
+                "width": width,
+                "height": height,
+                "ts": ts,
+                "sensitive": sensitive,
+            }
+            self._latest = dict(snapshot)
+            self._frames[snapshot["frame_id"]] = dict(snapshot)
+            while len(self._frames) > self._max_frames:
+                self._frames.popitem(last=False)
+            return dict(snapshot)
+
+    def latest(self) -> dict:
+        with self._lock:
+            return dict(self._latest)
+
+    def get(self, frame_id) -> dict:
+        try:
+            key = int(frame_id)
+        except (TypeError, ValueError):
+            return {}
+        with self._lock:
+            return dict(self._frames.get(key, {}))
+
+
 def make_frame_service(
     bus,
     capture: FrameCapture,
@@ -150,6 +205,8 @@ def make_frame_service(
     window_info: Callable[[], tuple[str, str] | None] | None = None,
     *,
     hwnd: int | None = None,
+    on_frame_stored: Callable[[dict], None] | None = None,
+    max_stored_frames: int = 32,
 ) -> None:
     """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。
 
@@ -158,34 +215,47 @@ def make_frame_service(
     """
     if window_info is None:
         window_info = _window_info_from_hwnd(hwnd) if hwnd else _foreground_window_info
-    latest: dict = {"png": "", "width": 0, "height": 0, "ts": 0.0, "sensitive": False}
-    latest_lock = threading.Lock()
+    store = FrameStore(max_frames=max_stored_frames)
+
+    def notify_stored(snapshot: dict) -> None:
+        if on_frame_stored is None:
+            return
+        try:
+            on_frame_stored(snapshot)
+        except Exception:
+            logger.exception("frame stored callback failed")
 
     def on_frame(png: bytes, meta: dict) -> None:
         info = window_info()
         class_name, title = info if info is not None else (None, None)
         capture_ok, is_sensitive = strategy.should_capture(class_name, title)
         if not capture_ok and is_sensitive:
-            with latest_lock:
-                latest["png"] = base64.b64encode(strategy.black_frame()).decode("ascii")
-                latest["width"] = meta["width"]
-                latest["height"] = meta["height"]
-                latest["ts"] = meta["ts"]
-                latest["sensitive"] = True
+            snapshot = store.store(
+                png_b64=base64.b64encode(strategy.black_frame()).decode("ascii"),
+                width=meta["width"],
+                height=meta["height"],
+                ts=meta["ts"],
+                sensitive=True,
+            )
+            notify_stored(snapshot)
             return
         if not capture_ok:
             return
-        with latest_lock:
-            latest["png"] = base64.b64encode(png).decode("ascii")
-            latest["width"] = meta["width"]
-            latest["height"] = meta["height"]
-            latest["ts"] = meta["ts"]
-            latest["sensitive"] = False
+        snapshot = store.store(
+            png_b64=base64.b64encode(png).decode("ascii"),
+            width=meta["width"],
+            height=meta["height"],
+            ts=meta["ts"],
+            sensitive=False,
+        )
+        notify_stored(snapshot)
 
     capture.on_frame = on_frame
 
     def handler(payload: dict) -> dict:
-        with latest_lock:
-            return dict(latest)
+        frame_id = payload.get("frame_id")
+        if frame_id is not None:
+            return store.get(frame_id)
+        return store.latest()
 
     bus.respond("frame", handler)

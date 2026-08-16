@@ -1,11 +1,13 @@
 from yuki.config import Config
 from yuki.health import HealthStatus
+from yuki.perception.observation import StableContentObservation
 from yuki.perception.audio import AudioCapture
 from yuki.perception.capture import FrameStrategy, NullCapture, WgcCapture, make_frame_service
 from yuki.perception.scroll import ScrollHook, ScrollIdleDetector
 from yuki.perception.sensitive import SensitiveDetector
-from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor, make_monitor
+from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor
 from yuki.process import ProcessAgent
+from yuki.topics import Topics
 
 
 class PerceptionAgent(ProcessAgent):
@@ -27,6 +29,7 @@ class PerceptionAgent(ProcessAgent):
         detector = SensitiveDetector()
         idle = ScrollIdleDetector(idle_ms=300)
         strategy = self._strategy or FrameStrategy(sensitive=detector, idle=idle, require_idle=True)
+        observation = StableContentObservation(self.bus)
 
         gate_hwnd = 0
         capture = self._capture
@@ -43,11 +46,32 @@ class PerceptionAgent(ProcessAgent):
         elif isinstance(capture, WgcCapture):
             gate_hwnd = capture.window_hwnd
 
-        monitor = self._monitor or make_monitor(self.bus, probe=ForegroundProbe())
-        audio = self._audio or AudioCapture(self.bus)
-        scroll_hook = self._scroll_hook or ScrollHook(on_scroll=idle.on_scroll_activity)
+        def on_focus_changed(payload: dict) -> None:
+            self.bus.publish(
+                Topics.FOCUS_CHANGED,
+                {**payload, "content_ready_deferred": True},
+            )
+            observation.on_focus_changed(payload)
 
-        make_frame_service(self.bus, capture, strategy, hwnd=gate_hwnd)
+        monitor = self._monitor or SystemMonitor(
+            ForegroundProbe(),
+            on_change=on_focus_changed,
+        )
+        audio = self._audio or AudioCapture(self.bus)
+
+        def on_scroll() -> None:
+            idle.on_scroll_activity()
+            observation.on_scroll_activity()
+
+        scroll_hook = self._scroll_hook or ScrollHook(on_scroll=on_scroll)
+
+        make_frame_service(
+            self.bus,
+            capture,
+            strategy,
+            hwnd=gate_hwnd,
+            on_frame_stored=observation.on_frame_stored,
+        )
 
         self._components = {
             "capture": capture,

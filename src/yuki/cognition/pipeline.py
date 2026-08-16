@@ -60,6 +60,12 @@ class PerceptionPipeline:
             on_utterance=self._on_utterance
         )
 
+    def _frame_for_payload(self, payload: dict) -> dict:
+        frame_id = payload.get("frame_id")
+        if frame_id is not None:
+            return self._frame_client.get_by_id(frame_id)
+        return self._frame_client.get_latest()
+
     def _on_utterance(self, samples) -> None:
         text = self._stt.recognize(samples, sample_rate=16000)
         if not text:
@@ -68,8 +74,8 @@ class PerceptionPipeline:
             "text": text, "duration_s": round(len(samples) / 16000, 2), "ts": time.time(),
         })
 
-    def on_focus_changed(self, topic: str, payload: dict) -> None:
-        frame = self._frame_client.get_latest()
+    def on_content_ready(self, topic: str, payload: dict) -> None:
+        frame = self._frame_for_payload(payload)
         if not frame or not frame.get("png") or frame.get("sensitive"):
             return
         image = decode_png_b64(frame["png"])
@@ -103,6 +109,11 @@ class PerceptionPipeline:
             "degraded": context.get("degraded", False),
             "reason": context.get("reason", ""),
         })
+
+    def on_focus_changed(self, topic: str, payload: dict) -> None:
+        if payload.get("content_ready_deferred"):
+            return
+        self.on_content_ready(topic, payload)
 
     def _publish_situation(self, data: dict) -> None:
         data.setdefault("source_id", "unknown")
@@ -157,6 +168,7 @@ def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
         bus=bus,
         speech_buffer=speech_buffer,
     )
+    bus.subscribe(Topics.CONTENT_READY, pipeline.on_content_ready)
     bus.subscribe(Topics.FOCUS_CHANGED, pipeline.on_focus_changed)
     bus.subscribe(Topics.AWAKE, pipeline.on_awake)
     bus.subscribe(Topics.MIC, pipeline.on_mic)

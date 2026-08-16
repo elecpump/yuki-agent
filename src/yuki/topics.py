@@ -2,6 +2,7 @@ class Topics:
     AWAKE = "event/awake"
     REPLY = "event/reply"
     FOCUS_CHANGED = "event/focus_changed"
+    CONTENT_READY = "event/perception/content_ready"
     SITUATION_UPDATE = "event/perception/situation_update"
     USER_UTTERANCE = "event/perception/user_utterance"
     HEARTBEAT = "event/heartbeat"

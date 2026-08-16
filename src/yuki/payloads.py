@@ -20,6 +20,23 @@ class FocusChangedPayload(TypedDict):
     scroll_percent: NotRequired[float]
 
 
+    scroll_percent: NotRequired[float]
+
+
+class ContentReadyPayload(TypedDict):
+    app: str
+    url: str
+    title: str
+    reason: str
+    frame_id: int
+    ts: float
+    frame_ts: float
+    frame_width: int
+    frame_height: int
+    sensitive: bool
+    scroll_percent: NotRequired[float]
+
+
 class SituationUpdatePayload(TypedDict):
     source_id: str
     scroll_band: str
@@ -53,6 +70,7 @@ class HeartbeatPayload(TypedDict):
 
 
 class FrameResult(TypedDict):
+    frame_id: NotRequired[int]
     png: str
     width: int
     height: int

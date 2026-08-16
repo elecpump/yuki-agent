@@ -152,6 +152,56 @@ def test_make_frame_service_stores_real_frame_when_normal():
     assert result["sensitive"] is False
 
 
+def test_make_frame_service_notifies_when_frame_is_stored():
+    capture = FakeCapture()
+    bus = FakeBus()
+    strategy = FakeStrategy(results=[(True, False)])
+    stored = []
+    make_frame_service(
+        bus,
+        capture,
+        strategy,
+        window_info=lambda: ("Chrome_WidgetWin_1", "Article"),
+        on_frame_stored=stored.append,
+    )
+
+    png = black_frame_png(width=64, height=48, color=(10, 20, 30))
+    capture.on_frame(png, {"width": 64, "height": 48, "ts": 1.5})
+
+    assert len(stored) == 1
+    assert stored[0]["frame_id"] == 1
+    assert stored[0]["png"] == base64.b64encode(png).decode("ascii")
+    assert stored[0]["width"] == 64
+    assert stored[0]["height"] == 48
+    assert stored[0]["ts"] == 1.5
+    assert stored[0]["sensitive"] is False
+
+
+def test_make_frame_service_returns_frame_by_id():
+    capture = FakeCapture()
+    bus = FakeBus()
+    strategy = FakeStrategy(results=[(True, False), (True, False)])
+    make_frame_service(
+        bus,
+        capture,
+        strategy,
+        window_info=lambda: ("Chrome_WidgetWin_1", "Article"),
+    )
+
+    first_png = black_frame_png(width=64, height=48, color=(1, 2, 3))
+    second_png = black_frame_png(width=64, height=48, color=(9, 9, 9))
+    capture.on_frame(first_png, {"width": 64, "height": 48, "ts": 1.0})
+    first = bus.services["frame"]({})
+    capture.on_frame(second_png, {"width": 64, "height": 48, "ts": 2.0})
+    second = bus.services["frame"]({})
+
+    assert first["frame_id"] == 1
+    assert second["frame_id"] == 2
+    assert bus.services["frame"]({"frame_id": 1})["ts"] == 1.0
+    assert bus.services["frame"]({"frame_id": 2})["ts"] == 2.0
+    assert bus.services["frame"]({"frame_id": 999}) == {}
+
+
 def test_make_frame_service_keeps_latest_when_suppressed():
     capture = FakeCapture()
     bus = FakeBus()
