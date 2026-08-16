@@ -19,6 +19,7 @@ from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
+from yuki.functions.service import register_function_services
 from yuki.functions.system import register_builtin_system
 from yuki.health import HealthStatus
 from yuki.logger import get_logger
@@ -79,6 +80,7 @@ class CognitionAgent(ProcessAgent):
             self._registry = FunctionRegistry()
             register_builtin_system(self._registry)
         register_memory_functions(self._registry, self._memory)
+        register_function_services(self.bus, self._registry)
         bridge = None
         if self.config.cloud.enabled:
             bridge = CloudBridge(

@@ -1,6 +1,7 @@
 from yuki.cognition.agent import CognitionAgent
 from yuki.cognition.brain.classifier import Intent
 from yuki.config import Config
+from yuki.functions.service import FUNCTIONS_CALL_SERVICE
 from yuki.memory.manager import MemoryManager
 from yuki.memory.service import MEMORY_SERVICES
 from yuki.memory.store import MemoryStore
@@ -32,6 +33,10 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
     assert Topics.SITUATION_UPDATE in bus.subscriptions
     assert Topics.USER_UTTERANCE in bus.subscriptions
     assert all(service in bus.services for service in MEMORY_SERVICES)
+    assert FUNCTIONS_CALL_SERVICE in bus.services
+    assert bus.request(
+        FUNCTIONS_CALL_SERVICE, {"name": "system.ping", "arguments": "{}"}
+    )["ok"] is True
     agent.teardown()
 
 

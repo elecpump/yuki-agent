@@ -7,6 +7,7 @@ from yuki.functions.registry import (
     ToolExecutionError,
     ToolNotFoundError,
 )
+from yuki.functions.service import FUNCTIONS_CALL_SERVICE, register_function_services
 from yuki.functions.system import register_builtin_system
 
 __all__ = [
@@ -17,5 +18,7 @@ __all__ = [
     "ToolExecutionError",
     "FunctionTool",
     "FunctionRegistry",
+    "FUNCTIONS_CALL_SERVICE",
+    "register_function_services",
     "register_builtin_system",
 ]
