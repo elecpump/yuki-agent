@@ -19,9 +19,23 @@ logger = get_logger("yuki.cognition.brain.hub")
 L2_UNAVAILABLE_NOTICE = "（云端暂时不可用，我先用本地模式陪你。）"
 
 
+def situation_provenance(situation: dict | None) -> dict:
+    if not situation:
+        return {}
+    keys = (
+        "situation_id",
+        "frame_id",
+        "source_id",
+        "scroll_band",
+        "observation_reason",
+        "frame_ts",
+    )
+    return {key: situation[key] for key in keys if key in situation}
+
+
 class DecisionTrace:
     def __init__(self, *, ts, trigger, intent, emotion, actions, rendered, reason,
-                 tier, cooldown_state) -> None:
+                 tier, cooldown_state, situation_provenance=None) -> None:
         self.ts = ts
         self.trigger = trigger
         self.intent = intent
@@ -31,6 +45,7 @@ class DecisionTrace:
         self.reason = reason
         self.tier = tier
         self.cooldown_state = cooldown_state
+        self.situation_provenance = situation_provenance or {}
 
     def to_dict(self) -> dict:
         return {
@@ -43,6 +58,7 @@ class DecisionTrace:
             "reason": self.reason,
             "tier": self.tier,
             "cooldown_state": self.cooldown_state,
+            "situation_provenance": self.situation_provenance,
         }
 
 
@@ -159,6 +175,7 @@ class DecisionHub:
             ts=time.time(), trigger=trigger.value, intent=intent.value, emotion=emotion.value,
             actions=actions, rendered=rendered, reason=reason, tier=tier.value,
             cooldown_state={"last_open_ts": self._last_open_ts},
+            situation_provenance=situation_provenance(effective_situation),
         ).to_dict())
 
 

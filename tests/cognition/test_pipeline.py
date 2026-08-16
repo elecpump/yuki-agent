@@ -39,6 +39,7 @@ class FakeSTT:
 class FakeFrameClient:
     def __init__(self, png=None, frames=None):
         self.latest = {
+            "frame_id": 1,
             "png": _png_b64() if png is None else png,
             "width": 4,
             "height": 4,
@@ -110,6 +111,13 @@ def test_pipeline_content_ready_publishes_situation_update():
     payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
     assert payload["topic"] == "climate"
     assert payload["source_id"] == "https://x.com/a"
+    assert payload["situation_id"] == "frame:1"
+    assert payload["frame_id"] == 1
+    assert payload["frame_ts"] == 1.0
+    assert payload["frame_width"] == 4
+    assert payload["frame_height"] == 4
+    assert payload["observation_reason"] == "scroll_idle"
+    assert payload["cache_key"] == "https://x.com/a"
 
 
 def test_pipeline_content_ready_reads_bound_frame_id():
@@ -143,7 +151,9 @@ def test_pipeline_content_ready_reads_bound_frame_id():
 
     assert frame_client.latest_requests == 0
     assert frame_client.requested_ids == [42]
-    assert any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
+    payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
+    assert payload["situation_id"] == "frame:42"
+    assert payload["frame_id"] == 42
 
 
 def test_pipeline_ignores_deferred_focus_changed():

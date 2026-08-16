@@ -214,6 +214,33 @@ def test_decision_trace_includes_tier(hub):
     assert records[0]["tier"] == "l2"
 
 
+def test_decision_trace_includes_situation_provenance(hub):
+    h, bus, _ = hub
+    h._context = {
+        "situation_id": "frame:42",
+        "frame_id": 42,
+        "source_id": "https://x.com/a",
+        "scroll_band": "25-50",
+        "observation_reason": "scroll_idle",
+        "frame_ts": 9.5,
+        "topic": "climate",
+        "summary": "long text that should stay out of trace",
+    }
+    records = []
+    h._trace_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
+
+    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "浣犲ソ", "duration_s": 1.0, "ts": 0.0})
+
+    assert records[0]["situation_provenance"] == {
+        "situation_id": "frame:42",
+        "frame_id": 42,
+        "source_id": "https://x.com/a",
+        "scroll_band": "25-50",
+        "observation_reason": "scroll_idle",
+        "frame_ts": 9.5,
+    }
+
+
 class FakeTuner:
     def __init__(self):
         self.opens = 0

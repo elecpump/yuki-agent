@@ -16,10 +16,7 @@ class FocusChangedPayload(TypedDict):
     app: str
     url: str
     title: str
-    # Phase 4 UI Automation 才能可靠提供；当前采集层暂不发布该字段。
-    scroll_percent: NotRequired[float]
-
-
+    # Phase 4 UI Automation can provide this reliably; current capture may omit it.
     scroll_percent: NotRequired[float]
 
 
@@ -38,8 +35,17 @@ class ContentReadyPayload(TypedDict):
 
 
 class SituationUpdatePayload(TypedDict):
+    situation_id: str
     source_id: str
+    source_app: str
+    source_title: str
     scroll_band: str
+    observation_reason: str
+    observation_ts: float
+    frame_ts: float
+    frame_width: int
+    frame_height: int
+    cache_key: str
     topic: str
     summary: str
     content_type: str
@@ -48,6 +54,8 @@ class SituationUpdatePayload(TypedDict):
     degraded: bool
     reason: str
     ts: float
+    frame_id: NotRequired[int]
+    scroll_percent: NotRequired[float]
 
 
 class UserUtterancePayload(TypedDict):

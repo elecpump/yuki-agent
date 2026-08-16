@@ -1,12 +1,12 @@
 import base64
 import io
 import time
-from typing import Callable
 
 from PIL import Image
 
 from yuki.cognition.frame_client import FrameClient
 from yuki.cognition.sensitive import SensitiveFilter
+from yuki.cognition.situation import build_situation_update, cache_key_for, scroll_band
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
 from yuki.cognition.vlm import VisualUnderstander
@@ -23,14 +23,6 @@ def decode_png_b64(png_b64: str) -> Image.Image | None:
     except (ValueError, OSError):
         logger.warning("png decode failed")
         return None
-
-
-def scroll_band(scroll_percent: float | None) -> str:
-    if scroll_percent is None:
-        return "unknown"
-    percent = min(max(float(scroll_percent), 0.0), 100.0)
-    idx = min(int(percent // 25), 3)
-    return f"{idx * 25}-{idx * 25 + 25}"
 
 
 class PerceptionPipeline:
@@ -81,13 +73,7 @@ class PerceptionPipeline:
         image = decode_png_b64(frame["png"])
         if image is None:
             return
-        source_id = payload.get("url") or payload.get("title") or "unknown"
-        scroll_percent = payload.get("scroll_percent")
-        cache_key = (
-            f"{source_id}|{scroll_band(scroll_percent)}"
-            if scroll_percent is not None
-            else source_id
-        )
+        cache_key = cache_key_for(payload)
         context = self._vlm.understand(image, cache_key=cache_key)
         text = " ".join([
             context.get("topic", ""),
@@ -95,20 +81,11 @@ class PerceptionPipeline:
             " ".join(context.get("key_points", []) or []),
         ])
         if self._sensitive.scan(text):
-            self._publish_situation({"topic": "", "sensitive": True, "degraded": True,
-                                     "reason": "sensitive"})
+            self._publish_situation(
+                build_situation_update(payload, frame, {}, sensitive=True, reason="sensitive")
+            )
             return
-        self._publish_situation({
-            "source_id": source_id,
-            "scroll_band": scroll_band(scroll_percent),
-            "topic": context.get("topic", ""),
-            "summary": context.get("summary", ""),
-            "content_type": context.get("content_type", "unknown"),
-            "key_points": context.get("key_points", []),
-            "sensitive": False,
-            "degraded": context.get("degraded", False),
-            "reason": context.get("reason", ""),
-        })
+        self._publish_situation(build_situation_update(payload, frame, context))
 
     def on_focus_changed(self, topic: str, payload: dict) -> None:
         if payload.get("content_ready_deferred"):

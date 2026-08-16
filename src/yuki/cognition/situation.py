@@ -1,0 +1,82 @@
+import time
+from typing import Callable
+
+
+def scroll_band(scroll_percent: float | None) -> str:
+    if scroll_percent is None:
+        return "unknown"
+    try:
+        percent = min(max(float(scroll_percent), 0.0), 100.0)
+    except (TypeError, ValueError):
+        return "unknown"
+    idx = min(int(percent // 25), 3)
+    return f"{idx * 25}-{idx * 25 + 25}"
+
+
+def source_id_for(observation: dict) -> str:
+    return observation.get("url") or observation.get("title") or "unknown"
+
+
+def cache_key_for(observation: dict) -> str:
+    source_id = source_id_for(observation)
+    scroll_percent = observation.get("scroll_percent")
+    if scroll_percent is None:
+        return source_id
+    return f"{source_id}|{scroll_band(scroll_percent)}"
+
+
+def _int_or_none(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _situation_id(frame_id: int | None, source_id: str, frame_ts: float) -> str:
+    if frame_id is not None:
+        return f"frame:{frame_id}"
+    return f"legacy:{source_id}:{frame_ts}"
+
+
+def build_situation_update(
+    observation: dict,
+    frame: dict,
+    context: dict,
+    *,
+    sensitive: bool = False,
+    reason: str | None = None,
+    clock: Callable[[], float] = time.time,
+) -> dict:
+    source_id = source_id_for(observation)
+    scroll_percent = observation.get("scroll_percent")
+    frame_id = _int_or_none(frame.get("frame_id", observation.get("frame_id")))
+    frame_ts = frame.get("ts", observation.get("frame_ts", 0.0))
+
+    payload = {
+        "situation_id": _situation_id(frame_id, source_id, frame_ts),
+        "source_id": source_id,
+        "source_app": observation.get("app", ""),
+        "source_title": observation.get("title", ""),
+        "scroll_band": scroll_band(scroll_percent),
+        "observation_reason": observation.get("reason", "unknown"),
+        "observation_ts": observation.get("ts", 0.0),
+        "frame_ts": frame_ts,
+        "frame_width": frame.get("width", observation.get("frame_width", 0)),
+        "frame_height": frame.get("height", observation.get("frame_height", 0)),
+        "cache_key": cache_key_for(observation),
+        "topic": "" if sensitive else context.get("topic", ""),
+        "summary": "" if sensitive else context.get("summary", ""),
+        "content_type": "unknown" if sensitive else context.get("content_type", "unknown"),
+        "key_points": [] if sensitive else context.get("key_points", []),
+        "sensitive": bool(sensitive),
+        "degraded": bool(sensitive or context.get("degraded", False)),
+        "reason": reason if reason is not None else context.get("reason", ""),
+        "ts": clock(),
+    }
+    if frame_id is not None:
+        payload["frame_id"] = frame_id
+    if scroll_percent is not None:
+        payload["scroll_percent"] = scroll_percent
+    return payload

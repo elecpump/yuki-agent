@@ -18,6 +18,7 @@
 | Config env | 嵌套 + 分段命名，不兼容旧扁平 env |
 | 音频 base64 | 保留，文档标注（Struct 约束，留待 typed-message 迁移） |
 | 稳定内容观察 | `FOCUS_CHANGED`/scroll 只作为 raw signal；认知层消费绑定 `frame_id` 的 `CONTENT_READY` |
+| 情境证据链 | `SITUATION_UPDATE` 保留 `frame_id`/source/observation/cache provenance，Brain trace 记录轻量证据摘要 |
 
 ## 2. Bus 拆分（#1）
 
@@ -133,6 +134,26 @@ Config(persona_name: str, bus: BusConfig, logging: LoggingConfig,
 - `tests/perception/test_capture.py`：frame service 分配 `frame_id` 并支持按 ID 读取。
 - `tests/cognition/test_frame_client.py`：`FrameClient.get_by_id()` 发送指定帧请求。
 - `tests/cognition/test_pipeline.py`：`CONTENT_READY(frame_id=...)` 必须读取绑定帧，即使 latest 已变化。
+
+## 7.2 情境证据链（2026-08-16 增补）
+
+新增 `src/yuki/cognition/situation.py`，把 `CONTENT_READY`、指定 frame 和 VLM 结果组装为统一 `SituationUpdatePayload`。该 module 的 interface 负责 source 选择、`scroll_band` 归一化、VLM cache key、`situation_id` 与 provenance 字段填充；`PerceptionPipeline` 只负责读取 frame、调用 VLM 和发布结果。删除这个 module 会让相同的字段推导散落回 pipeline、Brain trace 与 context 测试中，因此它提供了 locality。
+
+`SITUATION_UPDATE` 现在保留：
+
+- `situation_id`：优先为 `frame:{frame_id}`，无 frame 时退化为 legacy 标识。
+- 证据来源：`frame_id`、`frame_ts`、`frame_width`、`frame_height`、`source_id`、`source_app`、`source_title`。
+- 观察信息：`observation_reason`、`observation_ts`、`scroll_band`、可选 `scroll_percent`。
+- VLM 复用信息：`cache_key`、`degraded`、`reason`。
+
+`WorkingContext.update_situation()` 原样保存该 payload，snapshot/restore 往返不裁掉 provenance。`DecisionTrace` 不记录完整 summary/key_points，改为 `situation_provenance` 摘要（`situation_id`、`frame_id`、`source_id`、`scroll_band`、`observation_reason`、`frame_ts`），便于审计和回放，同时避免 trace 复制大段内容。
+
+测试覆盖：
+
+- `tests/cognition/test_situation.py`：payload 构建、敏感降级和 `scroll_band` 归一化。
+- `tests/cognition/test_pipeline.py`：pipeline 发布的 `SITUATION_UPDATE` 带 provenance。
+- `tests/cognition/test_hub.py`：Decision trace 写入轻量 `situation_provenance`。
+- `tests/cognition/context/test_working.py`：WorkingContext snapshot/restore 保留 provenance。
 
 ## 8. 代码质量修复（#12）
 

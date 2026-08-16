@@ -28,7 +28,13 @@ def test_snapshot_restore_roundtrip(tmp_path):
     manager = make_store(tmp_path)
     path = tmp_path / "snap.json"
     ctx = WorkingContext(manager, snapshot_path=path)
-    ctx.update_situation({"topic": "X", "sensitive": False})
+    ctx.update_situation({
+        "topic": "X",
+        "sensitive": False,
+        "situation_id": "frame:42",
+        "frame_id": 42,
+        "observation_reason": "scroll_idle",
+    })
     ctx.add_user("第一轮")
     ctx.add_agent("回复")
     ctx.close()  # flush
@@ -37,6 +43,9 @@ def test_snapshot_restore_roundtrip(tmp_path):
     fresh.restore()
     assert fresh.turn_count() == 2
     assert fresh.situation()["topic"] == "X"
+    assert fresh.situation()["situation_id"] == "frame:42"
+    assert fresh.situation()["frame_id"] == 42
+    assert fresh.situation()["observation_reason"] == "scroll_idle"
     assert [it["content"] for it in fresh.items()] == ["回复", "第一轮"]
 
 
