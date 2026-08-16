@@ -221,6 +221,106 @@ def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
         agent.teardown()
 
 
+def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, monkeypatch):
+    class FakeCloudClient:
+        def __init__(self, **kwargs):
+            self.calls = []
+
+        def chat(self, messages, tools=None, timeout_s=None):
+            self.calls.append(messages)
+            return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
+
+    fake = FakeCloudClient()
+    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+
+    memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
+    memory.write("preference", "公开偏好", sensitivity=0)
+    memory.write("preference", "私密偏好", sensitivity=1)
+    memory.write("preference", "高敏偏好", sensitivity=2)
+
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
+                        "enable_llm_refine": True},
+               context={"snapshot_path": str(tmp_path / "ctx.json")},
+               cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+        memory=memory,
+    )
+    agent.setup()
+    try:
+        refine_prompt = fake.calls[0][-1]["content"]
+        assert "公开偏好" in refine_prompt
+        assert "私密偏好" not in refine_prompt
+        assert "高敏偏好" not in refine_prompt
+    finally:
+        agent.teardown()
+
+
+def test_persona_refresh_includes_safe_explicit_sedimented_preference(tmp_path, monkeypatch):
+    class FakeCloudClient:
+        def __init__(self, **kwargs):
+            self.calls = []
+
+        def chat(self, messages, tools=None, timeout_s=None):
+            self.calls.append(messages)
+            return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
+
+    fake = FakeCloudClient()
+    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
+                        "enable_llm_refine": True},
+               context={"snapshot_path": str(tmp_path / "ctx.json")},
+               cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        agent._hub._sedimenter.on_user_utterance("请回复简短一些", Intent.SYSTEM)
+        refine_prompt = fake.calls[-1][-1]["content"]
+        assert "请回复简短一些" in refine_prompt
+    finally:
+        agent.teardown()
+
+
+def test_persona_refresh_excludes_high_sensitive_explicit_sedimented_preference(
+    tmp_path, monkeypatch
+):
+    class FakeCloudClient:
+        def __init__(self, **kwargs):
+            self.calls = []
+
+        def chat(self, messages, tools=None, timeout_s=None):
+            self.calls.append(messages)
+            return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
+
+    fake = FakeCloudClient()
+    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
+                        "enable_llm_refine": True},
+               context={"snapshot_path": str(tmp_path / "ctx.json")},
+               cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        agent._hub._sedimenter.on_user_utterance(
+            "我希望你记住我的银行卡号是 6222021234567890", Intent.SYSTEM
+        )
+        refine_prompt = fake.calls[-1][-1]["content"]
+        assert "6222021234567890" not in refine_prompt
+    finally:
+        agent.teardown()
+
+
 def test_persona_loop_sedimentation_creates_version(tmp_path):
     config = Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
                              "enable_llm_refine": False},

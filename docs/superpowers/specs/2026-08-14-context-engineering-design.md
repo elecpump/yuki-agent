@@ -1,8 +1,8 @@
 # Yuki 上下文工程（WorkingContext + CloudViewBuilder）设计
 
 > 日期：2026-08-14
-> 状态：已确认（brainstorming 一轮确认）
-> 范围：上下文子系统——维护结构化工作上下文（会话轮次/情境快照），并产出经预算/去重/LLM 摘要折叠的云端提示视图
+> 状态：已实现；2026-08-17 增补云端记忆 purpose 过滤
+> 范围：上下文子系统——维护结构化工作上下文（会话轮次/情境快照），并产出经预算/去重/LLM 摘要折叠、隐私过滤的云端提示视图
 
 ## 1. 背景与目标
 
@@ -106,7 +106,7 @@ class CloudViewBuilder:
 | 2 | **情境**（situation topic/summary/key_points） | 固定 `SITUATION_TOKENS`，不可裁剪 | 截断过长的 summary/key_points 到配额内 |
 | 3 | **逐字轮** | 恒保留最近 `verbatim_turns` 轮 | 永不裁剪（超出的轮转下一节折叠） |
 | 4 | **折叠轮**（窗口内更旧的轮） | 填充剩余预算 | **首个被压缩的对象**：摘要 → 更短摘要 → 计数占位 |
-| 5 | **记忆** | 关键偏好（`memory_type=="preference"` 或 `strengthened`）保证 `MEMORY_MIN_TOKENS`；其余检索 top-k（`memory_top_k`，**过滤 `sensitivity == 2`**）填充剩余 | 先砍次要检索记忆，再砍偏好配额（但不低于最低值） |
+| 5 | **记忆** | 关键偏好（`memory_type=="preference"` 或 `strengthened`）保证 `MEMORY_MIN_TOKENS`；其余检索 top-k（`memory_top_k`，经 `MemoryPurpose.CLOUD_MODEL_CONTEXT` 过滤，**只允许 `sensitivity=0`**）填充剩余 | 先砍次要检索记忆，再砍偏好配额（但不低于最低值） |
 
 - **预算分配**：先计算固定配额节（utterance+情境+逐字轮+记忆最小配额）的估算总量；剩余预算给折叠轮（优先）与记忆检索节。总超预算时，按上表"预算紧张时的处理"列裁剪（折叠轮 → 记忆检索），固定配额节不动。
 - **去重**：连续重复文本（相邻轮次同 content）只保留一次。

@@ -13,27 +13,31 @@ def test_registers_four_functions(tmp_path):
     assert set(registry.names()) == {"memory.query", "memory.write", "memory.list", "memory.get"}
 
 
-def test_query_filters_high_sensitivity(tmp_path):
+def test_query_filters_private_and_high_sensitivity(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     manager.write("preference", "普通记忆内容", sensitivity=0)
+    manager.write("preference", "私密记忆内容", sensitivity=1)
     manager.write("personal", "高敏记忆内容", sensitivity=2)
     registry = FunctionRegistry()
     register_memory_functions(registry, manager)
     results = registry.call("memory.query", {"text": "记忆"})
     contents = [r["content"] for r in results]
     assert "普通记忆内容" in contents
+    assert "私密记忆内容" not in contents
     assert "高敏记忆内容" not in contents
 
 
-def test_list_filters_high_sensitivity(tmp_path):
+def test_list_filters_private_and_high_sensitivity(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     manager.write("preference", "普通记忆内容", sensitivity=0)
+    manager.write("preference", "私密记忆内容", sensitivity=1)
     manager.write("personal", "高敏记忆内容", sensitivity=2)
     registry = FunctionRegistry()
     register_memory_functions(registry, manager)
     results = registry.call("memory.list", {})
     contents = [r["content"] for r in results]
     assert "普通记忆内容" in contents
+    assert "私密记忆内容" not in contents
     assert "高敏记忆内容" not in contents
 
 
@@ -57,6 +61,14 @@ def test_write_and_get_roundtrip(tmp_path):
 def test_get_high_sensitivity_returns_none(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     rid = manager.write("personal", "高敏机密", sensitivity=2)
+    registry = FunctionRegistry()
+    register_memory_functions(registry, manager)
+    assert registry.call("memory.get", {"id": rid})["memory"] is None
+
+
+def test_get_private_sensitivity_returns_none(tmp_path):
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    rid = manager.write("personal", "私密资料", sensitivity=1)
     registry = FunctionRegistry()
     register_memory_functions(registry, manager)
     assert registry.call("memory.get", {"id": rid})["memory"] is None

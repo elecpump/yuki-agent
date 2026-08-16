@@ -48,12 +48,20 @@ def test_delete_strengthen_wipe(bus_and_manager):
     rid2 = bus.request("memory/write", {"memory_type": "preference", "content": "x"})["id"]
     assert bus.request("memory/wipe", {})["deleted_count"] == 1
 
-def test_read_services_filter_high_sensitivity_from_retrieval_only(bus_and_manager):
+def test_read_services_allow_private_but_filter_high_sensitivity_from_query(bus_and_manager):
     bus, _ = bus_and_manager
+    private_id = bus.request("memory/write", {
+        "memory_type": "personal", "content": "私密本地资料",
+        "sensitivity": 1,
+    })["id"]
     rid = bus.request("memory/write", {
         "memory_type": "personal", "content": "银行卡密码",
         "sensitivity": 2,
     })["id"]
+    private_results = bus.request("memory/query", {"text": "资料", "top_k": 5})["results"]
+    assert [m["content"] for m in private_results] == ["私密本地资料"]
     assert bus.request("memory/query", {"text": "银行卡", "top_k": 5})["results"] == []
-    assert bus.request("memory/list", {})["results"][0]["sensitivity"] == 2
+    listed = bus.request("memory/list", {})["results"]
+    assert {m["sensitivity"] for m in listed} == {1, 2}
+    assert bus.request("memory/get", {"id": private_id})["memory"]["sensitivity"] == 1
     assert bus.request("memory/get", {"id": rid})["memory"]["sensitivity"] == 2

@@ -81,15 +81,17 @@ def test_enrich_summarize_none_placeholder():
     assert out.summaries and "之前聊了" in out.summaries[0]
 
 
-def test_enrich_memory_filters_high_sensitivity(tmp_path):
+def test_enrich_memory_filters_private_and_high_sensitivity(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     manager.write("preference", "喜欢安静", sensitivity=0)
+    manager.write("preference", "私密安静偏好", sensitivity=1)
     manager.write("personal", "安静机密", sensitivity=2)
     builder = CloudViewBuilder()
     snap = make_snapshot()
     out = builder.enrich(snap, manager, "安静")
     contents = [m["content"] for m in out.long_term_memory]
     assert "喜欢安静" in contents
+    assert "私密安静偏好" not in contents
     assert "安静机密" not in contents
 
 

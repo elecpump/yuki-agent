@@ -1,8 +1,8 @@
 # Yuki MemoryManager 记忆系统设计
 
 > 日期：2026-08-14
-> 状态：已确认（brainstorming 一轮确认）
-> 范围：记忆系统（MemoryManager），独立模块 + CLI + 总线服务；不改变现有运行行为
+> 状态：已实现；2026-08-17 增补三档隐私策略与 purpose 访问层
+> 范围：记忆系统（MemoryManager），独立模块 + CLI + 总线服务 + 隐私访问边界
 
 ## 1. 背景与目标
 
@@ -23,6 +23,7 @@
 |---|---|
 | `store.py` | `MemoryStore`：SQLite 持久化 + FTS5 索引 + 触发器同步；单连接 + `threading.Lock` 防并发 |
 | `manager.py` | `MemoryManager`：门面。类型感知 API、衰减加权检索、清理、短期记忆（进程内 TTL 队列） |
+| `privacy.py` | `MemoryPrivacyPolicy` + `MemoryAccess`：所有模型/工具读取必须声明 purpose，默认 fail-closed |
 | `service.py` | 总线接线：`memory/*` REQ/REP 处理器注册函数 |
 | `cli.py` | 命令行管理工具（`python -m yuki.memory`），**直连 DB 文件**（离线可用，不依赖总线） |
 
@@ -63,7 +64,17 @@ strengthened  INTEGER 0/1 手动强化标记
 | `reflection` | 高层洞察，本次**只存结构不生成** | 持久化 + FTS（metadata.source_refs 引用来源记忆 id 列表） | 有 |
 | `short_term` | 工作记忆（当前情境/最近上下文） | 仅内存 | TTL 逐出 |
 
-### 3.3 FTS5
+### 3.3 敏感度语义
+
+| sensitivity | 含义 | 自动暴露策略 |
+|---|---|---|
+| `0` 普通 | 可帮助理解用户和任务 | 可进入本地模型、云端 L2、云端 persona 精修、LLM tool result |
+| `1` 私密 | 只应留在本机的个性化信息 | 可进入本地模型上下文；不得进入云端 L2、云端 persona 精修或云端工具结果 |
+| `2` 高敏 | 密码、身份、财务、医疗等强敏信息 | 不进入任何自动模型上下文；仅用户显式查看/管理 |
+
+`source` 不决定敏感度：显式用户偏好如果内容非敏感，应写为 `0` 以便进入 persona；只有命中敏感规则或用户/工具显式标记时才升为 `1/2`。
+
+### 3.4 FTS5
 
 - 虚拟表 `memories_fts`，**trigram tokenizer**（SQLite ≥3.34，支持中文子串匹配；本机验证 SQLite 3.53.1 可用），外部内容表（`content='memories'`），触发器同步 `memories.content` 的插入/更新/删除。
 - **<3 字符查询兜底（已验证必须）**：trigram 不支持少于 3 字符的子串查询，会漏掉双字中文词（"计算""股票"）与英文短词。因此 `search` 对**最短分词 < 3 字符**的查询走 `content LIKE '%'||?||'%'` 兜底（本地小型库量级下性能可接受），≥3 字符走 FTS + bm25。两种路径均带 `memory_type`/`sensitivity` 过滤。
@@ -88,16 +99,26 @@ score = FTS rank（归一化） × decay_weight
 - FTS 路径：`rank = 1/(1+|bm25|)`；LIKE 兜底路径 `rank = 1.0`（仅按衰减与 recency 排序）。
 - `query` 命中即 `touch`（更新 `last_access`/`access_count`），实现"首次被访问后切换为真实访问时间"。
 
-- 按 `min_sensitivity` 过滤（默认 0）。
+- 底层 `MemoryManager` 仍支持按 `min_sensitivity` 过滤（默认 0），只作为存储查询条件。
 - 返回 `top_k` 条。
-- `sensitivity == 2`（高敏）的记忆**排除出未来云端检索**——本次仅实现统一过滤接口（`min_sensitivity`），云端排除为后续 TODO。
+- 模型相关读取不得直接使用裸 `MemoryManager.query/list/get` 结果，必须通过 `MemoryAccess(..., purpose=...)` 二次授权。
 
-### 4.3 清理
+### 4.3 隐私访问 purpose
+
+| Purpose | 允许敏感度 | 用途 |
+|---|---|---|
+| `user_explicit_view` | `0/1/2` | CLI 或用户显式 `memory/list`、`memory/get` 管理 |
+| `local_model_context` | `0/1` | 本地模型/本机检索上下文 |
+| `cloud_model_context` | `0` | L2 云端 prompt 长期记忆 |
+| `persona_refine_cloud` | `0` | 规则 persona 组装和可选云端精修输入 |
+| `llm_tool_query_result` | `0` | 云端 tool_call 的 `memory.query/list/get` 回填 |
+
+### 4.4 清理
 
 - `cleanup()`：删除 `decay_weight < threshold`（默认 0.02）且**非 strengthened** 的记忆。
 - **`personal` 类型排除在自动清理外**（须用户显式删除）。
 
-### 4.4 强化
+### 4.5 强化
 
 - `strengthen(id)`：置位 `strengthened=1` + 重置 `last_access`，此后衰减权重恒 1.0。
 
@@ -116,6 +137,7 @@ short-term                                查看当前工作记忆
 
 - `wipe` 需确认提示（避免误删）。
 - 退出码：成功 0，用法错误 2（argparse 默认），错误 1。
+- CLI 是**全权管理面**：直连 DB 的 `query` 返回 `0/1/2`（含高敏），与总线 `memory/query`（`local_model_context`，过滤 `2`）语义不同——CLI 是用户本机管理工具，不把结果喂给任何模型。
 
 ### 5.2 总线服务
 
@@ -130,6 +152,12 @@ short-term                                查看当前工作记忆
 | `memory/delete` | `{id}` → `{deleted: bool}` |
 | `memory/strengthen` | `{id}` → `{ok: bool}` |
 | `memory/wipe` | `{}` → `{deleted_count}` |
+
+隐私语义：
+
+- `memory/query` 作为本机检索服务，走 `local_model_context`，允许 `0/1`、过滤 `2`。
+- `memory/list` / `memory/get` 作为用户显式查看路径，走 `user_explicit_view`，允许 `0/1/2`。
+- LLM 函数工具中的 `memory.query/list/get` 走 `llm_tool_query_result`，只允许 `0`。
 
 ### 5.3 配置
 
@@ -165,6 +193,8 @@ memory:
 - `tests/test_memory_manager.py`：短期记忆 TTL/容量逐出、门面转发。
 - `tests/test_memory_cli.py`：各子命令（临时目录直连 DB）、wipe 确认提示、退出码。
 - `tests/test_memory_service.py`：各总线 handler（经 `tests/fakes.py` FakeBus）。
+- `tests/test_memory_privacy.py`：三档敏感度 purpose 策略和访问层过滤。
+- `tests/functions/test_memory_tools.py`：LLM memory tools 不返回私密/高敏记忆。
 - e2e 行为等价：现有断言不变（新增只注册服务，不改变数据流）。
 
 ## 7. 风险与兼容
@@ -173,7 +203,8 @@ memory:
 - 零运行时行为变化：只在 cognition 启动时多注册一组 REQ/REP handler。
 - 新增依赖：无（stdlib `sqlite3`）。
 - 不加密为**已知限制**：明文落盘，仅限本机、pre-1.0，后续可平滑加 sqlcipher 或字段混淆（表结构不变）。
-- 反思生成、向量检索、云端排除为**明确的后续项**（接口占位 + TODO 注释）。
+- 反思生成、向量检索为**明确的后续项**（接口占位 + TODO 注释）；云端记忆出站过滤已由 `MemoryAccess` purpose 策略实现。
+- **写入信任为已知限制**：`memory/write` 工具/总线把调用方上报的 `sensitivity` 原样透传，云端 LLM 可写入实际敏感但标 `0` 的记忆并回流云端；仅 sedimenter 写入侧做内容级打标。后续可在 write 路径统一加内容扫描。
 
 ## 8. 关键决策记录（ADR 摘要）
 
@@ -186,3 +217,4 @@ memory:
 | CLI 直连 DB，总线服务走运行时 | CLI 离线可用作管理工具；总线面向未来 Brain |
 | `last_access` 初值 = `created_at` | 设计文档 §5.2 v3 修正，避免新建记忆永远高权重 |
 | `personal` 排除自动清理 | 个人信息不可被衰减误删，须用户显式删除 |
+| 模型读取必须声明 purpose | 忘写过滤时更容易 fail-closed，而不是把私密/高敏数据当普通记忆外发 |

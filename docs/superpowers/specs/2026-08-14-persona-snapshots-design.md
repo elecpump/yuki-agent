@@ -1,15 +1,15 @@
 # Yuki 反馈闭环环3: 人格快照 设计
 
 > 日期：2026-08-14
-> 状态：已确认（brainstorming 一轮确认）
-> 范围：环3 人格快照——规则组装 persona 提示（LLM 精修可选）、生成即版本、cap/锁/跳过、回滚/导出；CloudBridge 用 active 快照
+> 状态：已实现；2026-08-17 增补 persona 记忆隐私边界
+> 范围：环3 人格快照——规则组装 persona 提示（LLM 精修可选）、生成即版本、cap/锁/跳过、回滚/导出；CloudBridge 用 active 快照；偏好读取走云端安全 purpose
 
 ## 1. 背景与目标
 
 实现设计文档 `2026-08-10-yuki-agent-design.md` §6.3 的**环3 人格演化**：把基础人格提示 + 沉淀偏好 + soul 参数确定性组装成 persona 提示（默认路径），可选 LLM 精修；每次生成即存为版本快照（cap/锁/跳过相同控制增长），支持查看差异/一键回滚/导入导出/重置。soul 为环3 的快照载体（此前只存参数，本轮并入 persona 提示）。
 
 **已确认决策**：
-- **规则组装为主（默认路径）**：`PersonaPrompt = config.persona.prompt（基础人格描述）+ format_preferences（MemoryManager preference 记忆）+ format_soul_params（soul 参数说明）`。完全确定、无云依赖、可单测。
+- **规则组装为主（默认路径）**：`PersonaPrompt = config.persona.prompt（基础人格描述）+ format_preferences（cloud-safe preference 记忆）+ format_soul_params（soul 参数说明）`。完全确定、可单测；因为快照会被 CloudBridge 复用，偏好读取始终按云端安全策略过滤。
 - **LLM 精修为可选开关（默认关）**：`persona.enable_llm_refine: false`；开且 L2 可用时把规则结果喂 L2 生成更自然文本；超时/失败回退规则结果；结果缓存。
 - **生成即版本**：会话初始化/偏好更新后生成 active persona；与当前 active 完全相同则**跳过建版**；否则存新版本并设 active。
 - **cap + 锁**：`persona.max_versions=50`，超出删最旧**非锁定**版本；CLI 可锁定重要版本（豁免清理）。
@@ -42,7 +42,7 @@ def format_soul_params(params: dict) -> str: ...              # 参数说明模�
 
 - 组装顺序：`base_prompt`（config.persona.prompt，含 `{persona}` 占位注入 persona_name）→ `format_preferences`（preference 记忆，"用户偏好：- 语气：温柔…"）→ `format_soul_params`（soul 参数，"你的表达应偏向…"）。
 - 偏好/参数为空 → 省略对应段（或默认描述）。
-- **LLM 精修（可选）**：`enable_llm_refine` 开且 L2 可用时，把规则结果作为输入调 `CloudBridge` 生成更自然人格文本；超时/失败回退规则结果；结果缓存（会话级，键=规则结果哈希）。
+- **LLM 精修（可选）**：`enable_llm_refine` 开且 L2 可用时，把已过滤的规则结果作为输入调 `CloudBridge` 生成更自然人格文本；超时/失败回退规则结果；结果缓存（会话级，键=规则结果哈希）。
 
 ## 4. PersonaStore（snapshots.py）
 
@@ -72,7 +72,7 @@ class PersonaStore:
 - **存储**：全量快照 json（每版 prompt+params+locked+created_at），KB 级。
 - **cap 清理**：`len(versions) > max_versions` 时删最旧**非锁定**版本；**v1（基础快照）永远不参与自动清理**。
 - **active 指针**：rollback/reset 修改。
-- **偏好来源与触发**：生成时由调用方（agent/hub）从 `memory.list(memory_type="preference")` 读取偏好并**过滤 `sensitivity != 2`**（高敏不入 persona 提示，隐私与 L2 一致）；触发时机 = 会话初始化 + 环2 沉淀更新后。
+- **偏好来源与触发**：生成时由调用方（agent/hub）通过 `MemoryAccess(..., purpose=MemoryPurpose.PERSONA_REFINE_CLOUD)` 读取 preference，只允许 `sensitivity=0`。普通显式偏好（如"请回复简短一些"）应写为 `0` 并进入 persona；`sensitivity=1` 私密偏好可服务本地未来路径，但不得进入持久 persona 快照或 L2 精修输入；`sensitivity=2` 高敏不进入任何自动 persona 路径。触发时机 = 会话初始化 + 环2 沉淀更新后。
 
 ## 5. 消费
 
@@ -97,6 +97,8 @@ env：`YUKI_PERSONA_PROMPT` / `YUKI_PERSONA_MAX_VERSIONS` / `YUKI_PERSONA_ENABLE
 - `test_snapshots.py`：建版（active 更新）、跳过相同（生成与 active 一致 → None）、cap 清理（删最旧非锁定、锁定豁免）、rollback/reset、lock、diff、export/import 往返、损坏文件容错。
 - `test_bridge.py`：CloudBridge 用 active 快照 prompt、无快照回退 config.prompt。
 - `test_cognition.py`：agent 装配 PersonaStore/Generator。
+- `test_cognition.py`：云端 persona refine 输入只包含公开 preference。
+- `test_cognition.py`：普通显式沉淀偏好进入 persona refine；高敏显式沉淀偏好被排除。
 - e2e 不变（默认无偏好变化 → 跳过相同 → 不产生版本文件）。
 
 ## 8. 风险与兼容
@@ -117,3 +119,4 @@ env：`YUKI_PERSONA_PROMPT` / `YUKI_PERSONA_MAX_VERSIONS` / `YUKI_PERSONA_ENABLE
 | 全量存储（非增量 diff 链） | 提示词 KB 级、cap 已限增长；diff 链与删最旧冲突 |
 | 会话初始化/偏好更新后生成一次并缓存 | 避免每轮重建的不一致与浪费 |
 | CloudBridge 用 active 快照 | 人格快照真正生效；无快照回退基础 |
+| persona 快照只使用公开偏好 | 快照会成为云端 system prompt，不能把 local-only 私密偏好间接外发 |

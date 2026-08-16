@@ -1,8 +1,8 @@
 # Yuki L2 云桥设计
 
 > 日期：2026-08-14
-> 状态：已确认（brainstorming 一轮确认）
-> 范围：L2 云端深度回应通道——OpenAI 兼容客户端、工具调用多轮、L1/L2 层级选择、降级回退、记忆函数绑定
+> 状态：已实现；2026-08-17 增补三档记忆隐私出站边界
+> 范围：L2 云端深度回应通道——OpenAI 兼容客户端、工具调用多轮、L1/L2 层级选择、降级回退、记忆函数绑定、云端记忆出站过滤
 
 ## 1. 背景与目标
 
@@ -10,7 +10,7 @@
 
 **已确认决策**：
 - **OpenAI 兼容端点**：`base_url` 可配，覆盖 OpenAI/Azure/本地 ollama·vLLM 等兼容端点；工具调用格式与函数框架已对齐。
-- **含工具调用 + 绑记忆函数**：L2 发 tool_calls → `FunctionRegistry.dispatch` → 结果回填云端（多轮）；本轮绑定 `memory.query/write/list/get`。
+- **含工具调用 + 绑记忆函数**：L2 发 tool_calls → `FunctionRegistry.dispatch` → 结果回填云端（多轮）；`memory.query/list/get` 回填只允许 `sensitivity=0`。
 - **按 intent 标 tier**：`DecisionPolicy.tier_for(intent)` 独立方法决定 L1/L2，`decide` 签名不变。
 - **静默等待**：L2 期间不发过渡 REPLY，等最终结果（TTS 尚为桩，流式/过渡留待交互层）。
 - **L2 同步阻塞调用**：单用户、事件量低，先文档注明不做 worker 线程。
@@ -53,7 +53,7 @@ def build_cloud_context(utterance: str, situation: dict | None,
                         memory: MemoryManager | None) -> str: ...
 ```
 
-- **纯文本**：utterance + 情境（`topic`/`summary`/`key_points`，不含帧/音频）+ 记忆检索 top-k（以 utterance 为查询，**过滤 `sensitivity == 2` 高敏**，满足 §5.3）。
+- **纯文本**：utterance + 情境（`topic`/`summary`/`key_points`，不含帧/音频）+ 记忆检索 top-k（以 utterance 为查询，走 `MemoryPurpose.CLOUD_MODEL_CONTEXT`，只允许 `sensitivity=0`）。
 - 无记忆/无情境时输出空段，不失败。
 
 ## 5. CloudBridge（bridge.py）
@@ -106,7 +106,7 @@ def register_memory_functions(registry: FunctionRegistry, manager: MemoryManager
 | `memory.get` | `id: int` | `manager.get(...)` |
 
 - `CognitionAgent.setup` 在 registry 构建后调用 `register_memory_functions`。
-- **隐私硬约束**：四个记忆函数的返回值统一过滤掉 `sensitivity == 2` 高敏条目（即使云端传入 `min_sensitivity=0`，也不得经工具获取高敏记忆），与 §4 上下文过滤一致。
+- **隐私硬约束**：`memory.query/list/get` 的返回值走 `MemoryPurpose.LLM_TOOL_QUERY_RESULT`，只允许 `sensitivity=0`。即使云端传入 `min_sensitivity=0`，也不得经工具获取 `sensitivity=1` 私密或 `2` 高敏记忆。`memory.write` 可写入带敏感度的记忆，但后续读侧仍按 purpose 强制过滤。
 
 ## 10. 配置与隐私
 
@@ -122,7 +122,7 @@ cloud:
 
 env：`YUKI_CLOUD_ENABLED` / `YUKI_CLOUD_BASE_URL` / `YUKI_CLOUD_MODEL` / `YUKI_CLOUD_API_KEY_ENV` / `YUKI_CLOUD_TIMEOUT_S` / `YUKI_CLOUD_MAX_TURNS`。
 
-- 云端只收文本摘要，不含帧/音频；高敏记忆（`sensitivity == 2`）排除出云端检索；`api_key` 永不提交。
+- 云端只收文本摘要，不含帧/音频；私密/高敏记忆（`sensitivity=1/2`）排除出云端 prompt、persona 精修输入和 tool result；`api_key` 永不提交。
 
 ## 11. 健康与测试
 
@@ -130,7 +130,8 @@ env：`YUKI_CLOUD_ENABLED` / `YUKI_CLOUD_BASE_URL` / `YUKI_CLOUD_MODEL` / `YUKI_
 - 测试：
   - `client`：注入假 HTTP 请求函数 → 请求体形状、`Bearer` 头、非 2xx/超时/解析失败 → `CloudError`。
   - `bridge`：注入假 client → 请求构建、工具调用多轮（tool_calls → dispatch → 回填 → 最终文本）、空响应 → `CloudError`、`max_turns` 超限。
-  - `context`：记忆检索 + `sensitivity == 2` 被过滤。
+  - `context`：记忆检索 + `sensitivity=1/2` 被过滤。
+  - `bridge`：tool result 回填给云端前不含私密/高敏记忆。
   - `policy.tier_for`：L2_INTENTS → l2，其余 → l1，SAFETY → l1。
   - `hub`：L2 路由（假 bridge）、L2 失败 → L1 fallback、`tier` 进轨迹。
   - `memory_tools`：4 函数注册进 registry、`call` 可调。
@@ -155,4 +156,5 @@ env：`YUKI_CLOUD_ENABLED` / `YUKI_CLOUD_BASE_URL` / `YUKI_CLOUD_MODEL` / `YUKI_
 | L2 同步阻塞 | 单用户事件量低；文档注明，不做线程（YAGNI） |
 | `cloud.enabled` 默认 false | 保持现有行为/e2e；成本与隐私由用户显式开启 |
 | api_key 走环境变量 | 密钥永不落库/提交 |
-| 高敏记忆排除云端 | 设计 §5.3 隐私约束 |
+| 记忆读侧按 purpose fail-closed | 忘写过滤时更容易得到空结果/拒绝，而不是泄露 |
+| 私密/高敏记忆排除云端 | `1` 是 local-only，`2` 不进自动模型上下文 |

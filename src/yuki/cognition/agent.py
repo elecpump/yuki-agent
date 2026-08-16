@@ -24,6 +24,7 @@ from yuki.functions.system import register_builtin_system
 from yuki.health import HealthStatus
 from yuki.logger import get_logger
 from yuki.memory.manager import MemoryManager
+from yuki.memory.privacy import MemoryAccess, MemoryPurpose
 from yuki.memory.service import register_memory_services
 from yuki.memory.store import MemoryStore
 from yuki.process import ProcessAgent
@@ -101,8 +102,10 @@ class CognitionAgent(ProcessAgent):
         )
 
         def persona_refresh() -> None:
-            prefs = [m for m in self._memory.list(memory_type="preference")
-                     if m.get("sensitivity", 0) != 2]
+            prefs = MemoryAccess(self._memory).list(
+                purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
+                memory_type="preference",
+            )
             refine = None
             if self.config.persona.enable_llm_refine and bridge is not None:
                 refine = bridge.refine_persona

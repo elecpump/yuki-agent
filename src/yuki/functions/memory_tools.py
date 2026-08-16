@@ -4,6 +4,7 @@ from pydantic import BaseModel, Field
 
 from yuki.functions.registry import FunctionRegistry
 from yuki.memory.manager import MemoryManager
+from yuki.memory.privacy import MemoryAccess, MemoryPurpose
 
 MemoryType = Literal["preference", "personal", "scenario", "reflection"]
 
@@ -33,17 +34,18 @@ class GetParams(BaseModel):
     id: int
 
 
-def _strip_high_sensitivity(results: list[dict]) -> list[dict]:
-    return [m for m in results if m.get("sensitivity", 0) != 2]
-
-
 def register_memory_functions(registry: FunctionRegistry, manager: MemoryManager) -> None:
-    """绑定记忆函数。隐私硬约束：云端经工具也取不到 sensitivity==2 高敏记忆。"""
+    """绑定记忆函数。隐私硬约束：云端经工具只取到公开记忆。"""
+    access = MemoryAccess(manager)
 
     def on_query(p: QueryParams) -> list:
-        return _strip_high_sensitivity(
-            manager.query(p.text, top_k=p.top_k, memory_type=p.type,
-                          min_sensitivity=p.min_sensitivity))
+        return access.query(
+            p.text,
+            purpose=MemoryPurpose.LLM_TOOL_QUERY_RESULT,
+            top_k=p.top_k,
+            memory_type=p.type,
+            min_sensitivity=p.min_sensitivity,
+        )
 
     def on_write(p: WriteParams) -> dict:
         return {"id": manager.write(
@@ -51,16 +53,16 @@ def register_memory_functions(registry: FunctionRegistry, manager: MemoryManager
             sensitivity=p.sensitivity, source=p.source, metadata=p.metadata)}
 
     def on_list(p: ListParams) -> list:
-        return _strip_high_sensitivity(
-            manager.list(memory_type=p.type, min_sensitivity=p.min_sensitivity))
+        return access.list(
+            purpose=MemoryPurpose.LLM_TOOL_QUERY_RESULT,
+            memory_type=p.type,
+            min_sensitivity=p.min_sensitivity,
+        )
 
     def on_get(p: GetParams) -> dict:
-        mem = manager.get(p.id)
-        if mem is None or mem.get("sensitivity", 0) == 2:
-            return {"memory": None}
-        return {"memory": mem}
+        return {"memory": access.get(p.id, purpose=MemoryPurpose.LLM_TOOL_QUERY_RESULT)}
 
-    registry.tool("memory.query", description="检索记忆（高敏自动排除）", params=QueryParams)(on_query)
+    registry.tool("memory.query", description="检索记忆（私密/高敏自动排除）", params=QueryParams)(on_query)
     registry.tool("memory.write", description="写入一条记忆", params=WriteParams)(on_write)
-    registry.tool("memory.list", description="列出记忆（高敏自动排除）", params=ListParams)(on_list)
-    registry.tool("memory.get", description="按 id 获取记忆（高敏返回 null）", params=GetParams)(on_get)
+    registry.tool("memory.list", description="列出记忆（私密/高敏自动排除）", params=ListParams)(on_list)
+    registry.tool("memory.get", description="按 id 获取记忆（私密/高敏返回 null）", params=GetParams)(on_get)

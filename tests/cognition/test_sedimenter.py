@@ -90,6 +90,15 @@ def test_explicit_statement_sediments(tmp_path):
     prefs = memory.list(memory_type="preference")
     assert prefs and prefs[0]["source"] == "user"
     assert prefs[0]["confidence"] == 1.0
+    assert prefs[0]["sensitivity"] == 0
+
+
+def test_high_sensitive_explicit_statement_is_marked_high_sensitivity(tmp_path):
+    sed, memory = make_sed(tmp_path)
+    sed.on_user_utterance("我希望你记住我的银行卡号是 6222021234567890", Intent.SYSTEM)
+    prefs = memory.list(memory_type="preference")
+    assert prefs and prefs[0]["source"] == "user"
+    assert prefs[0]["sensitivity"] == 2
 
 
 def test_correction_wipes_implicit_and_pins_explicit(tmp_path):

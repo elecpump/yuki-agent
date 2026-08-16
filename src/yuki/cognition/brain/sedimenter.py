@@ -2,6 +2,7 @@ from typing import Callable
 
 from yuki.cognition.brain.classifier import Intent
 from yuki.cognition.brain.tuner import FeedbackTuner, detect_polarity
+from yuki.cognition.sensitive import SensitiveFilter
 from yuki.memory.manager import MemoryManager
 
 LABEL_FREQUENCY_LOW = "yuki.rhythm.frequency.low"
@@ -26,10 +27,12 @@ class PreferenceSedimenter:
                  min_signals: int = 3, confidence_threshold: float = 0.6,
                  topic_engagement_threshold: int = 3,
                  frequency_floor_s: float = 120.0,
-                 on_sedimented: Callable[[], None] | None = None) -> None:
+                 on_sedimented: Callable[[], None] | None = None,
+                 sensitive_filter: SensitiveFilter | None = None) -> None:
         self._memory = memory
         self._tuner = tuner
         self._on_sedimented = on_sedimented
+        self._sensitive_filter = sensitive_filter or SensitiveFilter()
         self._min_signals = min_signals
         self._confidence_threshold = confidence_threshold
         self._topic_threshold = topic_engagement_threshold
@@ -97,7 +100,14 @@ class PreferenceSedimenter:
             self._written_conf.pop(label, None)
 
     def _write_explicit(self, text: str) -> None:
-        self._write_preference(text, "yuki.explicit", source="user", confidence=1.0)
+        sensitivity = 2 if self._sensitive_filter.is_sensitive(text) else 0
+        self._write_preference(
+            text,
+            "yuki.explicit",
+            source="user",
+            confidence=1.0,
+            sensitivity=sensitivity,
+        )
 
     def _apply_correction(self, text: str) -> None:
         # 简化实现（§8.3 显式>隐式）：删全部隐式偏好，写显式纠正偏好
@@ -109,10 +119,18 @@ class PreferenceSedimenter:
         self._written_conf = {}
         self._write_explicit(text)
 
-    def _write_preference(self, content: str, label: str, *, source: str, confidence: float) -> None:
+    def _write_preference(
+        self,
+        content: str,
+        label: str,
+        *,
+        source: str,
+        confidence: float,
+        sensitivity: int = 0,
+    ) -> None:
         self._remove_by_label(label)
         self._memory.write("preference", content, confidence=confidence, source=source,
-                           metadata={"label": label})
+                           sensitivity=sensitivity, metadata={"label": label})
         if self._on_sedimented is not None:
             self._on_sedimented()
 

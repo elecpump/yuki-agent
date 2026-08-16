@@ -6,7 +6,7 @@
 
 ## 1. 背景与目标
 
-实现设计文档 `2026-08-10-yuki-agent-design.md` §6.3 的**环2 偏好沉淀**（中期）：把重复出现的反馈模式沉淀为带置信度的偏好记忆（可显式纠正），并回馈给环1 的冷却调参。沉淀结果即记忆（MemoryManager preference 类型），天然持久化、天然被 L2 云端上下文/工具消费。
+实现设计文档 `2026-08-10-yuki-agent-design.md` §6.3 的**环2 偏好沉淀**（中期）：把重复出现的反馈模式沉淀为带置信度的偏好记忆（可显式纠正），并回馈给环1 的冷却调参。沉淀结果即记忆（MemoryManager preference 类型），天然持久化，并按记忆隐私 purpose 被 L2/persona/工具路径消费。
 
 **已确认决策**：
 - **三维度**：交互节奏（开口频率/篇幅，来自极性反馈）、显式陈述（用户直接说）、话题兴趣（简化：接话记录情境 topic，同 topic 达阈值沉淀）。
@@ -38,11 +38,11 @@ tests/cognition/test_sedimenter.py / test_tuner.py（增）/ test_hub.py（增�
 | 维度 | 信号 | 沉淀（content + metadata.label） |
 |---|---|---|
 | `interaction_rhythm` | `on_user_utterance` 的极性：负 → "用户不喜欢频繁主动开口"；正 → "用户喜欢主动互动"；负且含"话多/啰嗦" → "用户希望回复更简短" | `yuki.rhythm.frequency` / `yuki.rhythm.length` |
-| `explicit` | `on_user_utterance` 且 intent=SYSTEM + 陈述关键词（"我喜欢/我不喜欢/请/别/不要…"）→ 沉淀原句 | 原句（metadata.source="user", confidence=1.0） |
+| `explicit` | `on_user_utterance` 且 intent=SYSTEM + 陈述关键词（"我喜欢/我不喜欢/请/别/不要…"）→ 沉淀原句 | 原句（metadata.source="user", confidence=1.0；普通偏好 sensitivity=0，命中敏感规则则 sensitivity=2） |
 | `topic_interest`（简化） | `on_engagement(topic)`：同 topic 接话 ≥ 阈值 → "对{topic}话题感兴趣" | `yuki.topic.{topic}`（metadata.source="feedback"） |
 
 - 极性由共享 `detect_polarity(text)` 判定（`tuner.detect_polarity`，负/正/中性三值）。
-- 显式陈述与显式纠正：陈述 → 沉淀；纠正词（"其实我不…""说反了""我改主意了"）→ 覆盖冲突隐式偏好。
+- 显式陈述与显式纠正：陈述 → 沉淀；纠正词（"其实我不…""说反了""我改主意了"）→ 覆盖冲突隐式偏好。显式来源不等于私密等级，敏感度由内容判定；"请回复简短一些" 这类非敏感偏好可进入 persona，银行卡/密码等命中敏感规则的原话不得进入自动模型路径。
 
 ## 4. 置信度模型（计数 + 阈值）
 
@@ -54,12 +54,12 @@ tests/cognition/test_sedimenter.py / test_tuner.py（增）/ test_hub.py（增�
 
 ## 5. 显式纠正
 
-- **话语纠正**：检测纠正词 → 写显式偏好（source="user", confidence=1.0）并**删除冲突的隐式偏好**（同 dimension 反向，§8.3 显式>隐式）。
+- **话语纠正**：检测纠正词 → 写显式偏好（source="user", confidence=1.0，敏感度由内容判定）并**删除冲突的隐式偏好**（同 dimension 反向，§8.3 显式>隐式）。
 - **工具路径**：现有 memory 工具（delete/strengthen）保留，CLI/memory 服务手动纠偏。
 
 ## 6. 消费
 
-- **沉淀即记忆**：偏好存 MemoryManager（preference 类型），L2 云端上下文/工具已读（CloudViewBuilder 对 preference 有 MEMORY_MIN_TOKENS 保底）。
+- **沉淀即记忆**：偏好存 MemoryManager（preference 类型）。普通偏好可被 persona/L2 使用；私密/高敏按 `MemoryAccess` purpose 过滤。CloudViewBuilder 对可见 preference 有 MEMORY_MIN_TOKENS 保底。
 - **tuner 冷却偏置**：`FeedbackTuner.set_cooldown_floor(value)` 提高冷却下限；沉淀 "不喜欢频繁主动开口"（confidence ≥ 0.6）时 `floor=120`，环1 调参钳制在该下限之上（不低于 `cooldown_min_s`）。
 
 ## 7. 配置
@@ -75,7 +75,7 @@ env：`YUKI_SEDIMENTER_MIN_SIGNALS` / `YUKI_SEDIMENTER_CONFIDENCE_THRESHOLD` / `
 
 ## 8. 测试
 
-- `test_sedimenter.py`：各维度信号→计数/置信度；阈值沉淀（hits≥3 且比例≥0.6）；矛盾降级（反向信号→contradicts+1→降级/删）；更新已有偏好（删旧写新、label 定位）；显式纠正删冲突隐式偏好；话题阈值（≥3 次接话同 topic）；显式陈述沉淀（source=user, confidence=1.0）。
+- `test_sedimenter.py`：各维度信号→计数/置信度；阈值沉淀（hits≥3 且比例≥0.6）；矛盾降级（反向信号→contradicts+1→降级/删）；更新已有偏好（删旧写新、label 定位）；显式纠正删冲突隐式偏好；话题阈值（≥3 次接话同 topic）；显式陈述沉淀（source=user, confidence=1.0，普通=0，敏感命中=2）。
 - `test_tuner.py`：`detect_polarity` 抽取后行为不变（负/正/中性）；`set_cooldown_floor` 生效（钳制在下限之上）。
 - `test_hub.py`：sedimenter 喂入点（on_polarity/on_explicit_statement/on_engagement 被调）；sedimenter=None 行为不变。
 - `test_config.py`：sedimenter 节默认值/env。

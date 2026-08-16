@@ -1,10 +1,15 @@
+import json
+
 import pytest
 
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudError
 from yuki.cognition.l2.view import CloudViewBuilder
+from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
+from yuki.memory.manager import MemoryManager
+from yuki.memory.store import MemoryStore
 
 
 class TurnClient:
@@ -45,6 +50,31 @@ def test_generate_tool_call_loop():
     assert second_messages[-1]["role"] == "tool"
     assert "ok" in second_messages[-1]["content"]
     assert client.calls[0][1][0]["function"]["name"] == "echo"
+
+
+def test_generate_tool_results_do_not_send_private_memory_to_cloud(tmp_path):
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    manager.write("preference", "安静公开偏好", sensitivity=0)
+    manager.write("preference", "安静私密偏好", sensitivity=1)
+    manager.write("personal", "安静高敏资料", sensitivity=2)
+    registry = FunctionRegistry()
+    register_memory_functions(registry, manager)
+    tool_response = {"choices": [{"message": {"content": "", "tool_calls": [
+        {
+            "id": "mem1",
+            "type": "function",
+            "function": {"name": "memory.query", "arguments": '{"text":"安静","top_k":10}'},
+        }
+    ]}}]}
+    client = TurnClient([tool_response, {"choices": [{"message": {"content": "最终回答"}}]}])
+
+    bridge = CloudBridge(client, registry=registry)
+    bridge.generate("安静")
+
+    tool_message = client.calls[1][0][-1]
+    tool_result = json.loads(tool_message["content"])
+    contents = [m["content"] for m in tool_result["result"]]
+    assert contents == ["安静公开偏好"]
 
 
 def test_generate_empty_reply_raises():

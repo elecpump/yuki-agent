@@ -5,6 +5,7 @@ from typing import Callable
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.memory.manager import MemoryManager
+from yuki.memory.privacy import MemoryAccess, MemoryPurpose
 
 SITUATION_TOKENS = 200
 MEMORY_MIN_TOKENS = 200
@@ -60,8 +61,12 @@ class CloudViewBuilder:
     def _retrieve_memory(self, memory, utterance) -> list[dict]:
         if memory is None:
             return []
-        results = memory.query(utterance or "", top_k=self._memory_top_k, min_sensitivity=0)
-        safe = [m for m in results if m.get("sensitivity", 0) != 2]
+        safe = MemoryAccess(memory).query(
+            utterance or "",
+            purpose=MemoryPurpose.CLOUD_MODEL_CONTEXT,
+            top_k=self._memory_top_k,
+            min_sensitivity=0,
+        )
         guaranteed = [m for m in safe if m.get("memory_type") == "preference" or m.get("strengthened")]
         others = [m for m in safe if m not in guaranteed]
         return guaranteed[: self._memory_top_k] + others[: max(0, self._memory_top_k - len(guaranteed))]
