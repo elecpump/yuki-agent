@@ -58,6 +58,29 @@ def test_scroll_idle_uses_last_focus_when_next_frame_is_stored():
     assert payload["frame_ts"] == 2.0
 
 
+def test_focus_pending_reason_is_not_overwritten_by_scroll_before_frame():
+    bus = FakeBus()
+    obs = StableContentObservation(bus, clock=lambda: 300.0)
+
+    obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
+    obs.on_scroll_activity()
+
+    obs.on_frame_stored(
+        {"frame_id": 1, "ts": 1.0, "width": 800, "height": 600, "sensitive": False}
+    )
+
+    assert bus.published[0][1]["reason"] == "focus_changed"
+    assert bus.published[0][1]["frame_id"] == 1
+
+    bus.published = []
+    obs.on_frame_stored(
+        {"frame_id": 2, "ts": 2.0, "width": 800, "height": 600, "sensitive": False}
+    )
+
+    assert bus.published[0][1]["reason"] == "scroll_idle"
+    assert bus.published[0][1]["frame_id"] == 2
+
+
 def test_frame_without_pending_observation_is_silent():
     bus = FakeBus()
     obs = StableContentObservation(bus)

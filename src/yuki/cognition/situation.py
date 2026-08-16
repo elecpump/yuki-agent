@@ -34,10 +34,8 @@ def _int_or_none(value) -> int | None:
         return None
 
 
-def _situation_id(frame_id: int | None, source_id: str, frame_ts: float) -> str:
-    if frame_id is not None:
-        return f"frame:{frame_id}"
-    return f"legacy:{source_id}:{frame_ts}"
+def frame_id_for(observation: dict, frame: dict) -> int | None:
+    return _int_or_none(frame.get("frame_id", observation.get("frame_id")))
 
 
 def build_situation_update(
@@ -51,11 +49,13 @@ def build_situation_update(
 ) -> dict:
     source_id = source_id_for(observation)
     scroll_percent = observation.get("scroll_percent")
-    frame_id = _int_or_none(frame.get("frame_id", observation.get("frame_id")))
+    frame_id = frame_id_for(observation, frame)
+    if frame_id is None:
+        raise ValueError("situation update requires frame_id")
     frame_ts = frame.get("ts", observation.get("frame_ts", 0.0))
 
     payload = {
-        "situation_id": _situation_id(frame_id, source_id, frame_ts),
+        "situation_id": f"frame:{frame_id}",
         "source_id": source_id,
         "source_app": observation.get("app", ""),
         "source_title": observation.get("title", ""),
@@ -74,9 +74,8 @@ def build_situation_update(
         "degraded": bool(sensitive or context.get("degraded", False)),
         "reason": reason if reason is not None else context.get("reason", ""),
         "ts": clock(),
+        "frame_id": frame_id,
     }
-    if frame_id is not None:
-        payload["frame_id"] = frame_id
     if scroll_percent is not None:
         payload["scroll_percent"] = scroll_percent
     return payload

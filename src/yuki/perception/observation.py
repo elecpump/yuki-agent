@@ -1,5 +1,6 @@
 import threading
 import time
+from collections import deque
 from typing import Callable
 
 from yuki.topics import Topics
@@ -13,27 +14,31 @@ class StableContentObservation:
         self._clock = clock
         self._lock = threading.Lock()
         self._last_focus: dict = {}
-        self._pending_reason: str | None = None
+        self._pending: deque[dict] = deque()
 
     def on_focus_changed(self, payload: dict) -> None:
+        focus = dict(payload)
         with self._lock:
-            self._last_focus = dict(payload)
-            self._pending_reason = "focus_changed"
+            self._last_focus = focus
+            self._pending.clear()
+            self._pending.append({"reason": "focus_changed", "focus": focus})
 
     def on_scroll_activity(self) -> None:
         with self._lock:
-            self._pending_reason = "scroll_idle"
+            if self._pending and self._pending[-1]["reason"] == "scroll_idle":
+                return
+            self._pending.append({"reason": "scroll_idle", "focus": dict(self._last_focus)})
 
     def on_frame_stored(self, frame: dict) -> None:
         frame_id = frame.get("frame_id")
         if frame_id is None:
             return
         with self._lock:
-            reason = self._pending_reason
-            if reason is None:
+            if not self._pending:
                 return
-            self._pending_reason = None
-            payload = dict(self._last_focus)
+            pending = self._pending.popleft()
+            reason = pending["reason"]
+            payload = dict(pending.get("focus", self._last_focus))
 
         payload.setdefault("app", "")
         payload.setdefault("url", "")

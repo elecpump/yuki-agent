@@ -156,6 +156,39 @@ def test_pipeline_content_ready_reads_bound_frame_id():
     assert payload["frame_id"] == 42
 
 
+def test_pipeline_skips_unidentified_frames():
+    class UnidentifiedFrameClient:
+        def get_latest(self):
+            return {
+                "png": _png_b64(),
+                "width": 4,
+                "height": 4,
+                "ts": 1.0,
+                "sensitive": False,
+            }
+
+        def get_by_id(self, frame_id):
+            raise AssertionError("unexpected frame_id request")
+
+    vlm = FakeVLM()
+    bus = FakeBus()
+    build_pipeline(
+        bus,
+        vlm=vlm,
+        sensitive_filter=FakeSensitive(),
+        stt=FakeSTT(),
+        frame_client=UnidentifiedFrameClient(),
+    )
+
+    bus.subscriptions[Topics.CONTENT_READY][0](
+        "event/perception/content_ready",
+        {"app": "chrome", "url": "https://x.com/a", "title": "A"},
+    )
+
+    assert vlm.understand_calls == []
+    assert not any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
+
+
 def test_pipeline_ignores_deferred_focus_changed():
     bus = FakeBus()
     build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),

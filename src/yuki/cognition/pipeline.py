@@ -6,7 +6,12 @@ from PIL import Image
 
 from yuki.cognition.frame_client import FrameClient
 from yuki.cognition.sensitive import SensitiveFilter
-from yuki.cognition.situation import build_situation_update, cache_key_for, scroll_band
+from yuki.cognition.situation import (
+    build_situation_update,
+    cache_key_for,
+    frame_id_for,
+    scroll_band,
+)
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
 from yuki.cognition.vlm import VisualUnderstander
@@ -69,6 +74,8 @@ class PerceptionPipeline:
     def on_content_ready(self, topic: str, payload: dict) -> None:
         frame = self._frame_for_payload(payload)
         if not frame or not frame.get("png") or frame.get("sensitive"):
+            return
+        if frame_id_for(payload, frame) is None:
             return
         image = decode_png_b64(frame["png"])
         if image is None:

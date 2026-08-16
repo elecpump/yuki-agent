@@ -50,7 +50,7 @@ payload 数值经 google.protobuf.Struct 以 double 存储，整数精确到 2^5
 | event/reply | 认知层→总线 | {"text":str,"ts":float} |
 | event/focus_changed | 采集层→总线 | {"app":str,"url":str,"title":str}（Phase 2b） |
 | event/perception/content_ready | 采集层→总线 | {"app":str,"url":str,"title":str,"reason":"focus_changed"\|"scroll_idle","frame_id":int,"ts":float,"frame_ts":float,"frame_width":int,"frame_height":int,"sensitive":bool,"scroll_percent"?:float} |
-| event/perception/situation_update | 认知层→总线 | {"situation_id":str,"source_id":str,"source_app":str,"source_title":str,"scroll_band":str,"observation_reason":str,"observation_ts":float,"frame_id"?:int,"frame_ts":float,"frame_width":int,"frame_height":int,"cache_key":str,"topic":str,"summary":str,"content_type":str,"key_points":list[str],"sensitive":bool,"degraded":bool,"reason":str,"ts":float,"scroll_percent"?:float} |
+| event/perception/situation_update | 认知层→总线 | {"situation_id":"frame:{frame_id}","source_id":str,"source_app":str,"source_title":str,"scroll_band":str,"observation_reason":str,"observation_ts":float,"frame_id":int,"frame_ts":float,"frame_width":int,"frame_height":int,"cache_key":str,"topic":str,"summary":str,"content_type":str,"key_points":list[str],"sensitive":bool,"degraded":bool,"reason":str,"ts":float,"scroll_percent"?:float} |
 | event/heartbeat | 各层→总线 | {"process":str,"ts":float}（可选） |
 
 ## 5. 帧主题与格式
@@ -65,7 +65,14 @@ payload 数值经 google.protobuf.Struct 以 double 存储，整数精确到 2^5
 - 响应：`{"frame_id":int,"png":base64,"width":int,"height":int,"ts":float,"sensitive":bool}`。
 - 尚无帧时 latest 返回占位帧：`{"png":"","width":0,"height":0,"ts":0.0,"sensitive":false}`。
 - 指定 `frame_id` 不存在或已被淘汰时返回 `{}`，调用方按无帧降级。
-- 认知层处理 `event/perception/content_ready` 时必须优先按 `frame_id` 拉取对应帧；`event/focus_changed` 是原始信号，不能作为稳定画面证据。
+- 认知层处理 `event/perception/content_ready` 时必须优先按 `frame_id` 拉取对应帧；无 `frame_id` 的帧不能生成 `SITUATION_UPDATE`。`event/focus_changed` 是原始信号，不能作为稳定画面证据。
+
+### functions/call（REQ/REP，工具调用服务）
+- 服务名 `functions/call`；由 cognition 在 registry 装配完成后注册。
+- 请求沿用 OpenAI tool_call 形状：`{"name":str,"arguments":dict|str|null}`；`arguments` 为 JSON 字符串或对象，缺失/空串视为 `{}`。
+- 成功响应：`{"ok":true,"result":<JSON 可序列化值>}`。
+- 失败响应：`{"ok":false,"error":{"code":"tool_not_found"|"invalid_arguments"|"handler_error","message":str}}`。
+- 当前内置可用工具：`system.ping` 与 memory 函数；服务层只透传 registry 的结构化结果，不把工具错误升级为 BusError。
 
 ## 6. 健康检查
 

@@ -42,6 +42,7 @@ class SituationUpdatePayload(TypedDict):
     scroll_band: str
     observation_reason: str
     observation_ts: float
+    frame_id: int
     frame_ts: float
     frame_width: int
     frame_height: int
@@ -54,7 +55,6 @@ class SituationUpdatePayload(TypedDict):
     degraded: bool
     reason: str
     ts: float
-    frame_id: NotRequired[int]
     scroll_percent: NotRequired[float]
 
 

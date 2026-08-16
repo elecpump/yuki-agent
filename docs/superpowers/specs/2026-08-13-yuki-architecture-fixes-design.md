@@ -124,13 +124,13 @@ Config(persona_name: str, bus: BusConfig, logging: LoggingConfig,
 
 ## 7.1 稳定内容观察与帧绑定（2026-08-16 增补）
 
-新增 `StableContentObservation`，把 `FOCUS_CHANGED` 与 scroll idle 从原始输入信号提升为稳定内容事件。感知层先记录最近焦点与待处理原因，等 `make_frame_service` 确认新帧已存入后，再发布 `Topics.CONTENT_READY`。这样同页滚动、焦点切换、截图门控之间的时序由感知层集中处理，认知层只消费“有证据的内容快照”。
+新增 `StableContentObservation`，把 `FOCUS_CHANGED` 与 scroll idle 从原始输入信号提升为稳定内容事件。感知层先记录最近焦点与待处理观察队列，等 `make_frame_service` 确认新帧已存入后，再按顺序发布 `Topics.CONTENT_READY`。focus 后发生 scroll 时，首个已识别帧仍消费 `focus_changed`，后续帧再消费 `scroll_idle`，避免单一 pending reason 被后来的滚动覆盖。这样同页滚动、焦点切换、截图门控之间的时序由感知层集中处理，认知层只消费“有证据的内容快照”。
 
 `make_frame_service` 内部新增 `FrameStore`，为每次存入的真实帧或敏感黑帧分配递增 `frame_id`，保留 bounded recent frames。`frame` REQ/REP 服务继续支持 `{}` 获取 latest，同时支持 `{"frame_id": int}` 获取指定帧；未命中返回 `{}` 并由调用方降级。`ContentReadyPayload` 携带 `frame_id`、`frame_ts`、尺寸和 `sensitive` 标记，`PerceptionPipeline` 优先用 `FrameClient.get_by_id(frame_id)` 读取对应帧。旧 `event/focus_changed` 保留给 recorder/backcompat；由感知层发出的 raw focus 会带 `content_ready_deferred`，pipeline 忽略该事件，避免重复理解或读到更新后的 latest。
 
 测试覆盖：
 
-- `tests/perception/test_observation.py`：focus/scroll 必须等待已识别帧后才发布 `CONTENT_READY`。
+- `tests/perception/test_observation.py`：focus/scroll 必须等待已识别帧后才发布 `CONTENT_READY`；focus 后 scroll 不覆盖首个 pending reason。
 - `tests/perception/test_capture.py`：frame service 分配 `frame_id` 并支持按 ID 读取。
 - `tests/cognition/test_frame_client.py`：`FrameClient.get_by_id()` 发送指定帧请求。
 - `tests/cognition/test_pipeline.py`：`CONTENT_READY(frame_id=...)` 必须读取绑定帧，即使 latest 已变化。
@@ -141,7 +141,7 @@ Config(persona_name: str, bus: BusConfig, logging: LoggingConfig,
 
 `SITUATION_UPDATE` 现在保留：
 
-- `situation_id`：优先为 `frame:{frame_id}`，无 frame 时退化为 legacy 标识。
+- `situation_id`：固定为 `frame:{frame_id}`；无 `frame_id` 的帧不是稳定证据，pipeline 会跳过，builder 会拒绝构造。
 - 证据来源：`frame_id`、`frame_ts`、`frame_width`、`frame_height`、`source_id`、`source_app`、`source_title`。
 - 观察信息：`observation_reason`、`observation_ts`、`scroll_band`、可选 `scroll_percent`。
 - VLM 复用信息：`cache_key`、`degraded`、`reason`。

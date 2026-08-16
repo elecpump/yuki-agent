@@ -1,3 +1,5 @@
+import pytest
+
 from yuki.cognition.situation import build_situation_update, scroll_band
 
 
@@ -69,6 +71,15 @@ def test_build_sensitive_situation_preserves_provenance():
     assert payload["sensitive"] is True
     assert payload["degraded"] is True
     assert payload["reason"] == "sensitive"
+
+
+def test_build_situation_update_requires_frame_id():
+    with pytest.raises(ValueError, match="frame_id"):
+        build_situation_update(
+            {"url": "https://x.com/a", "reason": "focus_changed", "ts": 10.0},
+            {"width": 800, "height": 600, "ts": 9.0, "sensitive": False},
+            {},
+        )
 
 
 def test_scroll_band_clamps_to_valid_range():
