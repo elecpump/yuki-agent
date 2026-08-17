@@ -1,5 +1,4 @@
 import os
-import signal
 import sys
 
 from yuki.bus import BusNode
@@ -23,15 +22,6 @@ def build_children_cmds(interaction_extra: list[str] | None = None) -> list[tupl
         else:
             cmds.append((name, base))
     return cmds
-
-
-def _send_break_to_children(supervisor: Supervisor) -> None:
-    for child in supervisor._children:
-        if child.proc.poll() is None and os.name == "nt":
-            try:
-                os.kill(child.proc.pid, signal.CTRL_BREAK_EVENT)
-            except (OSError, AttributeError):
-                pass
 
 
 def main() -> None:
@@ -73,7 +63,7 @@ def main() -> None:
                 print(f"[supervisor] spawn failed: {exc}", flush=True)
             shutdown.wait(timeout=0.5)
     finally:
-        _send_break_to_children(supervisor)
+        supervisor.send_break_to_children()
         supervisor.terminate_children()
         bus.close()
 

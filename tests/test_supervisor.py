@@ -99,6 +99,39 @@ def test_terminate_children_terminates_alive():
     assert child.terminated >= 1
 
 
+def test_send_break_to_children_only_signals_alive_windows_children(monkeypatch):
+    import yuki.supervisor as supervisor_module
+
+    alive = FakeProcWithState(exit_code=None)
+    alive.pid = 101
+    exited = FakeProcWithState(exit_code=0)
+    exited.pid = 202
+    procs = {"alive": alive, "exited": exited}
+    signals = []
+
+    def factory(cmd, env=None, creationflags=None):
+        return procs[cmd[0]]
+
+    monkeypatch.setattr(supervisor_module.os, "name", "nt")
+    monkeypatch.setattr(supervisor_module.signal, "CTRL_BREAK_EVENT", 21, raising=False)
+    monkeypatch.setattr(
+        supervisor_module.os,
+        "kill",
+        lambda pid, sig: signals.append((pid, sig)),
+    )
+
+    sup = Supervisor(
+        [("alive", ["alive"]), ("exited", ["exited"])],
+        popen_factory=factory,
+        restart_delay=0.0,
+        sleep=lambda s: None,
+    )
+
+    sup.send_break_to_children()
+
+    assert signals == [(101, 21)]
+
+
 def test_terminate_children_kills_on_timeout(monkeypatch):
     class HungryProc:
         def poll(self):

@@ -182,11 +182,7 @@ class Supervisor:
         proc = child.proc
         if proc.poll() is not None:
             return
-        if os.name == "nt":
-            try:
-                os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
-            except (OSError, AttributeError):
-                pass
+        self._send_break(proc)
         remaining = grace
         while proc.poll() is None and remaining > 0:
             step = min(0.05, remaining)
@@ -201,6 +197,18 @@ class Supervisor:
                     proc.kill()
                 except OSError:
                     pass
+
+    def _send_break(self, proc: "subprocess.Popen") -> None:
+        if os.name != "nt" or proc.poll() is not None:
+            return
+        try:
+            os.kill(proc.pid, signal.CTRL_BREAK_EVENT)
+        except (OSError, AttributeError):
+            pass
+
+    def send_break_to_children(self) -> None:
+        for child in self._children:
+            self._send_break(child.proc)
 
 
     def _restart_impl(self, child: Child, now: float) -> None:
