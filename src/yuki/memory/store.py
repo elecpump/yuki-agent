@@ -139,6 +139,17 @@ class MemoryStore:
             self._conn.commit()
         return cur.rowcount > 0
 
+    def delete_decayed(self, *, last_access_before: float | None = None) -> int:
+        sql = "DELETE FROM memories WHERE memory_type != 'personal' AND strengthened = 0"
+        params: list = []
+        if last_access_before is not None:
+            sql += " AND last_access < ?"
+            params.append(float(last_access_before))
+        with self._lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+        return cur.rowcount
+
     def list(self, *, memory_type: str | None = None, min_sensitivity: int = 0) -> list[dict]:
         sql = "SELECT * FROM memories WHERE sensitivity >= ?"
         params: list = [int(min_sensitivity)]

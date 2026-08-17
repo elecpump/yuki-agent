@@ -39,6 +39,26 @@ def test_delete_returns_rowcount(store):
     assert store.delete(mem_id) is False
 
 
+def test_delete_decayed_removes_only_eligible_old_memories(store):
+    stale = store.create("scenario", "stale quantum note")
+    fresh = store.create("scenario", "fresh quantum note")
+    personal = store.create("personal", "personal quantum note")
+    strong = store.create("preference", "strong quantum note")
+
+    store.touch(stale, at=100.0)
+    store.touch(personal, at=100.0)
+    store.touch(strong, at=100.0)
+    store.strengthen(strong)
+
+    assert store.delete_decayed(last_access_before=200.0) == 1
+    remaining = {m["id"] for m in store.all()}
+    assert stale not in remaining
+    assert fresh in remaining
+    assert personal in remaining
+    assert strong in remaining
+    assert stale not in [hit[0]["id"] for hit in store.search("quantum")]
+
+
 def test_list_filters_type_and_sensitivity(store):
     store.create("preference", "喜欢茶", sensitivity=0)
     store.create("preference", "喜欢咖啡", sensitivity=1)

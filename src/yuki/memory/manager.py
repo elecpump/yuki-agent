@@ -129,14 +129,17 @@ class MemoryManager:
 
     def cleanup(self) -> int:
         now = time.time()
-        deleted = 0
-        for mem in self._store.all():
-            if mem["memory_type"] == "personal" or mem["strengthened"]:
-                continue
-            if self.decay_weight(mem, now) < self._threshold:
-                if self._store.delete(mem["id"]):
-                    deleted += 1
-        return deleted
+        if self._threshold <= 0:
+            return 0
+        if self._base <= 0:
+            return self._store.delete_decayed()
+        if self._lam <= 0:
+            return self._store.delete_decayed() if self._base < self._threshold else 0
+        if self._threshold > self._base:
+            return self._store.delete_decayed()
+
+        stale_days = math.log(self._base / self._threshold) / self._lam
+        return self._store.delete_decayed(last_access_before=now - stale_days * 86400.0)
 
     def wipe(self) -> int:
         return self._store.wipe()

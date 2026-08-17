@@ -76,6 +76,27 @@ def test_cleanup_removes_stale_but_keeps_personal_and_strengthened(manager):
     assert strong in ids
 
 
+def test_cleanup_does_not_load_all_memories(tmp_path):
+    class NoFullScanStore(MemoryStore):
+        def all(self):
+            raise AssertionError("cleanup should delete stale memories in SQL")
+
+    m = MemoryManager(
+        NoFullScanStore(tmp_path / "mem.db"),
+        decay_base=1.0,
+        decay_lambda=1.0,
+        decay_threshold=0.3,
+    )
+    try:
+        stale = m.write("scenario", "stale")
+        m._store.touch(stale, at=1000000.0)
+
+        assert m.cleanup() == 1
+        assert m.get(stale) is None
+    finally:
+        m.close()
+
+
 def test_wipe_and_ping(manager):
     manager.write("preference", "a")
     assert manager.ping() is True
