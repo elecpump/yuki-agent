@@ -2,7 +2,7 @@ from yuki.config import Config
 from yuki.health import HealthStatus
 from yuki.perception.observation import StableContentObservation
 from yuki.perception.audio import AudioCapture
-from yuki.perception.capture import FrameStrategy, NullCapture, WgcCapture, make_frame_service
+from yuki.perception.capture import FrameStrategy, WgcCapture, make_frame_service
 from yuki.perception.scroll import ScrollHook, ScrollIdleDetector
 from yuki.perception.sensitive import SensitiveDetector
 from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor
@@ -32,6 +32,7 @@ class PerceptionAgent(ProcessAgent):
         observation = StableContentObservation(self.bus)
 
         gate_hwnd = 0
+        window_info = None
         capture = self._capture
         if capture is None:
             hwnd = self._foreground_hwnd
@@ -42,11 +43,16 @@ class PerceptionAgent(ProcessAgent):
                 except Exception:
                     hwnd = 0
             gate_hwnd = hwnd
-            capture = WgcCapture(hwnd) if hwnd else NullCapture()
+            capture = WgcCapture(hwnd or 0)
         elif isinstance(capture, WgcCapture):
             gate_hwnd = capture.window_hwnd
+        if hasattr(capture, "window_info"):
+            window_info = capture.window_info
 
         def on_focus_changed(payload: dict) -> None:
+            hwnd = payload.get("hwnd")
+            if hwnd is not None and hasattr(capture, "update_window"):
+                capture.update_window(hwnd)
             self.bus.publish(
                 Topics.FOCUS_CHANGED,
                 {**payload, "content_ready_deferred": True},
@@ -69,6 +75,7 @@ class PerceptionAgent(ProcessAgent):
             self.bus,
             capture,
             strategy,
+            window_info=window_info,
             hwnd=gate_hwnd,
             on_frame_stored=observation.on_frame_stored,
         )

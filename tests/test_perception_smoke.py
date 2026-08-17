@@ -3,6 +3,7 @@ from yuki.perception.agent import PerceptionAgent
 from yuki.perception.capture import FrameStrategy, black_frame_png
 from yuki.perception.sensitive import SensitiveDetector
 from yuki.perception.scroll import ScrollIdleDetector
+from yuki.topics import Topics
 
 from tests.fakes import FakeBus
 
@@ -59,6 +60,37 @@ class FakeScrollHook:
         self.stopped = True
         if self.log is not None:
             self.log.append("scroll_hook")
+
+
+class TrackingCapture(FakeCapture):
+    def __init__(self, log=None):
+        super().__init__(log)
+        self.window_hwnd = 1001
+        self.updates = []
+
+    def update_window(self, hwnd):
+        self.window_hwnd = int(hwnd)
+        self.updates.append(self.window_hwnd)
+
+    def window_info(self):
+        return ("Chrome_WidgetWin_1", f"window-{self.window_hwnd}")
+
+
+class RecordingMonitor:
+    instances = []
+
+    def __init__(self, probe, on_change):
+        self.probe = probe
+        self.on_change = on_change
+        self.started = False
+        self.stopped = False
+        self.__class__.instances.append(self)
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
 
 
 def test_perception_agent_setup_wires_components():
@@ -152,6 +184,39 @@ def test_perception_agent_default_strategy_gates_on_scroll():
     png = black_frame_png(width=64, height=48, color=(1, 2, 3))
     capture.on_frame(png, {"width": 64, "height": 48, "ts": 1.0})
     assert bus.services["frame"]({})["png"] == ""
+    agent.teardown()
+
+
+def test_perception_agent_retargets_capture_on_focus_change(monkeypatch):
+    RecordingMonitor.instances = []
+    monkeypatch.setattr("yuki.perception.agent.SystemMonitor", RecordingMonitor)
+
+    bus = FakeBus()
+    capture = TrackingCapture()
+    agent = PerceptionAgent(
+        Config(),
+        bus=bus,
+        capture=capture,
+        audio=FakeAudio(),
+        scroll_hook=FakeScrollHook(),
+    )
+    agent.setup()
+
+    RecordingMonitor.instances[0].on_change(
+        {"app": "chrome", "url": "", "title": "Next", "hwnd": 2002}
+    )
+
+    assert capture.updates == [2002]
+    assert bus.published[-1] == (
+        Topics.FOCUS_CHANGED,
+        {
+            "app": "chrome",
+            "url": "",
+            "title": "Next",
+            "hwnd": 2002,
+            "content_ready_deferred": True,
+        },
+    )
     agent.teardown()
 
 

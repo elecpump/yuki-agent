@@ -51,7 +51,7 @@ class ForegroundProbe:
             title = self._get_text(hwnd)
             app = self._app_name(hwnd)
             url = self._url_from_title(app, title)
-            return {"app": app, "url": url, "title": title}
+            return {"app": app, "url": url, "title": title, "hwnd": hwnd}
         except Exception:
             logger.exception("foreground probe failed")
             return None

@@ -39,7 +39,7 @@ def test_probe_extracts_window_info(monkeypatch):
         process_name=fake_process_name,
     )
     result = probe.probe()
-    assert result == {"app": "chrome", "url": "", "title": "My Browser - Article"}
+    assert result == {"app": "chrome", "url": "", "title": "My Browser - Article", "hwnd": 1234}
 
 
 def test_monitor_emits_on_change():

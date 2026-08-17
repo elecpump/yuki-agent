@@ -40,8 +40,19 @@ class WgcCapture(FrameCapture):
         self.window_hwnd = window_hwnd
         self._min_update_interval = min_update_interval
         self._capture = None
+        self._running = False
+        self._lock = threading.RLock()
 
     def start(self) -> None:
+        with self._lock:
+            self._running = True
+            if not self.window_hwnd:
+                return
+            self._start_locked()
+
+    def _start_locked(self) -> None:
+        if self._capture is not None:
+            return
         import windows_capture
 
         self._capture = windows_capture.WindowsCapture(
@@ -51,6 +62,20 @@ class WgcCapture(FrameCapture):
         self._capture.frame_handler = self._handle_frame
         self._capture.closed_handler = self._handle_closed
         self._capture.start_free_threaded()
+
+    def update_window(self, window_hwnd: int) -> None:
+        with self._lock:
+            window_hwnd = int(window_hwnd or 0)
+            if window_hwnd == self.window_hwnd:
+                return
+            was_running = self._running
+            self._close_locked()
+            self.window_hwnd = window_hwnd
+            if was_running and self.window_hwnd:
+                self._start_locked()
+
+    def window_info(self) -> tuple[str, str] | None:
+        return _window_info_from_hwnd(self.window_hwnd)()
 
     def _handle_closed(self) -> None:
         logger.debug("wgc capture closed")
@@ -72,12 +97,18 @@ class WgcCapture(FrameCapture):
         return buf.getvalue()
 
     def stop(self) -> None:
-        if self._capture is not None:
-            try:
-                self._capture.close()
-            except Exception:
-                pass
-            self._capture = None
+        with self._lock:
+            self._running = False
+            self._close_locked()
+
+    def _close_locked(self) -> None:
+        if self._capture is None:
+            return
+        try:
+            self._capture.close()
+        except Exception:
+            pass
+        self._capture = None
 
 
 class NullCapture(FrameCapture):

@@ -281,6 +281,61 @@ def test_wgc_start_wires_frame_and_closed_handlers(monkeypatch):
     assert "ts" in meta
 
 
+def test_wgc_update_window_restarts_running_capture(monkeypatch):
+    created = []
+
+    class FakeWindowsCapture:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.started_free_threaded = False
+            self.closed = False
+            created.append(self)
+
+        def start_free_threaded(self):
+            self.started_free_threaded = True
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setitem(
+        sys.modules, "windows_capture", types.SimpleNamespace(WindowsCapture=FakeWindowsCapture)
+    )
+
+    capture = WgcCapture(window_hwnd=1001)
+    capture.start()
+    capture.update_window(2002)
+
+    assert [native.kwargs["window_hwnd"] for native in created] == [1001, 2002]
+    assert created[0].closed is True
+    assert created[1].started_free_threaded is True
+    assert capture.window_hwnd == 2002
+
+
+def test_wgc_start_without_hwnd_waits_for_update(monkeypatch):
+    created = []
+
+    class FakeWindowsCapture:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            created.append(self)
+
+        def start_free_threaded(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setitem(
+        sys.modules, "windows_capture", types.SimpleNamespace(WindowsCapture=FakeWindowsCapture)
+    )
+
+    capture = WgcCapture(window_hwnd=0)
+    capture.start()
+    capture.update_window(3003)
+
+    assert [native.kwargs["window_hwnd"] for native in created] == [3003]
+
+
 def test_wgc_on_frame_callback_stores_real_png():
     capture = WgcCapture(window_hwnd=1234)
     stored = []
