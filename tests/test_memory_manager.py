@@ -32,6 +32,19 @@ def test_query_returns_scores_and_touches(manager):
     assert manager._store.get(mem_id)["access_count"] == 2
 
 
+def test_query_only_touches_returned_results(manager):
+    first = manager.write("preference", "xy old")
+    second = manager.write("preference", "xy middle")
+
+    results = manager.query("xy", top_k=1)
+    returned = results[0]["id"]
+    not_returned = {first, second} - {returned}
+
+    assert manager._store.get(returned)["access_count"] == 1
+    for memory_id in not_returned:
+        assert manager._store.get(memory_id)["access_count"] == 0
+
+
 def test_decay_weight_strengthened_is_one(manager):
     mem_id = manager.write("preference", "x")
     manager.strengthen(mem_id)

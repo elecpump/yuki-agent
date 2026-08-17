@@ -84,6 +84,9 @@ class MemoryManager:
             self._store.touch(memory_id)
         return mem
 
+    def touch(self, memory_id: int) -> None:
+        self._store.touch(memory_id)
+
     def delete(self, memory_id: int) -> bool:
         return self._store.delete(memory_id)
 
@@ -97,6 +100,7 @@ class MemoryManager:
         memory_type: str | None = None,
         top_k: int = 5,
         min_sensitivity: int = 0,
+        touch: bool = True,
     ) -> list[dict]:
         now = time.time()
         hits = self._store.search(
@@ -104,11 +108,14 @@ class MemoryManager:
         )
         scored: list[dict] = []
         for mem, rank in hits:
-            self._store.touch(mem["id"])
             mem["score"] = rank * self.decay_weight(mem, now)
             scored.append(mem)
         scored.sort(key=lambda m: m["score"], reverse=True)
-        return scored[:top_k]
+        returned = scored[:top_k]
+        if touch:
+            for mem in returned:
+                self._store.touch(mem["id"])
+        return returned
 
     def decay_weight(self, memory: dict, now: float | None = None) -> float:
         now = time.time() if now is None else now

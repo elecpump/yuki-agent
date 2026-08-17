@@ -40,3 +40,18 @@ def test_memory_access_filters_by_purpose(tmp_path) -> None:
     }
     assert access.get(private_id, purpose=MemoryPurpose.CLOUD_MODEL_CONTEXT) is None
     assert access.get(high_id, purpose=MemoryPurpose.USER_EXPLICIT_VIEW)["sensitivity"] == 2
+
+
+def test_memory_access_query_only_touches_filtered_results(tmp_path) -> None:
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    public_id = manager.write("preference", "xy public", sensitivity=0)
+    private_id = manager.write("preference", "xy private", sensitivity=1)
+    high_id = manager.write("personal", "xy high", sensitivity=2)
+
+    access = MemoryAccess(manager)
+    results = access.query("xy", purpose=MemoryPurpose.CLOUD_MODEL_CONTEXT, top_k=1)
+
+    assert [m["id"] for m in results] == [public_id]
+    assert manager._store.get(public_id)["access_count"] == 1
+    assert manager._store.get(private_id)["access_count"] == 0
+    assert manager._store.get(high_id)["access_count"] == 0

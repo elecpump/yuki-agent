@@ -69,8 +69,12 @@ class MemoryAccess:
             memory_type=memory_type,
             top_k=max(top_k * 5, top_k),
             min_sensitivity=min_sensitivity,
+            touch=False,
         )
-        return self._policy.filter(candidates, purpose)[:top_k]
+        returned = self._policy.filter(candidates, purpose)[:top_k]
+        for memory in returned:
+            self._manager.touch(memory["id"])
+        return returned
 
     def list(
         self,

@@ -6,7 +6,7 @@ _DEFAULT_PATTERNS = {
     "phone": r"(?<!\d)1[3-9]\d{9}(?!\d)",
     "email": r"\b[\w.+-]+@[\w-]+\.[\w.]+\b",
     "password": r"(密码|口令|password|passwd)\s*[:：]\s*\S+",
-    "secret": r"(secret|api_key|token|凭据)\b",
+    "secret": r"(secret|api_key|token)(?![\w])|凭据",
 }
 
 

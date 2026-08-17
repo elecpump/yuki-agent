@@ -23,6 +23,11 @@ def test_detects_password_keyword():
     assert f.is_sensitive("密码：abc123 请勿泄露")
 
 
+def test_detects_secret_keyword_before_chinese_text():
+    f = SensitiveFilter()
+    assert "secret" in f.scan("凭据泄露风险")
+
+
 def test_allows_normal_text():
     f = SensitiveFilter()
     assert f.scan("这篇文章讨论了气候变化的影响。") == []
