@@ -1,4 +1,5 @@
 import pytest
+import types
 
 from yuki.cognition.context_cache import ContextCache
 from yuki.cognition.vlm import VisualUnderstander
@@ -79,3 +80,27 @@ def test_warmup_is_idempotent_and_background():
     while not vlm._loaded and time.time() < deadline:
         time.sleep(0.01)
     assert vlm._loaded
+
+
+def test_load_failure_is_remembered(monkeypatch):
+    import sys
+
+    calls = []
+
+    class FakeAutoModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.append((args, kwargs))
+            raise RuntimeError("missing model")
+
+    fake_transformers = types.SimpleNamespace(AutoModel=FakeAutoModel, AutoProcessor=object)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    vlm = VisualUnderstander()
+
+    first = vlm.understand(None)
+    second = vlm.understand(None)
+
+    assert first["degraded"] is True
+    assert second["degraded"] is True
+    assert len(calls) == 1

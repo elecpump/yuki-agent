@@ -20,19 +20,30 @@ class VisualUnderstander:
         self._processor = processor
         self._cache = cache or ContextCache()
         self._loaded = model is not None and processor is not None
+        self._load_failed = False
+        self._load_lock = threading.Lock()
 
     def _load(self) -> None:
         if self._loaded:
             return
-        from transformers import AutoModel, AutoProcessor
-        self._model = AutoModel.from_pretrained(
-            "Qwen/Qwen3-VL-8B", torch_dtype="auto", device_map="auto", load_in_4bit=True
-        )
-        self._processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-8B")
-        self._loaded = True
+        with self._load_lock:
+            if self._loaded:
+                return
+            if self._load_failed:
+                raise RuntimeError("vlm load previously failed")
+            try:
+                from transformers import AutoModel, AutoProcessor
+                self._model = AutoModel.from_pretrained(
+                    "Qwen/Qwen3-VL-8B", torch_dtype="auto", device_map="auto", load_in_4bit=True
+                )
+                self._processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-8B")
+                self._loaded = True
+            except Exception:
+                self._load_failed = True
+                raise
 
     def warmup(self) -> None:
-        if self._loaded:
+        if self._loaded or self._load_failed:
             return
         def _load_thread():
             try:

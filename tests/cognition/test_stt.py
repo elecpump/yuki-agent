@@ -1,4 +1,5 @@
 import base64
+import types
 
 import numpy as np
 import pytest
@@ -36,3 +37,24 @@ def test_recognize_handles_empty_text_result():
     stt = SpeechRecognizer(model=FakeModel())
     pcm = np.zeros(320, dtype=np.float32).tobytes()
     assert stt.recognize_base64(base64.b64encode(pcm).decode("ascii")) == ""
+
+
+def test_load_failure_is_remembered(monkeypatch):
+    import sys
+
+    calls = []
+
+    class FakeAutoModel:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("missing model")
+
+    fake_funasr = types.SimpleNamespace(AutoModel=FakeAutoModel)
+    monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
+
+    stt = SpeechRecognizer()
+    samples = np.zeros(320, dtype=np.float32)
+
+    assert stt.recognize(samples) == ""
+    assert stt.recognize(samples) == ""
+    assert len(calls) == 1

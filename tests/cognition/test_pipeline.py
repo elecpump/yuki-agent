@@ -1,5 +1,7 @@
 import base64
 import io
+import threading
+import time
 
 import numpy as np
 from PIL import Image
@@ -83,15 +85,23 @@ def _make_pipeline(bus=None, vlm=None, sensitive=None, stt=None, frame_client=No
     )
 
 
+def _wait_for_topic(bus, topic, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events = [p for t, p in bus.published if t == topic]
+        if events:
+            return events[0]
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for {topic}")
+
+
 def test_pipeline_focus_publishes_situation_update():
     bus = FakeBus()
     build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed",
         {"app": "chrome", "url": "https://x.com/a", "title": "A"})
-    events = [t for t, _ in bus.published if t == Topics.SITUATION_UPDATE]
-    assert len(events) == 1
-    payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
+    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
     assert payload["topic"] == "climate"
     assert payload["source_id"] == "https://x.com/a"
     assert "scroll_band" in payload
@@ -108,7 +118,7 @@ def test_pipeline_content_ready_publishes_situation_update():
         "event/perception/content_ready",
         {"app": "chrome", "url": "https://x.com/a", "title": "A", "reason": "scroll_idle"},
     )
-    payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
+    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
     assert payload["topic"] == "climate"
     assert payload["source_id"] == "https://x.com/a"
     assert payload["situation_id"] == "frame:1"
@@ -149,9 +159,9 @@ def test_pipeline_content_ready_reads_bound_frame_id():
         },
     )
 
+    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
     assert frame_client.latest_requests == 0
     assert frame_client.requested_ids == [42]
-    payload = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE][0]
     assert payload["situation_id"] == "frame:42"
     assert payload["frame_id"] == 42
 
@@ -235,9 +245,7 @@ def test_pipeline_stt_on_mic_publishes_utterance():
     assert len(sb.frames) == 1
     sb.on_utterance = pipeline._on_utterance
     sb.on_utterance(np.zeros(320, dtype=np.float32))
-    events = [t for t, _ in bus.published if t == Topics.USER_UTTERANCE]
-    assert len(events) == 1
-    payload = [p for t, p in bus.published if t == Topics.USER_UTTERANCE][0]
+    payload = _wait_for_topic(bus, Topics.USER_UTTERANCE)
     assert payload["text"] == "你好"
 
 
@@ -267,6 +275,9 @@ def test_pipeline_focus_passes_decoded_pil_image_to_vlm():
     vlm = FakeVLM()
     pipeline = _make_pipeline(vlm=vlm)
     pipeline.on_focus_changed("event/focus", {"title": "t", "url": "u"})
+    deadline = time.monotonic() + 1.0
+    while not vlm.understand_calls and time.monotonic() < deadline:
+        time.sleep(0.01)
     image = vlm.understand_calls[0][0]
     assert isinstance(image, Image.Image)
     assert not isinstance(image, str)
@@ -278,6 +289,9 @@ def test_pipeline_focus_cache_key_uses_source_id_scroll_band():
     pipeline.on_focus_changed(
         "event/focus_changed", {"title": "T", "url": "https://x.com/a", "scroll_percent": 30}
     )
+    deadline = time.monotonic() + 1.0
+    while not vlm.understand_calls and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert vlm.understand_calls[0][1] == "https://x.com/a|25-50"
 
 
@@ -335,11 +349,10 @@ def test_pipeline_focus_blocks_sensitive_key_points():
     build_pipeline(bus, vlm=SensitiveKeyPointsVLM(), sensitive_filter=SensitiveFilter(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
-    events = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE]
-    assert len(events) == 1
-    assert events[0]["sensitive"] is True
-    assert events[0]["degraded"] is True
-    assert events[0]["reason"] == "sensitive"
+    event = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    assert event["sensitive"] is True
+    assert event["degraded"] is True
+    assert event["reason"] == "sensitive"
 
 
 def test_pipeline_focus_publishes_degraded_on_vlm_failure():
@@ -352,7 +365,73 @@ def test_pipeline_focus_publishes_degraded_on_vlm_failure():
     build_pipeline(bus, vlm=BoomVLM(), sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
-    events = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE]
-    assert len(events) == 1
-    assert events[0]["degraded"] is True
-    assert events[0]["reason"] == "inference_failed"
+    event = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    assert event["degraded"] is True
+    assert event["reason"] == "inference_failed"
+
+
+def test_pipeline_content_ready_does_not_block_on_slow_vlm():
+    class BlockingVLM(FakeVLM):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def understand(self, image, cache_key=None):
+            self.started.set()
+            self.release.wait(timeout=2.0)
+            return super().understand(image, cache_key=cache_key)
+
+    bus = FakeBus()
+    vlm = BlockingVLM()
+    pipeline = build_pipeline(
+        bus,
+        vlm=vlm,
+        sensitive_filter=FakeSensitive(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+    )
+
+    started = time.monotonic()
+    pipeline.on_content_ready("event/perception/content_ready", {"title": "t", "url": "u"})
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert vlm.started.wait(timeout=1.0)
+    assert not any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
+
+    vlm.release.set()
+    _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+
+
+def test_pipeline_utterance_callback_does_not_block_on_slow_stt():
+    class BlockingSTT(FakeSTT):
+        def __init__(self):
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def recognize(self, samples, sample_rate=16000):
+            self.started.set()
+            self.release.wait(timeout=2.0)
+            return "hello"
+
+    bus = FakeBus()
+    stt = BlockingSTT()
+    pipeline = build_pipeline(
+        bus,
+        vlm=FakeVLM(),
+        sensitive_filter=FakeSensitive(),
+        stt=stt,
+        frame_client=FakeFrameClient(),
+    )
+
+    started = time.monotonic()
+    pipeline._on_utterance(np.zeros(320, dtype=np.float32))
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert stt.started.wait(timeout=1.0)
+    assert not any(t == Topics.USER_UTTERANCE for t, _ in bus.published)
+
+    stt.release.set()
+    _wait_for_topic(bus, Topics.USER_UTTERANCE)

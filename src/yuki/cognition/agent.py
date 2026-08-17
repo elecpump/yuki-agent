@@ -161,6 +161,8 @@ class CognitionAgent(ProcessAgent):
         persona_refresh()
 
     def teardown(self) -> None:
+        if self._pipeline is not None and hasattr(self._pipeline, "close"):
+            self._pipeline.close()
         if self._context is not None:
             self._context.close()
             self._context = None
@@ -197,7 +199,7 @@ class CognitionAgent(ProcessAgent):
         loaded = bool(getattr(vlm, "_loaded", False))
         detail = {"loaded": loaded, "degraded": not loaded}
         if not loaded:
-            detail["reason"] = "loading"
+            detail["reason"] = "unavailable" if getattr(vlm, "_load_failed", False) else "loading"
         return HealthStatus(True, detail)
 
     def _health_stt(self) -> HealthStatus:

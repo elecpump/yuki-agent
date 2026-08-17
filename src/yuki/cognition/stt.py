@@ -14,13 +14,20 @@ class SpeechRecognizer:
         self._model = model
         self._sample_rate = sample_rate
         self._loaded = model is not None
+        self._load_failed = False
 
     def _load(self) -> None:
         if self._loaded:
             return
-        from funasr import AutoModel
-        self._model = AutoModel(model="iic/SenseVoiceSmall")
-        self._loaded = True
+        if self._load_failed:
+            raise RuntimeError("stt load previously failed")
+        try:
+            from funasr import AutoModel
+            self._model = AutoModel(model="iic/SenseVoiceSmall")
+            self._loaded = True
+        except Exception:
+            self._load_failed = True
+            raise
 
     def _infer(self, samples: np.ndarray, sample_rate: int) -> str:
         self._load()

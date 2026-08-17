@@ -1,6 +1,9 @@
 import base64
 import io
+import threading
 import time
+from collections.abc import Callable
+from typing import Any
 
 from PIL import Image
 
@@ -30,6 +33,51 @@ def decode_png_b64(png_b64: str) -> Image.Image | None:
         return None
 
 
+class _LatestJobWorker:
+    """Runs slow perception work outside bus handler threads, keeping only the latest pending job."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+        self._condition = threading.Condition()
+        self._pending: tuple[Callable[..., None], tuple[Any, ...], dict[str, Any]] | None = None
+        self._closed = False
+        self._thread: threading.Thread | None = None
+
+    def submit(self, fn: Callable[..., None], *args: Any, **kwargs: Any) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._pending = (fn, args, kwargs)
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, daemon=True, name=self._name)
+                self._thread.start()
+            self._condition.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._condition:
+                while self._pending is None and not self._closed:
+                    self._condition.wait()
+                if self._pending is None and self._closed:
+                    return
+                job = self._pending
+                self._pending = None
+            fn, args, kwargs = job
+            try:
+                fn(*args, **kwargs)
+            except Exception:
+                logger.exception("background perception job failed", worker=self._name)
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._pending = None
+            self._condition.notify()
+            thread = self._thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=2.0)
+
+
 class PerceptionPipeline:
     """纯感知管线：产出结构化理解事件，不产生任何回复。
 
@@ -56,6 +104,8 @@ class PerceptionPipeline:
         self._speech_buffer = speech_buffer or SpeechBuffer(
             on_utterance=self._on_utterance
         )
+        self._vlm_worker = _LatestJobWorker("yuki-cognition-vlm")
+        self._stt_worker = _LatestJobWorker("yuki-cognition-stt")
 
     def _frame_for_payload(self, payload: dict) -> dict:
         frame_id = payload.get("frame_id")
@@ -64,6 +114,9 @@ class PerceptionPipeline:
         return self._frame_client.get_latest()
 
     def _on_utterance(self, samples) -> None:
+        self._stt_worker.submit(self._recognize_utterance, samples)
+
+    def _recognize_utterance(self, samples) -> None:
         text = self._stt.recognize(samples, sample_rate=16000)
         if not text:
             return
@@ -71,7 +124,7 @@ class PerceptionPipeline:
             "text": text, "duration_s": round(len(samples) / 16000, 2), "ts": time.time(),
         })
 
-    def on_content_ready(self, topic: str, payload: dict) -> None:
+    def _process_content_ready(self, topic: str, payload: dict) -> None:
         frame = self._frame_for_payload(payload)
         if not frame or not frame.get("png") or frame.get("sensitive"):
             return
@@ -93,6 +146,9 @@ class PerceptionPipeline:
             )
             return
         self._publish_situation(build_situation_update(payload, frame, context))
+
+    def on_content_ready(self, topic: str, payload: dict) -> None:
+        self._vlm_worker.submit(self._process_content_ready, topic, dict(payload))
 
     def on_focus_changed(self, topic: str, payload: dict) -> None:
         if payload.get("content_ready_deferred"):
@@ -140,6 +196,10 @@ class PerceptionPipeline:
 
     def warmup_vlm(self) -> None:
         self._vlm.warmup()
+
+    def close(self) -> None:
+        self._vlm_worker.close()
+        self._stt_worker.close()
 
 
 def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
