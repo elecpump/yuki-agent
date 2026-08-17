@@ -3,6 +3,8 @@ import sys
 import time
 from pathlib import Path
 
+from yuki.bus import BusError, BusTimeoutError
+from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.config import Config
 from yuki.health import HealthStatus
 from yuki.interaction.hotkey import HotkeyManager
@@ -76,7 +78,18 @@ class InteractionAgent(ProcessAgent):
             self._tts.speak(payload["text"])
 
         def trigger_call() -> None:
-            self.bus.publish(Topics.AWAKE, {"source": "hotkey", "ts": time.time()})
+            try:
+                reply = self.bus.request(
+                    COGNITION_AWAKE_SERVICE,
+                    {"source": "hotkey", "ts": time.time()},
+                    timeout_ms=self.config.health.timeout_ms,
+                )
+            except (BusError, BusTimeoutError):
+                self._tts.speak("我现在连接不上 cognition。")
+                return
+            text = (reply or {}).get("text", "")
+            if text:
+                self._tts.speak(text)
 
         self.bus.subscribe(Topics.REPLY, on_reply)
         self._hotkeys.register("trigger", trigger_call)

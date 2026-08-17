@@ -1,32 +1,11 @@
 import os
 
-from yuki.cognition.l2.bridge import CloudBridge
-from yuki.cognition.l2.client import CloudClient
-from yuki.cognition.brain.persona import generate as generate_persona
-from yuki.cognition.brain.hub import build_brain
-from yuki.cognition.brain.snapshots import PersonaStore
-from yuki.cognition.brain.policy import DecisionPolicy
-from yuki.cognition.context.snapshot import ContextProjector
-from yuki.cognition.context.store import ShortTermTurnStore
-from yuki.cognition.context.working import WorkingContext
-from yuki.cognition.brain.soul import SoulStore
-from yuki.cognition.brain.tuner import FeedbackTuner
-from yuki.cognition.brain.sedimenter import PreferenceSedimenter
-from yuki.cognition.l1 import L1Engine
-from yuki.cognition.pipeline import build_pipeline
-from yuki.cognition.stt import SpeechRecognizer
-from yuki.cognition.vlm import VisualUnderstander
+from yuki.cognition.assembly import CognitionAssembler
 from yuki.config import Config
-from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
-from yuki.functions.service import register_function_services
-from yuki.functions.system import register_builtin_system
 from yuki.health import HealthStatus
 from yuki.logger import get_logger
 from yuki.memory.manager import MemoryManager
-from yuki.memory.privacy import MemoryAccess, MemoryPurpose
-from yuki.memory.service import register_memory_services
-from yuki.memory.store import MemoryStore
 from yuki.process import ProcessAgent
 
 logger = get_logger("yuki.cognition.agent")
@@ -57,108 +36,27 @@ class CognitionAgent(ProcessAgent):
         self._persona_refresh = None
 
     def setup(self) -> None:
-        if self._pipeline is None:
-            self._pipeline = build_pipeline(
-                self.bus,
-                vlm=self._vlm,
-                sensitive_filter=self._sensitive_filter,
-                stt=self._stt,
-                frame_client=self._frame_client,
-                speech_buffer=self._speech_buffer,
-            )
-        self._pipeline.warmup_vlm()
-        if self._memory is None:
-            self._memory = MemoryManager(
-                MemoryStore(self.config.memory.db_path),
-                decay_base=self.config.memory.decay_base,
-                decay_lambda=self.config.memory.decay_lambda,
-                decay_threshold=self.config.memory.decay_threshold,
-                short_term_ttl_s=self.config.memory.short_term_ttl_s,
-                short_term_capacity=self.config.memory.short_term_capacity,
-            )
-        register_memory_services(self.bus, self._memory)
-        if self._registry is None:
-            self._registry = FunctionRegistry()
-            register_builtin_system(self._registry)
-        register_memory_functions(self._registry, self._memory)
-        register_function_services(self.bus, self._registry)
-        bridge = None
-        if self.config.cloud.enabled:
-            bridge = CloudBridge(
-                CloudClient(
-                    base_url=self.config.cloud.base_url,
-                    model=self.config.cloud.model,
-                    api_key=os.environ.get(self.config.cloud.api_key_env),
-                    timeout_s=self.config.cloud.timeout_s,
-                ),
-                registry=self._registry,
-                max_turns=self.config.cloud.max_turns,
-                persona_name=self.config.persona_name,
-            )
-        self._persona_store = PersonaStore(
-            self.config.persona.snapshots_path,
-            max_versions=self.config.persona.max_versions,
-            persona_name=self.config.persona_name,
-        )
-
-        def persona_refresh() -> None:
-            prefs = MemoryAccess(self._memory).list(
-                purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
-                memory_type="preference",
-            )
-            refine = None
-            if self.config.persona.enable_llm_refine and bridge is not None:
-                refine = bridge.refine_persona
-            prompt = generate_persona(
-                self.config.persona_name, prefs, {},
-                base_prompt=self.config.persona.prompt,
-                refine=refine,
-            )
-            snap = self._persona_store.save(prompt, {})
-            if snap is not None and bridge is not None:
-                bridge.set_system_prompt(snap.persona_prompt)
-        self._persona_refresh = persona_refresh
-
-        policy = DecisionPolicy(
-            proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
-            proactive_enabled=self.config.brain.proactive_enabled,
-        )
-        soul = SoulStore(self.config.soul.path, self.config.persona_name)
-        tuner = FeedbackTuner(policy, soul)
-        tuner.load_soul()
-        context = WorkingContext(
-            ShortTermTurnStore(self._memory),
-            snapshot_path=self.config.context.snapshot_path or None,
-        )
-        context.restore()
-        projector = ContextProjector(max_turns=self.config.context.max_turns)
-        sedimenter = PreferenceSedimenter(
-            self._memory,
-            tuner=tuner,
-            min_signals=self.config.sedimenter.min_signals,
-            confidence_threshold=self.config.sedimenter.confidence_threshold,
-            topic_engagement_threshold=self.config.sedimenter.topic_engagement_threshold,
-            on_sedimented=persona_refresh,
-        )
-        self._context = context
-        self._bridge = bridge
-        self._hub = build_brain(
+        runtime = CognitionAssembler(
+            self.config,
             self.bus,
+            pipeline=self._pipeline,
+            vlm=self._vlm,
+            stt=self._stt,
+            frame_client=self._frame_client,
+            sensitive_filter=self._sensitive_filter,
+            speech_buffer=self._speech_buffer,
             memory=self._memory,
             registry=self._registry,
-            config=self.config,
-            policy=policy,
-            bridge=bridge,
-            tuner=tuner,
-            context=context,
-            projector=projector,
-            sedimenter=sedimenter,
         )
-        active = self._persona_store.active()
-        if bridge is not None:
-            bridge.set_system_prompt(active.persona_prompt if active
-                                     else self.config.persona.prompt.format(persona=self.config.persona_name))
-        persona_refresh()
+        assembled = runtime.assemble()
+        self._pipeline = assembled.pipeline
+        self._memory = assembled.memory
+        self._registry = assembled.registry
+        self._bridge = assembled.bridge
+        self._hub = assembled.hub
+        self._context = assembled.context
+        self._persona_store = assembled.persona_store
+        self._persona_refresh = assembled.persona_refresh
 
     def teardown(self) -> None:
         if self._pipeline is not None and hasattr(self._pipeline, "close"):

@@ -1,7 +1,7 @@
 import pytest
 
 from yuki.cognition.brain.actions import DEFAULT_JOKES
-from yuki.cognition.brain.hub import DecisionHub, build_brain
+from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE, DecisionHub, build_brain
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.context.store import ShortTermTurnStore
@@ -43,8 +43,9 @@ def _reply_text(bus) -> str | None:
 
 def test_awake_replies_l1_greeting(hub):
     h, bus, _ = hub
-    h.on_awake(Topics.AWAKE, {"source": "hotkey", "ts": 0.0})
-    assert _reply_text(bus) == "我在，你说。"
+    result = h.handle_awake_request({"source": "hotkey", "ts": 0.0})
+    assert result["text"] == "我在，你说。"
+    assert _reply_text(bus) is None
 
 
 def test_chit_chat_utterance_replies(hub):
@@ -77,7 +78,7 @@ def test_safety_utterance_escalates(hub):
 
 def test_situation_within_cooldown_stays_silent(hub):
     h, bus, _ = hub
-    h.on_awake(Topics.AWAKE, {"source": "hotkey", "ts": 0.0})  # 记录 last_open
+    h.handle_awake_request({"source": "hotkey", "ts": 0.0})  # 记录 last_open
     before = len(bus.published)
     h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
     assert len(bus.published) == before  # 无新 REPLY
@@ -98,7 +99,8 @@ def test_build_brain_subscribes_and_configures(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
     hub = build_brain(bus, memory=memory, registry=FunctionRegistry())
-    assert Topics.AWAKE in bus.subscriptions
+    assert COGNITION_AWAKE_SERVICE in bus.services
+    assert Topics.AWAKE not in bus.subscriptions
     assert Topics.USER_UTTERANCE in bus.subscriptions
     assert Topics.SITUATION_UPDATE in bus.subscriptions
     memory.close()

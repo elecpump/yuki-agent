@@ -1,4 +1,6 @@
 from yuki.config import Config
+from yuki.bus import BusTimeoutError
+from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.interaction.agent import InteractionAgent, VolumeController
 from yuki.interaction.hotkey import HotkeyManager
 from yuki.topics import Topics
@@ -33,15 +35,36 @@ def test_hotkey_manager_register_trigger():
     assert calls == ["x"]
 
 
-def test_interaction_agent_publishes_awake_on_trigger():
+def test_interaction_agent_requests_awake_on_trigger_and_speaks_reply():
     bus = FakeBus()
-    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=FakeTTS())
+    calls = []
+
+    def on_awake(payload):
+        calls.append(payload)
+        return {"text": "ready", "ts": 1.0}
+
+    bus.respond(COGNITION_AWAKE_SERVICE, on_awake)
+    tts = FakeTTS()
+    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=tts)
     agent.setup()
     agent._hotkeys.trigger("trigger")
-    assert len(bus.published) == 1
-    topic, payload = bus.published[0]
-    assert topic == Topics.AWAKE
-    assert payload["source"] == "hotkey"
+    assert calls and calls[0]["source"] == "hotkey"
+    assert tts.said == ["ready"]
+    assert not any(topic == Topics.AWAKE for topic, _ in bus.published)
+    agent.teardown()
+
+
+def test_interaction_agent_reports_awake_timeout():
+    class TimeoutBus(FakeBus):
+        def request(self, service, payload, timeout_ms=2000):
+            raise BusTimeoutError("cognition offline")
+
+    bus = TimeoutBus()
+    tts = FakeTTS()
+    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=tts)
+    agent.setup()
+    agent._hotkeys.trigger("trigger")
+    assert tts.said == ["我现在连接不上 cognition。"]
     agent.teardown()
 
 

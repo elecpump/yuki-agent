@@ -17,6 +17,7 @@ from yuki.topics import Topics
 logger = get_logger("yuki.cognition.brain.hub")
 
 L2_UNAVAILABLE_NOTICE = "（云端暂时不可用，我先用本地模式陪你。）"
+COGNITION_AWAKE_SERVICE = "cognition.awake"
 
 
 def situation_provenance(situation: dict | None) -> dict:
@@ -93,25 +94,37 @@ class DecisionHub:
         if self._context_wrapper is not None:
             self._context_wrapper.update_situation(payload)
         self._context = payload
-        self._handle(TriggerKind.SITUATION, "", situation=payload)
+        self._handle(TriggerKind.SITUATION, "", situation=payload, publish_reply=True)
 
-    def on_awake(self, topic: str, payload: dict) -> None:
-        self._handle(TriggerKind.AWAKE, "")
+    def handle_awake_request(self, payload: dict) -> dict:
+        return self._handle(TriggerKind.AWAKE, "", publish_reply=False)
 
     def on_user_utterance(self, topic: str, payload: dict) -> None:
         text = payload.get("text", "")
-        self._handle(TriggerKind.UTTERANCE, text)
+        self._handle(TriggerKind.UTTERANCE, text, publish_reply=True)
 
 
-    def _handle(self, trigger: TriggerKind, text: str, situation: dict | None = None) -> None:
+    def _handle(
+        self,
+        trigger: TriggerKind,
+        text: str,
+        situation: dict | None = None,
+        *,
+        publish_reply: bool,
+    ) -> dict:
         # SUB worker 会把不同 topic 的 handler 派发到不同线程；
         # 决策状态（context/last_open_ts）必须串行。
         with self._decision_lock:
-            self._handle_locked(trigger, text, situation)
+            return self._handle_locked(trigger, text, situation, publish_reply=publish_reply)
 
     def _handle_locked(
-        self, trigger: TriggerKind, text: str, situation: dict | None = None
-    ) -> None:
+        self,
+        trigger: TriggerKind,
+        text: str,
+        situation: dict | None = None,
+        *,
+        publish_reply: bool,
+    ) -> dict:
         snapshot = None
         if self._context_wrapper is not None and self._projector is not None:
             snapshot = self._projector.build(self._context_wrapper)
@@ -151,9 +164,11 @@ class DecisionHub:
                 rendered = f"{rendered}{L2_UNAVAILABLE_NOTICE}" if spoke else L2_UNAVAILABLE_NOTICE
                 spoke = True
                 reason = "l2_unavailable_fallback"
+        reply_ts = time.time()
         if spoke:
-            self._last_open_ts = time.time()
-            self._bus.publish(Topics.REPLY, {"text": rendered, "ts": time.time()})
+            self._last_open_ts = reply_ts
+            if publish_reply:
+                self._bus.publish(Topics.REPLY, {"text": rendered, "ts": reply_ts})
 
         if self._context_wrapper is not None:
             if trigger == TriggerKind.UTTERANCE:
@@ -177,6 +192,7 @@ class DecisionHub:
             cooldown_state={"last_open_ts": self._last_open_ts},
             situation_provenance=situation_provenance(effective_situation),
         ).to_dict())
+        return {"text": rendered, "ts": reply_ts, "spoke": spoke, "reason": reason}
 
 
     def _try_l2(self, text: str, situation: dict | None, snapshot=None) -> tuple[str, bool, bool]:
@@ -217,7 +233,8 @@ class DecisionHub:
 
 def build_brain(bus, *, memory=None, registry=None, config=None,
                 intent_clf=None, emotion_clf=None, policy=None, bridge=None,
-                tuner=None, context=None, projector=None, sedimenter=None) -> DecisionHub:
+                tuner=None, context=None, projector=None, sedimenter=None,
+                register_awake_service: bool = True) -> DecisionHub:
     from yuki.config import Config
     cfg = config or Config.from_env()
     hub = DecisionHub(
@@ -236,7 +253,8 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         projector=projector,
         sedimenter=sedimenter,
     )
-    bus.subscribe(Topics.AWAKE, hub.on_awake)
+    if register_awake_service:
+        bus.respond(COGNITION_AWAKE_SERVICE, hub.handle_awake_request)
     bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance)
     bus.subscribe(Topics.SITUATION_UPDATE, hub.on_situation_update)
     return hub

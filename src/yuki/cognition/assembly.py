@@ -1,0 +1,208 @@
+import os
+import time
+from dataclasses import dataclass
+from typing import Callable
+
+from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE, DecisionHub, build_brain
+from yuki.cognition.brain.persona import generate as generate_persona
+from yuki.cognition.brain.policy import DecisionPolicy
+from yuki.cognition.brain.sedimenter import PreferenceSedimenter
+from yuki.cognition.brain.snapshots import PersonaStore
+from yuki.cognition.brain.soul import SoulStore
+from yuki.cognition.brain.tuner import FeedbackTuner
+from yuki.cognition.context.snapshot import ContextProjector
+from yuki.cognition.context.store import ShortTermTurnStore
+from yuki.cognition.context.working import WorkingContext
+from yuki.cognition.l2.bridge import CloudBridge
+from yuki.cognition.l2.client import CloudClient
+from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
+from yuki.config import Config
+from yuki.functions.memory_tools import register_memory_functions
+from yuki.functions.registry import FunctionRegistry
+from yuki.functions.service import register_function_services
+from yuki.functions.system import register_builtin_system
+from yuki.memory.manager import MemoryManager
+from yuki.memory.privacy import MemoryAccess, MemoryPurpose
+from yuki.memory.service import register_memory_services
+from yuki.memory.store import MemoryStore
+from yuki.topics import Topics
+
+
+@dataclass
+class CognitionRuntime:
+    pipeline: PerceptionPipeline
+    memory: MemoryManager
+    registry: FunctionRegistry
+    bridge: CloudBridge | None
+    hub: DecisionHub
+    context: WorkingContext
+    persona_store: PersonaStore
+    persona_refresh: Callable[[], None]
+
+    def handle_awake_request(self, payload: dict) -> dict:
+        payload = dict(payload or {})
+        payload.setdefault("source", "request")
+        payload.setdefault("ts", time.time())
+        if hasattr(self.pipeline, "on_awake"):
+            self.pipeline.on_awake(Topics.AWAKE, payload)
+        return self.hub.handle_awake_request(payload)
+
+
+class CognitionAssembler:
+    """Builds cognition runtime adapters behind one lifecycle seam."""
+
+    def __init__(
+        self,
+        config: Config,
+        bus,
+        *,
+        pipeline=None,
+        vlm=None,
+        stt=None,
+        frame_client=None,
+        sensitive_filter=None,
+        speech_buffer=None,
+        memory: MemoryManager | None = None,
+        registry: FunctionRegistry | None = None,
+    ) -> None:
+        self.config = config
+        self.bus = bus
+        self.pipeline = pipeline
+        self.vlm = vlm
+        self.stt = stt
+        self.frame_client = frame_client
+        self.sensitive_filter = sensitive_filter
+        self.speech_buffer = speech_buffer
+        self.memory = memory
+        self.registry = registry
+
+    def assemble(self) -> CognitionRuntime:
+        pipeline = self.pipeline or build_pipeline(
+            self.bus,
+            vlm=self.vlm,
+            sensitive_filter=self.sensitive_filter,
+            stt=self.stt,
+            frame_client=self.frame_client,
+            speech_buffer=self.speech_buffer,
+        )
+        pipeline.warmup_vlm()
+
+        memory = self.memory or MemoryManager(
+            MemoryStore(self.config.memory.db_path),
+            decay_base=self.config.memory.decay_base,
+            decay_lambda=self.config.memory.decay_lambda,
+            decay_threshold=self.config.memory.decay_threshold,
+            short_term_ttl_s=self.config.memory.short_term_ttl_s,
+            short_term_capacity=self.config.memory.short_term_capacity,
+        )
+        register_memory_services(self.bus, memory)
+
+        registry = self.registry or FunctionRegistry()
+        if self.registry is None:
+            register_builtin_system(registry)
+        register_memory_functions(registry, memory)
+        register_function_services(self.bus, registry)
+
+        bridge = self._build_bridge(registry)
+        persona_store = PersonaStore(
+            self.config.persona.snapshots_path,
+            max_versions=self.config.persona.max_versions,
+            persona_name=self.config.persona_name,
+        )
+        persona_refresh = self._build_persona_refresh(memory, bridge, persona_store)
+
+        policy = DecisionPolicy(
+            proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
+            proactive_enabled=self.config.brain.proactive_enabled,
+        )
+        tuner = FeedbackTuner(policy, SoulStore(self.config.soul.path, self.config.persona_name))
+        tuner.load_soul()
+        context = WorkingContext(
+            ShortTermTurnStore(memory),
+            snapshot_path=self.config.context.snapshot_path or None,
+        )
+        context.restore()
+        projector = ContextProjector(max_turns=self.config.context.max_turns)
+        sedimenter = PreferenceSedimenter(
+            memory,
+            tuner=tuner,
+            min_signals=self.config.sedimenter.min_signals,
+            confidence_threshold=self.config.sedimenter.confidence_threshold,
+            topic_engagement_threshold=self.config.sedimenter.topic_engagement_threshold,
+            on_sedimented=persona_refresh,
+        )
+        hub = build_brain(
+            self.bus,
+            memory=memory,
+            registry=registry,
+            config=self.config,
+            policy=policy,
+            bridge=bridge,
+            tuner=tuner,
+            context=context,
+            projector=projector,
+            sedimenter=sedimenter,
+            register_awake_service=False,
+        )
+
+        active = persona_store.active()
+        if bridge is not None:
+            bridge.set_system_prompt(
+                active.persona_prompt
+                if active
+                else self.config.persona.prompt.format(persona=self.config.persona_name)
+            )
+        persona_refresh()
+
+        runtime = CognitionRuntime(
+            pipeline=pipeline,
+            memory=memory,
+            registry=registry,
+            bridge=bridge,
+            hub=hub,
+            context=context,
+            persona_store=persona_store,
+            persona_refresh=persona_refresh,
+        )
+        self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
+        return runtime
+
+    def _build_bridge(self, registry: FunctionRegistry) -> CloudBridge | None:
+        if not self.config.cloud.enabled:
+            return None
+        return CloudBridge(
+            CloudClient(
+                base_url=self.config.cloud.base_url,
+                model=self.config.cloud.model,
+                api_key=os.environ.get(self.config.cloud.api_key_env),
+                timeout_s=self.config.cloud.timeout_s,
+            ),
+            registry=registry,
+            max_turns=self.config.cloud.max_turns,
+            persona_name=self.config.persona_name,
+        )
+
+    def _build_persona_refresh(
+        self,
+        memory: MemoryManager,
+        bridge: CloudBridge | None,
+        persona_store: PersonaStore,
+    ) -> Callable[[], None]:
+        def persona_refresh() -> None:
+            prefs = MemoryAccess(memory).list(
+                purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
+                memory_type="preference",
+            )
+            refine = bridge.refine_persona if self.config.persona.enable_llm_refine and bridge else None
+            prompt = generate_persona(
+                self.config.persona_name,
+                prefs,
+                {},
+                base_prompt=self.config.persona.prompt,
+                refine=refine,
+            )
+            snap = persona_store.save(prompt, {})
+            if snap is not None and bridge is not None:
+                bridge.set_system_prompt(snap.persona_prompt)
+
+        return persona_refresh

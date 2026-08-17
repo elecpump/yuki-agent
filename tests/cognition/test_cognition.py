@@ -1,4 +1,5 @@
 from yuki.cognition.agent import CognitionAgent
+from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.cognition.brain.classifier import Intent
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
@@ -16,8 +17,14 @@ class FakeL1:
 
 
 class FakePipeline:
+    def __init__(self):
+        self.awake_payloads = []
+
     def warmup_vlm(self):
         pass
+
+    def on_awake(self, topic, payload):
+        self.awake_payloads.append((topic, payload))
 
 
 class FakeVlm:
@@ -34,7 +41,6 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
     )
     agent.setup()
-    assert Topics.AWAKE in bus.subscriptions
     assert Topics.SITUATION_UPDATE in bus.subscriptions
     assert Topics.USER_UTTERANCE in bus.subscriptions
     assert all(service in bus.services for service in MEMORY_SERVICES)
@@ -42,7 +48,29 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
     assert bus.request(
         FUNCTIONS_CALL_SERVICE, {"name": "system.ping", "arguments": "{}"}
     )["ok"] is True
+    assert COGNITION_AWAKE_SERVICE in bus.services
     agent.teardown()
+
+
+def test_cognition_agent_awake_service_coordinates_pipeline_and_brain(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=pipeline,
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        result = bus.request(COGNITION_AWAKE_SERVICE, {"source": "hotkey", "ts": 0.0})
+        assert result["text"]
+        assert pipeline.awake_payloads == [
+            (Topics.AWAKE, {"source": "hotkey", "ts": 0.0})
+        ]
+        assert not any(topic == Topics.REPLY for topic, _ in bus.published)
+    finally:
+        agent.teardown()
 
 
 def test_cognition_agent_health_includes_memory(tmp_path):
@@ -204,7 +232,7 @@ def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
             return {"choices": [{"message": {"content": "精修: " + messages[-1]["content"]}}]}
 
     fake = FakeCloudClient()
-    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
 
     bus = FakeBus()
     agent = CognitionAgent(
@@ -268,7 +296,7 @@ def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, mon
             return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
 
     fake = FakeCloudClient()
-    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
 
     memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
     memory.write("preference", "公开偏好", sensitivity=0)
@@ -304,7 +332,7 @@ def test_persona_refresh_includes_safe_explicit_sedimented_preference(tmp_path, 
             return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
 
     fake = FakeCloudClient()
-    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
 
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
@@ -336,7 +364,7 @@ def test_persona_refresh_excludes_high_sensitive_explicit_sedimented_preference(
             return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
 
     fake = FakeCloudClient()
-    monkeypatch.setattr("yuki.cognition.agent.CloudClient", lambda **kw: fake)
+    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
 
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
