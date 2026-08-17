@@ -193,8 +193,12 @@ class CognitionAgent(ProcessAgent):
     def _health_vlm(self) -> HealthStatus:
         vlm = getattr(self._pipeline, "_vlm", None) if self._pipeline else None
         if vlm is None:
-            return HealthStatus(False, {"reason": "no_vlm"})
-        return HealthStatus(vlm._loaded, {"loaded": vlm._loaded})
+            return HealthStatus(True, {"loaded": False, "degraded": True, "reason": "no_vlm"})
+        loaded = bool(getattr(vlm, "_loaded", False))
+        detail = {"loaded": loaded, "degraded": not loaded}
+        if not loaded:
+            detail["reason"] = "loading"
+        return HealthStatus(True, detail)
 
     def _health_stt(self) -> HealthStatus:
         stt = getattr(self._pipeline, "_stt", None) if self._pipeline else None

@@ -20,6 +20,11 @@ class FakePipeline:
         pass
 
 
+class FakeVlm:
+    def __init__(self, loaded=False):
+        self._loaded = loaded
+
+
 def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
@@ -219,6 +224,38 @@ def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
         assert fake.calls  # setup 的 session-init refresh 已触发精修
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_vlm_health_degrades_while_loading(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = FakeVlm(loaded=False)
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=pipeline,
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+
+    status = agent.health_components()["vlm"]()
+
+    assert status.ok is True
+    assert status.detail == {"loaded": False, "degraded": True, "reason": "loading"}
+
+
+def test_cognition_agent_vlm_health_degrades_when_unavailable(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+
+    status = agent.health_components()["vlm"]()
+
+    assert status.ok is True
+    assert status.detail == {"loaded": False, "degraded": True, "reason": "no_vlm"}
 
 
 def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, monkeypatch):
