@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -212,3 +214,12 @@ def test_persona_env_override(monkeypatch):
     config = Config.load(None)
     assert config.persona.max_versions == 100
     assert config.persona.enable_llm_refine is True
+
+
+def test_example_config_cloud_points_to_deepseek():
+    example = Path(__file__).resolve().parents[1] / "config.example.yaml"
+    config = Config.load(example)
+    assert config.cloud.enabled is False
+    assert config.cloud.base_url == "https://api.deepseek.com/v1"
+    assert config.cloud.model == "deepseek-v4-flash"
+    assert config.cloud.api_key_env == "YUKI_CLOUD_API_KEY"
