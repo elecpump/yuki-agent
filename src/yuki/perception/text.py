@@ -115,7 +115,6 @@ class TextStore:
                     continue
                 if _int_or_none(item.get("frame_id")) == frame_id:
                     return dict(item)
-            return None
         for item in items:
             if ttl_s and now - float(item.get("ts", 0.0)) > ttl_s:
                 continue
@@ -208,6 +207,7 @@ class OcrTextProvider:
         max_chars: int = 50000,
     ) -> None:
         self._frame_store = frame_store
+        self.timeout_ms = timeout_ms
         self._timeout_s = timeout_ms / 1000.0
         self._max_chars = max_chars
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="yuki-ocr")
@@ -290,6 +290,12 @@ class TextExtractorChain:
         self._class_name_for_hwnd = class_name_for_hwnd
         self._title_for_hwnd = title_for_hwnd
         self._last_provider = ""
+        self._provider_timeout_s = config.provider_timeout_ms / 1000.0
+        self._provider_executor = ThreadPoolExecutor(
+            max_workers=max(1, len(providers)),
+            thread_name_prefix="yuki-text-provider",
+        )
+        self._provider_timeouts: dict[str, int] = {}
 
     def extract(self, payload: dict, frame: dict | None = None) -> dict:
         payload = dict(payload or {})
@@ -307,7 +313,7 @@ class TextExtractorChain:
                 max_chars=self._config.max_chars,
             )
         for provider in self._providers:
-            result = provider.extract(payload, frame=frame)
+            result = self._extract_with_timeout(provider, payload, frame)
             if result is None:
                 continue
             if result.get("text") or result.get("sensitive") or result.get("degraded"):
@@ -320,6 +326,29 @@ class TextExtractorChain:
             reason="no_text",
             max_chars=self._config.max_chars,
         )
+
+    def _extract_with_timeout(
+        self,
+        provider: TextProvider,
+        payload: dict,
+        frame: dict | None,
+    ) -> dict | None:
+        timeout_s = getattr(provider, "timeout_ms", None)
+        timeout_s = (
+            float(timeout_s) / 1000.0
+            if timeout_s is not None
+            else self._provider_timeout_s
+        )
+        future = self._provider_executor.submit(provider.extract, payload, frame)
+        try:
+            return future.result(timeout=timeout_s)
+        except TimeoutError:
+            future.cancel()
+            self._provider_timeouts[provider.name] = (
+                self._provider_timeouts.get(provider.name, 0) + 1
+            )
+            logger.warning("text provider timed out", provider=provider.name)
+            return None
 
     def _window_identity(self, payload: dict) -> tuple[str, str]:
         class_name = str(payload.get("class_name", "") or "")
@@ -357,6 +386,7 @@ class TextExtractorChain:
             "ok": True,
             "providers": [provider.health() for provider in self._providers],
             "last_provider": self._last_provider,
+            "provider_timeouts": dict(self._provider_timeouts),
         }
 
 
