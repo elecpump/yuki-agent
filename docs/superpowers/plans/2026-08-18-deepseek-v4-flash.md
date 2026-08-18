@@ -81,7 +81,7 @@ Expected: PASS
 - [ ] **Step 5: Run the full suite to confirm no regressions**
 
 Run: `pytest -q`
-Expected: 501 passed (existing `test_cloud_defaults` in tests/test_config.py:139 still passes because code defaults were NOT changed).
+Expected: 501 passed (existing `test_cloud_defaults` in tests/test_config.py:141 still passes because code defaults were NOT changed).
 
 - [ ] **Step 6: Commit**
 

@@ -8,3 +8,4 @@ logs/
 .worktrees/
 data/
 .codegraph/
+config.yaml
