@@ -16,6 +16,7 @@ from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
+from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
@@ -80,7 +81,7 @@ class CognitionAssembler:
     def assemble(self) -> CognitionRuntime:
         pipeline = self.pipeline or build_pipeline(
             self.bus,
-            vlm=self.vlm,
+            vlm=self.vlm or self._build_vlm(),
             sensitive_filter=self.sensitive_filter,
             stt=self.stt,
             frame_client=self.frame_client,
@@ -187,6 +188,10 @@ class CognitionAssembler:
             vector_weight=self.config.memory.vector_weight,
             confidence_weight=self.config.memory.confidence_weight,
         )
+
+    def _build_vlm(self) -> VisualUnderstander:
+        vlm_cfg = self.config.vlm
+        return VisualUnderstander(model_id=vlm_cfg.model, cache_dir=vlm_cfg.cache_dir)
 
     def _build_bridge(self, registry: FunctionRegistry) -> CloudBridge | None:
         if not self.config.cloud.enabled:

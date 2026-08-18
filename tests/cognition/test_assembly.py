@@ -73,3 +73,17 @@ def test_cognition_assembler_wires_vector_memory_from_config(tmp_path):
     finally:
         runtime.context.close()
         runtime.memory.close()
+
+
+def test_cognition_assembler_builds_vlm_from_config(tmp_path):
+    bus = FakeBus()
+    assembler = CognitionAssembler(
+        Config(
+            vlm={"model": "Qwen/Qwen3-VL-8B-Instruct", "cache_dir": "D:/hf"},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+    )
+    vlm = assembler._build_vlm()
+    assert vlm._model_id == "Qwen/Qwen3-VL-8B-Instruct"
+    assert vlm._cache_dir == "D:/hf"
