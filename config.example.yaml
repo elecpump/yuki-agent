@@ -45,6 +45,10 @@ text:
 brain:
   proactive_cooldown_s: 120.0
   proactive_enabled: true
+vlm:
+  enabled: true
+  model: Qwen/Qwen3-VL-8B-Instruct
+  cache_dir: ""
 cloud:
   enabled: false
   base_url: https://api.deepseek.com/v1

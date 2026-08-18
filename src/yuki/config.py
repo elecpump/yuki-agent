@@ -64,6 +64,12 @@ class BrainConfig(BaseModel):
     proactive_enabled: bool = True
 
 
+class VlmConfig(BaseModel):
+    enabled: bool = True
+    model: str = "Qwen/Qwen3-VL-8B-Instruct"
+    cache_dir: str = ""
+
+
 class CloudConfig(BaseModel):
     enabled: bool = False
     base_url: str = "https://api.openai.com/v1"
@@ -113,6 +119,7 @@ class Config(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     text: TextConfig = Field(default_factory=TextConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
+    vlm: VlmConfig = Field(default_factory=VlmConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
@@ -139,6 +146,7 @@ class Config(BaseModel):
             ("memory", MemoryConfig),
             ("text", TextConfig),
             ("brain", BrainConfig),
+            ("vlm", VlmConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
             ("context", ContextConfig),

@@ -223,3 +223,20 @@ def test_example_config_cloud_points_to_deepseek():
     assert config.cloud.base_url == "https://api.deepseek.com/v1"
     assert config.cloud.model == "deepseek-v4-flash"
     assert config.cloud.api_key_env == "YUKI_CLOUD_API_KEY"
+
+
+def test_vlm_defaults():
+    config = Config()
+    assert config.vlm.enabled is True
+    assert config.vlm.model == "Qwen/Qwen3-VL-8B-Instruct"
+    assert config.vlm.cache_dir == ""
+
+
+def test_vlm_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_VLM_ENABLED", "false")
+    monkeypatch.setenv("YUKI_VLM_MODEL", "Qwen/Qwen3-VL-8B")
+    monkeypatch.setenv("YUKI_VLM_CACHE_DIR", "D:/hf")
+    config = Config.load(None)
+    assert config.vlm.enabled is False
+    assert config.vlm.model == "Qwen/Qwen3-VL-8B"
+    assert config.vlm.cache_dir == "D:/hf"
