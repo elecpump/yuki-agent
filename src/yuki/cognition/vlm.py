@@ -15,13 +15,23 @@ _PROMPT = (
 class VisualUnderstander:
     """VLM 读屏 → 阅读情境，带 context cache。"""
 
-    def __init__(self, model=None, processor=None, cache: ContextCache | None = None) -> None:
+    def __init__(
+        self,
+        model=None,
+        processor=None,
+        cache: ContextCache | None = None,
+        *,
+        model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
+        cache_dir: str = "",
+    ) -> None:
         self._model = model
         self._processor = processor
         self._cache = cache or ContextCache()
         self._loaded = model is not None and processor is not None
         self._load_failed = False
         self._load_lock = threading.Lock()
+        self._model_id = model_id
+        self._cache_dir = cache_dir
 
     def _load(self) -> None:
         if self._loaded:
@@ -32,11 +42,26 @@ class VisualUnderstander:
             if self._load_failed:
                 raise RuntimeError("vlm load previously failed")
             try:
-                from transformers import AutoModel, AutoProcessor
-                self._model = AutoModel.from_pretrained(
-                    "Qwen/Qwen3-VL-8B", torch_dtype="auto", device_map="auto", load_in_4bit=True
+                from transformers import (
+                    AutoProcessor,
+                    AutoModelForImageTextToText,
+                    BitsAndBytesConfig,
                 )
-                self._processor = AutoProcessor.from_pretrained("Qwen/Qwen3-VL-8B")
+                quant = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype="float16",
+                )
+                self._model = AutoModelForImageTextToText.from_pretrained(
+                    self._model_id,
+                    cache_dir=self._cache_dir or None,
+                    torch_dtype="auto",
+                    device_map="auto",
+                    quantization_config=quant,
+                )
+                self._processor = AutoProcessor.from_pretrained(
+                    self._model_id, cache_dir=self._cache_dir or None
+                )
                 self._loaded = True
             except Exception:
                 self._load_failed = True

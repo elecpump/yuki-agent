@@ -93,7 +93,11 @@ def test_load_failure_is_remembered(monkeypatch):
             calls.append((args, kwargs))
             raise RuntimeError("missing model")
 
-    fake_transformers = types.SimpleNamespace(AutoModel=FakeAutoModel, AutoProcessor=object)
+    fake_transformers = types.SimpleNamespace(
+        AutoModelForImageTextToText=FakeAutoModel,
+        AutoProcessor=object,
+        BitsAndBytesConfig=lambda **kw: {"cfg": kw},
+    )
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
     vlm = VisualUnderstander()
@@ -104,3 +108,40 @@ def test_load_failure_is_remembered(monkeypatch):
     assert first["degraded"] is True
     assert second["degraded"] is True
     assert len(calls) == 1
+
+
+def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):
+    import sys
+
+    calls = {}
+
+    class FakeAuto:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.update({"args": args, "kwargs": kwargs})
+            return object()
+
+    class FakeProcessor:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.update({"processor_args": args, "processor_kwargs": kwargs})
+            return object()
+
+    fake_transformers = types.SimpleNamespace(
+        AutoModelForImageTextToText=FakeAuto,
+        AutoProcessor=FakeProcessor,
+        BitsAndBytesConfig=lambda **kw: {"cfg": kw},
+    )
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    vlm = VisualUnderstander(
+        model_id="Qwen/Qwen3-VL-8B-Instruct", cache_dir="D:/hf"
+    )
+    vlm._load()
+
+    assert vlm._loaded is True
+    model_kwargs = calls["kwargs"]
+    assert model_kwargs["cache_dir"] == "D:/hf"
+    assert model_kwargs["quantization_config"] == {"cfg": {"load_in_4bit": True,
+        "bnb_4bit_quant_type": "nf4", "bnb_4bit_compute_dtype": "float16"}}
+    assert calls["processor_kwargs"]["cache_dir"] == "D:/hf"
