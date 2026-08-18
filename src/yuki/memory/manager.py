@@ -4,7 +4,11 @@ import math
 import time
 from collections import deque
 
+from yuki.logger import get_logger
+from yuki.memory.embedding import MemoryEmbeddingIndexer
 from yuki.memory.store import MemoryStore
+
+logger = get_logger("yuki.memory.manager")
 
 
 class Reflector:
@@ -53,11 +57,23 @@ class MemoryManager:
         short_term_ttl_s: float = 1800,
         short_term_capacity: int = 50,
         short_term: ShortTermMemory | None = None,
+        embedding_indexer: MemoryEmbeddingIndexer | None = None,
+        vector_enabled: bool = False,
+        vector_candidates: int = 30,
+        lexical_weight: float = 0.45,
+        vector_weight: float = 0.45,
+        confidence_weight: float = 0.10,
     ) -> None:
         self._store = store
         self._base = decay_base
         self._lam = decay_lambda
         self._threshold = decay_threshold
+        self._embedding_indexer = embedding_indexer
+        self._vector_enabled = vector_enabled
+        self._vector_candidates = vector_candidates
+        self._lexical_weight = lexical_weight
+        self._vector_weight = vector_weight
+        self._confidence_weight = confidence_weight
         self._short_term = short_term or ShortTermMemory(
             ttl_s=short_term_ttl_s, capacity=short_term_capacity,
         )
@@ -72,11 +88,23 @@ class MemoryManager:
         source: str = "cli",
         metadata: dict | None = None,
     ) -> int:
-        return self._store.create(
+        memory_id = self._store.create(
             memory_type, content,
             confidence=confidence, sensitivity=sensitivity,
             source=source, metadata=metadata,
         )
+        if self._vector_enabled and self._embedding_indexer is not None:
+            memory = self._store.get(memory_id)
+            if memory is not None:
+                try:
+                    self._embedding_indexer.upsert(memory)
+                except Exception:
+                    logger.warning(
+                        "memory embedding upsert failed",
+                        memory_id=memory_id,
+                        exc_info=True,
+                    )
+        return memory_id
 
     def get(self, memory_id: int) -> dict | None:
         mem = self._store.get(memory_id)
@@ -102,6 +130,41 @@ class MemoryManager:
         min_sensitivity: int = 0,
         touch: bool = True,
     ) -> list[dict]:
+        if not self._vector_enabled or self._embedding_indexer is None:
+            return self._query_lexical(
+                text,
+                memory_type=memory_type,
+                top_k=top_k,
+                min_sensitivity=min_sensitivity,
+                touch=touch,
+            )
+        try:
+            return self._query_hybrid(
+                text,
+                memory_type=memory_type,
+                top_k=top_k,
+                min_sensitivity=min_sensitivity,
+                touch=touch,
+            )
+        except Exception:
+            logger.warning("vector memory query failed, falling back to lexical", exc_info=True)
+            return self._query_lexical(
+                text,
+                memory_type=memory_type,
+                top_k=top_k,
+                min_sensitivity=min_sensitivity,
+                touch=touch,
+            )
+
+    def _query_lexical(
+        self,
+        text: str,
+        *,
+        memory_type: str | None,
+        top_k: int,
+        min_sensitivity: int,
+        touch: bool,
+    ) -> list[dict]:
         now = time.time()
         hits = self._store.search(
             text, memory_type=memory_type, top_k=top_k * 3, min_sensitivity=min_sensitivity,
@@ -116,6 +179,64 @@ class MemoryManager:
             for mem in returned:
                 self._store.touch(mem["id"])
         return returned
+
+    def _query_hybrid(
+        self,
+        text: str,
+        *,
+        memory_type: str | None,
+        top_k: int,
+        min_sensitivity: int,
+        touch: bool,
+    ) -> list[dict]:
+        now = time.time()
+        candidate_k = max(int(self._vector_candidates), int(top_k) * 3)
+        lexical_hits = self._store.search(
+            text, memory_type=memory_type, top_k=candidate_k, min_sensitivity=min_sensitivity,
+        )
+        vector_hits = self._embedding_indexer.search(
+            text, memory_type=memory_type, top_k=candidate_k, min_sensitivity=min_sensitivity,
+        )
+        by_id: dict[int, dict] = {}
+        lexical_scores: dict[int, float] = {}
+        vector_scores: dict[int, float] = {}
+        for mem, score in lexical_hits:
+            by_id[mem["id"]] = mem
+            lexical_scores[mem["id"]] = max(0.0, min(float(score), 1.0))
+        for mem, score in vector_hits:
+            by_id.setdefault(mem["id"], mem)
+            vector_scores[mem["id"]] = max(0.0, min(float(score), 1.0))
+
+        scored: list[dict] = []
+        for memory_id, mem in by_id.items():
+            rank = (
+                self._lexical_weight * lexical_scores.get(memory_id, 0.0)
+                + self._vector_weight * vector_scores.get(memory_id, 0.0)
+                + self._confidence_weight * float(mem.get("confidence", 0.0))
+            )
+            mem["score"] = rank * self.decay_weight(mem, now)
+            mem["lexical_score"] = lexical_scores.get(memory_id, 0.0)
+            mem["vector_score"] = vector_scores.get(memory_id, 0.0)
+            scored.append(mem)
+        scored.sort(key=lambda m: m["score"], reverse=True)
+        returned = scored[:top_k]
+        if touch:
+            for mem in returned:
+                self._store.touch(mem["id"])
+        return returned
+
+    def rebuild_embeddings(
+        self,
+        *,
+        memory_type: str | None = None,
+        min_sensitivity: int = 0,
+    ) -> int:
+        if self._embedding_indexer is None:
+            return 0
+        return self._embedding_indexer.rebuild(
+            memory_type=memory_type,
+            min_sensitivity=min_sensitivity,
+        )
 
     def decay_weight(self, memory: dict, now: float | None = None) -> float:
         now = time.time() if now is None else now

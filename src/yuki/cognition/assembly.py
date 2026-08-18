@@ -21,6 +21,7 @@ from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
 from yuki.functions.service import register_function_services
 from yuki.functions.system import register_builtin_system
+from yuki.memory.embedding import build_embedding_indexer
 from yuki.memory.manager import MemoryManager
 from yuki.memory.privacy import MemoryAccess, MemoryPurpose
 from yuki.memory.service import register_memory_services
@@ -89,14 +90,7 @@ class CognitionAssembler:
         )
         pipeline.warmup_vlm()
 
-        memory = self.memory or MemoryManager(
-            MemoryStore(self.config.memory.db_path),
-            decay_base=self.config.memory.decay_base,
-            decay_lambda=self.config.memory.decay_lambda,
-            decay_threshold=self.config.memory.decay_threshold,
-            short_term_ttl_s=self.config.memory.short_term_ttl_s,
-            short_term_capacity=self.config.memory.short_term_capacity,
-        )
+        memory = self.memory or self._build_memory()
         register_memory_services(self.bus, memory)
 
         registry = self.registry or FunctionRegistry()
@@ -168,6 +162,31 @@ class CognitionAssembler:
         )
         self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
         return runtime
+
+    def _build_memory(self) -> MemoryManager:
+        store = MemoryStore(self.config.memory.db_path)
+        embedding_indexer = None
+        if self.config.memory.vector_enabled:
+            embedding_indexer = build_embedding_indexer(
+                store,
+                provider_name=self.config.memory.embedding_provider,
+                model=self.config.memory.embedding_model,
+                dimension=self.config.memory.embedding_dimension,
+            )
+        return MemoryManager(
+            store,
+            decay_base=self.config.memory.decay_base,
+            decay_lambda=self.config.memory.decay_lambda,
+            decay_threshold=self.config.memory.decay_threshold,
+            short_term_ttl_s=self.config.memory.short_term_ttl_s,
+            short_term_capacity=self.config.memory.short_term_capacity,
+            embedding_indexer=embedding_indexer,
+            vector_enabled=self.config.memory.vector_enabled,
+            vector_candidates=self.config.memory.vector_candidates,
+            lexical_weight=self.config.memory.lexical_weight,
+            vector_weight=self.config.memory.vector_weight,
+            confidence_weight=self.config.memory.confidence_weight,
+        )
 
     def _build_bridge(self, registry: FunctionRegistry) -> CloudBridge | None:
         if not self.config.cloud.enabled:

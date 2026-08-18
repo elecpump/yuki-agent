@@ -1,5 +1,6 @@
 import pytest
 
+from yuki.memory.embedding import encode_vector
 from yuki.memory.store import MemoryError, MemoryStore
 
 
@@ -37,6 +38,64 @@ def test_delete_returns_rowcount(store):
     mem_id = store.create("preference", "a")
     assert store.delete(mem_id) is True
     assert store.delete(mem_id) is False
+
+
+def test_delete_cascades_embeddings(store):
+    mem_id = store.create("preference", "vector memory")
+    store.upsert_embedding(
+        mem_id,
+        provider="hashing",
+        model="hashing-v1",
+        dimension=2,
+        embedding=encode_vector([1.0, 0.0]),
+        content_hash="hash1",
+    )
+
+    assert store.embeddings_count() == 1
+    assert store.delete(mem_id) is True
+    assert store.embeddings_count() == 0
+
+
+def test_wipe_clears_embeddings(store):
+    mem_id = store.create("preference", "vector memory")
+    store.upsert_embedding(
+        mem_id,
+        provider="hashing",
+        model="hashing-v1",
+        dimension=2,
+        embedding=encode_vector([1.0, 0.0]),
+        content_hash="hash1",
+    )
+
+    assert store.wipe() == 1
+    assert store.embeddings_count() == 0
+
+
+def test_embeddings_are_keyed_by_provider_model_and_dimension(store):
+    mem_id = store.create("preference", "vector memory")
+    store.upsert_embedding(
+        mem_id,
+        provider="hashing",
+        model="hashing-v1",
+        dimension=2,
+        embedding=encode_vector([1.0, 0.0]),
+        content_hash="hash1",
+    )
+    store.upsert_embedding(
+        mem_id,
+        provider="hashing",
+        model="hashing-v2",
+        dimension=2,
+        embedding=encode_vector([0.0, 1.0]),
+        content_hash="hash1",
+    )
+
+    assert store.embeddings_count() == 2
+    v1_rows = store.vector_rows(provider="hashing", model="hashing-v1", dimension=2)
+    v2_rows = store.vector_rows(provider="hashing", model="hashing-v2", dimension=2)
+    assert len(v1_rows) == 1
+    assert len(v2_rows) == 1
+    assert "embedding" not in v1_rows[0][0]
 
 
 def test_delete_decayed_removes_only_eligible_old_memories(store):

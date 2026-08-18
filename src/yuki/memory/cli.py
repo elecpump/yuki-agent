@@ -2,14 +2,46 @@ import argparse
 import json
 import sys
 
+from yuki.memory.embedding import build_embedding_indexer
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryError, MemoryStore
 
 
-def build_manager(db_path: str, decay_base=1.0, decay_lambda=0.1, decay_threshold=0.02) -> MemoryManager:
+def build_manager(
+    db_path: str,
+    decay_base=1.0,
+    decay_lambda=0.1,
+    decay_threshold=0.02,
+    *,
+    vector_enabled: bool = False,
+    embedding_provider: str = "hashing",
+    embedding_model: str = "hashing-v1",
+    embedding_dimension: int = 384,
+    vector_candidates: int = 30,
+    lexical_weight: float = 0.45,
+    vector_weight: float = 0.45,
+    confidence_weight: float = 0.10,
+) -> MemoryManager:
+    store = MemoryStore(db_path)
+    embedding_indexer = None
+    if vector_enabled:
+        embedding_indexer = build_embedding_indexer(
+            store,
+            provider_name=embedding_provider,
+            model=embedding_model,
+            dimension=embedding_dimension,
+        )
     return MemoryManager(
-        MemoryStore(db_path),
-        decay_base=decay_base, decay_lambda=decay_lambda, decay_threshold=decay_threshold,
+        store,
+        decay_base=decay_base,
+        decay_lambda=decay_lambda,
+        decay_threshold=decay_threshold,
+        embedding_indexer=embedding_indexer,
+        vector_enabled=vector_enabled,
+        vector_candidates=vector_candidates,
+        lexical_weight=lexical_weight,
+        vector_weight=vector_weight,
+        confidence_weight=confidence_weight,
     )
 
 
@@ -91,12 +123,29 @@ def _cmd_short_term(args, manager: MemoryManager) -> None:
         print(f"[{item['kind']}] {item['content']}")
 
 
+def _cmd_embeddings_rebuild(args, manager: MemoryManager) -> None:
+    print(
+        manager.rebuild_embeddings(
+            memory_type=args.type,
+            min_sensitivity=args.min_sensitivity,
+        )
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="yuki.memory", description="Yuki memory store admin")
     parser.add_argument("--db", default="data/yuki.db", help="SQLite db path")
     parser.add_argument("--decay-base", type=float, default=1.0)
     parser.add_argument("--decay-lambda", type=float, default=0.1)
     parser.add_argument("--decay-threshold", type=float, default=0.02)
+    parser.add_argument("--vector-enabled", action="store_true")
+    parser.add_argument("--embedding-provider", default="hashing")
+    parser.add_argument("--embedding-model", default="hashing-v1")
+    parser.add_argument("--embedding-dimension", type=int, default=384)
+    parser.add_argument("--vector-candidates", type=int, default=30)
+    parser.add_argument("--lexical-weight", type=float, default=0.45)
+    parser.add_argument("--vector-weight", type=float, default=0.45)
+    parser.add_argument("--confidence-weight", type=float, default=0.10)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list")
@@ -141,9 +190,30 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("short-term")
     p.set_defaults(func=_cmd_short_term)
 
+    p = sub.add_parser("embeddings")
+    emb_sub = p.add_subparsers(dest="embeddings_command", required=True)
+
+    p = emb_sub.add_parser("rebuild")
+    p.add_argument("--type")
+    p.add_argument("--min-sensitivity", type=int, default=0)
+    p.set_defaults(func=_cmd_embeddings_rebuild)
+
     args = parser.parse_args(argv)
     try:
-        manager = build_manager(args.db, args.decay_base, args.decay_lambda, args.decay_threshold)
+        manager = build_manager(
+            args.db,
+            args.decay_base,
+            args.decay_lambda,
+            args.decay_threshold,
+            vector_enabled=args.vector_enabled,
+            embedding_provider=args.embedding_provider,
+            embedding_model=args.embedding_model,
+            embedding_dimension=args.embedding_dimension,
+            vector_candidates=args.vector_candidates,
+            lexical_weight=args.lexical_weight,
+            vector_weight=args.vector_weight,
+            confidence_weight=args.confidence_weight,
+        )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

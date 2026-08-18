@@ -69,3 +69,11 @@ def test_wipe_force_skips_prompt(db, monkeypatch, capsys):
 def test_short_term_view_is_empty(db, capsys):
     assert main(["--db", db, "short-term"]) == 0
     assert capsys.readouterr().out == ""
+
+
+def test_embeddings_rebuild_indexes_existing_memories(db, capsys):
+    assert main(["--db", db, "add", "--type", "preference", "--content", "vector cli memory"]) == 0
+    assert main(["--db", db, "--vector-enabled", "embeddings", "rebuild"]) == 0
+
+    out = capsys.readouterr().out.strip().splitlines()
+    assert out[-1] == "1"

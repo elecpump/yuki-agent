@@ -39,6 +39,24 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
         "content, content='memories', content_rowid='id', tokenize='trigram')"
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS memory_embeddings (
+            memory_id     INTEGER NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+            provider      TEXT NOT NULL,
+            model         TEXT NOT NULL,
+            dimension     INTEGER NOT NULL,
+            embedding     BLOB NOT NULL,
+            content_hash  TEXT NOT NULL,
+            updated_at    REAL NOT NULL,
+            PRIMARY KEY (memory_id, provider, model, dimension)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model "
+        "ON memory_embeddings(provider, model, dimension)"
+    )
     conn.executescript(
         """
         CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
@@ -73,6 +91,7 @@ class MemoryStore:
         self._conn = sqlite3.connect(
             str(self._path), check_same_thread=False, timeout=5.0
         )
+        self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.row_factory = sqlite3.Row
@@ -184,6 +203,92 @@ class MemoryStore:
             self._conn.commit()
         return cur.rowcount > 0
 
+    def upsert_embedding(
+        self,
+        memory_id: int,
+        *,
+        provider: str,
+        model: str,
+        dimension: int,
+        embedding: bytes,
+        content_hash: str,
+        updated_at: float | None = None,
+    ) -> None:
+        now = time.time() if updated_at is None else updated_at
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO memory_embeddings (
+                    memory_id, provider, model, dimension, embedding, content_hash, updated_at
+                )
+                VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(memory_id, provider, model, dimension) DO UPDATE SET
+                    embedding = excluded.embedding,
+                    content_hash = excluded.content_hash,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    int(memory_id),
+                    provider,
+                    model,
+                    int(dimension),
+                    embedding,
+                    content_hash,
+                    now,
+                ),
+            )
+            self._conn.commit()
+
+    def embedding_metadata(
+        self,
+        memory_id: int,
+        *,
+        provider: str,
+        model: str,
+        dimension: int,
+    ) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                """
+                SELECT memory_id, provider, model, dimension, content_hash, updated_at
+                FROM memory_embeddings
+                WHERE memory_id = ? AND provider = ? AND model = ? AND dimension = ?
+                """,
+                (int(memory_id), provider, model, int(dimension)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def vector_rows(
+        self,
+        *,
+        provider: str,
+        model: str,
+        dimension: int,
+        memory_type: str | None = None,
+        min_sensitivity: int = 0,
+    ) -> list[tuple[dict, bytes]]:
+        sql = (
+            "SELECT m.*, e.embedding FROM memory_embeddings e "
+            "JOIN memories m ON m.id = e.memory_id "
+            "WHERE e.provider = ? AND e.model = ? AND e.dimension = ? AND m.sensitivity >= ?"
+        )
+        params: list = [provider, model, int(dimension), int(min_sensitivity)]
+        if memory_type is not None:
+            sql += " AND m.memory_type = ?"
+            params.append(memory_type)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        results = []
+        for row in rows:
+            memory = self._row(row)
+            embedding = bytes(memory.pop("embedding"))
+            results.append((memory, embedding))
+        return results
+
+    def embeddings_count(self) -> int:
+        with self._lock:
+            return int(self._conn.execute("SELECT count(*) FROM memory_embeddings").fetchone()[0])
+
     def search(
         self,
         text: str,
@@ -234,6 +339,7 @@ class MemoryStore:
     def wipe(self) -> int:
         with self._lock:
             n = self._conn.execute("SELECT count(*) FROM memories").fetchone()[0]
+            self._conn.execute("DELETE FROM memory_embeddings")
             self._conn.execute("DELETE FROM memories")
             self._conn.execute("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')")
             self._conn.commit()

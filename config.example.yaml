@@ -23,6 +23,14 @@ memory:
   short_term_ttl_s: 1800
   short_term_capacity: 50
   cleanup_interval_s: 300.0
+  vector_enabled: false
+  embedding_provider: hashing
+  embedding_model: hashing-v1
+  embedding_dimension: 384
+  vector_candidates: 30
+  lexical_weight: 0.45
+  vector_weight: 0.45
+  confidence_weight: 0.10
 text:
   enabled: true
   dom_enabled: true

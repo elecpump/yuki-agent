@@ -36,6 +36,14 @@ class MemoryConfig(BaseModel):
     short_term_ttl_s: float = Field(1800, ge=1)
     short_term_capacity: int = Field(50, ge=1)
     cleanup_interval_s: float = Field(300.0, ge=10.0)
+    vector_enabled: bool = False
+    embedding_provider: str = "hashing"
+    embedding_model: str = "hashing-v1"
+    embedding_dimension: int = Field(384, ge=1)
+    vector_candidates: int = Field(30, ge=1)
+    lexical_weight: float = Field(0.45, ge=0.0)
+    vector_weight: float = Field(0.45, ge=0.0)
+    confidence_weight: float = Field(0.10, ge=0.0)
 
 
 class TextConfig(BaseModel):

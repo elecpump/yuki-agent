@@ -2,6 +2,7 @@ import time
 
 import pytest
 
+from yuki.memory.embedding import HashingEmbeddingProvider, MemoryEmbeddingIndexer
 from yuki.memory.manager import MemoryManager, Reflector, ShortTermMemory
 from yuki.memory.store import MemoryStore
 
@@ -43,6 +44,93 @@ def test_query_only_touches_returned_results(manager):
     assert manager._store.get(returned)["access_count"] == 1
     for memory_id in not_returned:
         assert manager._store.get(memory_id)["access_count"] == 0
+
+
+def test_vector_disabled_preserves_lexical_query_shape(tmp_path):
+    class RaisingIndexer:
+        def upsert(self, memory):
+            raise AssertionError("disabled vector path should not index writes")
+
+        def search(self, text, *, top_k, memory_type=None, min_sensitivity=0):
+            raise AssertionError("disabled vector path should not search")
+
+    m = MemoryManager(
+        MemoryStore(tmp_path / "mem.db"),
+        embedding_indexer=RaisingIndexer(),
+        vector_enabled=False,
+    )
+    try:
+        m.write("preference", "needle memory", confidence=0.95)
+        results = m.query("needle", top_k=1)
+        assert results[0]["content"] == "needle memory"
+        assert "lexical_score" not in results[0]
+        assert "vector_score" not in results[0]
+    finally:
+        m.close()
+
+
+def test_vector_query_can_return_non_lexical_hit(tmp_path):
+    store = MemoryStore(tmp_path / "mem.db")
+    indexer = MemoryEmbeddingIndexer(store, HashingEmbeddingProvider(dimension=64))
+    m = MemoryManager(
+        store,
+        embedding_indexer=indexer,
+        vector_enabled=True,
+        lexical_weight=0.0,
+        vector_weight=1.0,
+        confidence_weight=0.0,
+    )
+    try:
+        mem_id = m.write("preference", "saffron noodle preference")
+        assert store.search("sfron") == []
+
+        results = m.query("sfron", top_k=1)
+        assert results[0]["id"] == mem_id
+        assert results[0]["vector_score"] > 0.0
+    finally:
+        m.close()
+
+
+def test_vector_candidates_scale_with_top_k(tmp_path):
+    class RecordingIndexer:
+        def __init__(self):
+            self.top_k = None
+
+        def search(self, text, *, top_k, memory_type=None, min_sensitivity=0):
+            self.top_k = top_k
+            return []
+
+    indexer = RecordingIndexer()
+    m = MemoryManager(
+        MemoryStore(tmp_path / "mem.db"),
+        embedding_indexer=indexer,
+        vector_enabled=True,
+        vector_candidates=2,
+    )
+    try:
+        assert m.query("missing", top_k=5) == []
+        assert indexer.top_k == 15
+    finally:
+        m.close()
+
+
+def test_vector_query_failure_falls_back_to_lexical(tmp_path):
+    class FailingIndexer:
+        def search(self, text, *, top_k, memory_type=None, min_sensitivity=0):
+            raise RuntimeError("embedding provider down")
+
+    m = MemoryManager(
+        MemoryStore(tmp_path / "mem.db"),
+        embedding_indexer=FailingIndexer(),
+        vector_enabled=True,
+    )
+    try:
+        m.write("preference", "fallback needle")
+        results = m.query("needle", top_k=1)
+        assert results[0]["content"] == "fallback needle"
+        assert "vector_score" not in results[0]
+    finally:
+        m.close()
 
 
 def test_decay_weight_strengthened_is_one(manager):

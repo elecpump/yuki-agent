@@ -46,3 +46,30 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
     finally:
         runtime.context.close()
         memory.close()
+
+
+def test_cognition_assembler_wires_vector_memory_from_config(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+
+    runtime = CognitionAssembler(
+        Config(
+            memory={
+                "db_path": str(tmp_path / "mem.db"),
+                "vector_enabled": True,
+                "embedding_dimension": 64,
+            },
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+        pipeline=pipeline,
+    ).assemble()
+
+    try:
+        assert runtime.memory._vector_enabled is True
+        memory_id = runtime.memory.write("preference", "assembler vector memory")
+        assert runtime.memory._store.embeddings_count() == 1
+        assert runtime.memory.query("asembler", top_k=1)[0]["id"] == memory_id
+    finally:
+        runtime.context.close()
+        runtime.memory.close()

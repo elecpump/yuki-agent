@@ -78,14 +78,28 @@ def test_memory_defaults():
     assert config.memory.short_term_ttl_s == 1800
     assert config.memory.short_term_capacity == 50
     assert config.memory.cleanup_interval_s == 300.0
+    assert config.memory.vector_enabled is False
+    assert config.memory.embedding_provider == "hashing"
+    assert config.memory.embedding_model == "hashing-v1"
+    assert config.memory.embedding_dimension == 384
+    assert config.memory.vector_candidates == 30
+    assert config.memory.lexical_weight == 0.45
+    assert config.memory.vector_weight == 0.45
+    assert config.memory.confidence_weight == 0.10
 
 
 def test_memory_env_override(monkeypatch):
     monkeypatch.setenv("YUKI_MEMORY_DB_PATH", "tmp/mem.db")
     monkeypatch.setenv("YUKI_MEMORY_DECAY_LAMBDA", "0.3")
+    monkeypatch.setenv("YUKI_MEMORY_VECTOR_ENABLED", "true")
+    monkeypatch.setenv("YUKI_MEMORY_EMBEDDING_DIMENSION", "128")
+    monkeypatch.setenv("YUKI_MEMORY_VECTOR_CANDIDATES", "100")
     config = Config.load(None)
     assert config.memory.db_path == "tmp/mem.db"
     assert config.memory.decay_lambda == 0.3
+    assert config.memory.vector_enabled is True
+    assert config.memory.embedding_dimension == 128
+    assert config.memory.vector_candidates == 100
 
 
 def test_text_defaults():
