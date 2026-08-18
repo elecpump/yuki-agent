@@ -110,6 +110,13 @@ def test_load_failure_is_remembered(monkeypatch):
     assert len(calls) == 1
 
 
+def test_disabled_vlm_never_loads():
+    vlm = VisualUnderstander(enabled=False)
+    assert vlm._load_failed is True
+    vlm.warmup()
+    assert vlm._loaded is False
+
+
 def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):
     import sys
 
@@ -140,6 +147,7 @@ def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):
     vlm._load()
 
     assert vlm._loaded is True
+    assert calls["args"][0] == "Qwen/Qwen3-VL-8B-Instruct"
     model_kwargs = calls["kwargs"]
     assert model_kwargs["cache_dir"] == "D:/hf"
     assert model_kwargs["quantization_config"] == {"cfg": {"load_in_4bit": True,

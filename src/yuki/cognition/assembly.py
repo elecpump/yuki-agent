@@ -191,7 +191,11 @@ class CognitionAssembler:
 
     def _build_vlm(self) -> VisualUnderstander:
         vlm_cfg = self.config.vlm
-        return VisualUnderstander(model_id=vlm_cfg.model, cache_dir=vlm_cfg.cache_dir)
+        return VisualUnderstander(
+            model_id=vlm_cfg.model,
+            cache_dir=vlm_cfg.cache_dir,
+            enabled=vlm_cfg.enabled,
+        )
 
     def _build_bridge(self, registry: FunctionRegistry) -> CloudBridge | None:
         if not self.config.cloud.enabled:

@@ -23,12 +23,13 @@ class VisualUnderstander:
         *,
         model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
         cache_dir: str = "",
+        enabled: bool = True,
     ) -> None:
         self._model = model
         self._processor = processor
         self._cache = cache or ContextCache()
         self._loaded = model is not None and processor is not None
-        self._load_failed = False
+        self._load_failed = not enabled
         self._load_lock = threading.Lock()
         self._model_id = model_id
         self._cache_dir = cache_dir

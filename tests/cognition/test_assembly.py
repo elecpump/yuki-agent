@@ -87,3 +87,16 @@ def test_cognition_assembler_builds_vlm_from_config(tmp_path):
     vlm = assembler._build_vlm()
     assert vlm._model_id == "Qwen/Qwen3-VL-8B-Instruct"
     assert vlm._cache_dir == "D:/hf"
+
+
+def test_cognition_assembler_vlm_disabled_skips_load(tmp_path):
+    bus = FakeBus()
+    assembler = CognitionAssembler(
+        Config(
+            vlm={"enabled": False},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+    )
+    vlm = assembler._build_vlm()
+    assert vlm._load_failed is True
