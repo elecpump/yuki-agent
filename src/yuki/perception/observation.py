@@ -52,4 +52,6 @@ class StableContentObservation:
             "frame_height": frame.get("height", 0),
             "sensitive": bool(frame.get("sensitive", False)),
         })
+        if "hwnd" in frame:
+            payload["hwnd"] = frame["hwnd"]
         self._bus.publish(Topics.CONTENT_READY, payload)

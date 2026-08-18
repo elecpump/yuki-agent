@@ -20,7 +20,7 @@ windows = [
                 "webrtcvad-wheels>=2.0.12"]
 
 dev = ["pytest>=8", "grpcio-tools>=1.66"]
-ml = ["transformers", "torch", "qwen-vl-utils", "funasr"]
+ml = ["transformers", "torch", "qwen-vl-utils", "funasr", "paddleocr"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

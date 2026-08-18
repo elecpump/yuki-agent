@@ -88,6 +88,26 @@ def test_memory_env_override(monkeypatch):
     assert config.memory.decay_lambda == 0.3
 
 
+def test_text_defaults():
+    config = Config()
+    assert config.text.enabled is True
+    assert config.text.dom_enabled is True
+    assert config.text.uia_enabled is True
+    assert config.text.ocr_enabled is False
+    assert config.text.ttl_s == 2.0
+    assert config.text.max_chars == 50000
+
+
+def test_text_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_TEXT_ENABLED", "false")
+    monkeypatch.setenv("YUKI_TEXT_OCR_ENABLED", "true")
+    monkeypatch.setenv("YUKI_TEXT_TTL_S", "5.0")
+    config = Config.load(None)
+    assert config.text.enabled is False
+    assert config.text.ocr_enabled is True
+    assert config.text.ttl_s == 5.0
+
+
 def test_brain_defaults():
     config = Config()
     assert config.brain.proactive_cooldown_s == 120.0

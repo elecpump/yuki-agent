@@ -16,6 +16,7 @@ class FocusChangedPayload(TypedDict):
     app: str
     url: str
     title: str
+    hwnd: NotRequired[int]
     # Phase 4 UI Automation can provide this reliably; current capture may omit it.
     scroll_percent: NotRequired[float]
 
@@ -31,6 +32,7 @@ class ContentReadyPayload(TypedDict):
     frame_width: int
     frame_height: int
     sensitive: bool
+    hwnd: NotRequired[int]
     scroll_percent: NotRequired[float]
 
 
@@ -84,6 +86,22 @@ class FrameResult(TypedDict):
     height: int
     ts: float
     sensitive: bool
+    hwnd: NotRequired[int]
+
+
+class TextEvidencePayload(TypedDict):
+    text_id: NotRequired[int]
+    source: str
+    text: str
+    title: str
+    url: str
+    hwnd: NotRequired[int]
+    frame_id: NotRequired[int]
+    confidence: float
+    ts: float
+    sensitive: bool
+    degraded: bool
+    reason: str
 
 
 class HealthResult(TypedDict):

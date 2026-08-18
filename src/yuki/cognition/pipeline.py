@@ -1,5 +1,6 @@
 import base64
 import io
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from yuki.cognition.situation import (
 )
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
+from yuki.cognition.text_client import TextClient
 from yuki.cognition.vlm import VisualUnderstander
 from yuki.logger import get_logger
 from yuki.topics import Topics
@@ -94,12 +96,18 @@ class PerceptionPipeline:
         bus,
         speech_buffer: SpeechBuffer | None = None,
         cache_scroll: bool = True,
+        text_client: TextClient | None = None,
+        text_summary_chars: int = 500,
+        text_key_point_chars: int = 160,
     ) -> None:
         self._vlm = vlm
         self._sensitive = sensitive_filter
         self._stt = stt
         self._frame_client = frame_client
+        self._text_client = text_client or TextClient(bus)
         self._bus = bus
+        self._text_summary_chars = text_summary_chars
+        self._text_key_point_chars = text_key_point_chars
         self._listening = False
         self._speech_buffer = speech_buffer or SpeechBuffer(
             on_utterance=self._on_utterance
@@ -126,13 +134,55 @@ class PerceptionPipeline:
 
     def _process_content_ready(self, topic: str, payload: dict) -> None:
         frame = self._frame_for_payload(payload)
+        if frame_id_for(payload, frame or {}) is None:
+            return
+        context = self._understand_observation(payload, frame)
+        if context is None:
+            return
+        if context.get("sensitive"):
+            self._publish_situation(
+                build_situation_update(
+                    payload,
+                    frame or {},
+                    {},
+                    sensitive=True,
+                    reason=context.get("reason", "sensitive"),
+                )
+            )
+            return
+        self._publish_situation(build_situation_update(payload, frame or {}, context))
+
+    def _understand_observation(self, payload: dict, frame: dict | None) -> dict | None:
+        evidence = self._text_client.get_for_observation(payload, frame)
+        if evidence.get("sensitive"):
+            return {
+                "topic": "",
+                "summary": "",
+                "content_type": "unknown",
+                "key_points": [],
+                "sensitive": True,
+                "degraded": True,
+                "reason": evidence.get("reason", "sensitive"),
+            }
+        text = str(evidence.get("text", "") or "")
+        if text:
+            if self._sensitive.scan(text):
+                return {
+                    "topic": "",
+                    "summary": "",
+                    "content_type": "unknown",
+                    "key_points": [],
+                    "sensitive": True,
+                    "degraded": True,
+                    "reason": "sensitive",
+                }
+            return self._context_from_text(evidence, payload)
+
         if not frame or not frame.get("png") or frame.get("sensitive"):
-            return
-        if frame_id_for(payload, frame) is None:
-            return
+            return None
         image = decode_png_b64(frame["png"])
         if image is None:
-            return
+            return {"topic": "", "degraded": True, "reason": "decode_failed"}
         cache_key = cache_key_for(payload)
         context = self._vlm.understand(image, cache_key=cache_key)
         text = " ".join([
@@ -141,11 +191,49 @@ class PerceptionPipeline:
             " ".join(context.get("key_points", []) or []),
         ])
         if self._sensitive.scan(text):
-            self._publish_situation(
-                build_situation_update(payload, frame, {}, sensitive=True, reason="sensitive")
-            )
-            return
-        self._publish_situation(build_situation_update(payload, frame, context))
+            return {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
+        return context
+
+    def _context_from_text(self, evidence: dict, payload: dict) -> dict:
+        text = self._normalize_text(str(evidence.get("text", "")))
+        title = str(evidence.get("title") or payload.get("title") or "").strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        topic = self._topic_from_text(title, lines)
+        summary = text[: self._text_summary_chars]
+        points = [
+            line[: self._text_key_point_chars]
+            for line in lines
+            if self._looks_like_key_point(line)
+        ][:5]
+        if not points:
+            points = [line[: self._text_key_point_chars] for line in lines[:5]]
+        return {
+            "topic": topic,
+            "summary": summary,
+            "content_type": f"text/{evidence.get('source', 'unknown')}",
+            "key_points": points,
+            "degraded": False,
+            "reason": f"text_{evidence.get('source', 'unknown')}",
+        }
+
+    def _normalize_text(self, text: str) -> str:
+        text = re.sub(r"[ \t\r\f\v]+", " ", text or "")
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
+
+    def _topic_from_text(self, title: str, lines: list[str]) -> str:
+        if title:
+            return title[:80]
+        for line in lines:
+            if 4 <= len(line) <= 80:
+                return line[:80]
+        return (lines[0] if lines else "")[:80]
+
+    def _looks_like_key_point(self, line: str) -> bool:
+        stripped = line.lstrip()
+        if stripped.startswith(("#", "-", "*", "•")):
+            return True
+        return bool(re.match(r"^\d+[.)]", stripped))
 
     def on_content_ready(self, topic: str, payload: dict) -> None:
         self._vlm_worker.submit(self._process_content_ready, topic, dict(payload))
@@ -179,19 +267,14 @@ class PerceptionPipeline:
 
     def understand_screen(self) -> dict:
         frame = self._frame_client.get_latest()
-        if not frame or not frame.get("png") or frame.get("sensitive"):
+        payload = {
+            "reason": "awake",
+            "frame_id": frame.get("frame_id") if frame else None,
+            "hwnd": frame.get("hwnd") if frame else None,
+        }
+        context = self._understand_observation(payload, frame)
+        if context is None:
             return {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
-        image = decode_png_b64(frame["png"])
-        if image is None:
-            return {"topic": "", "degraded": True, "reason": "decode_failed"}
-        context = self._vlm.understand(image)
-        text = " ".join([
-            context.get("topic", ""),
-            context.get("summary", ""),
-            " ".join(context.get("key_points", []) or []),
-        ])
-        if self._sensitive.scan(text):
-            return {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
         return context
 
     def warmup_vlm(self) -> None:
@@ -203,7 +286,8 @@ class PerceptionPipeline:
 
 
 def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
-                   frame_client=None, speech_buffer=None) -> PerceptionPipeline:
+                   frame_client=None, speech_buffer=None, text_client=None,
+                   text_summary_chars: int = 500, text_key_point_chars: int = 160) -> PerceptionPipeline:
     pipeline = PerceptionPipeline(
         vlm=vlm or VisualUnderstander(),
         sensitive_filter=sensitive_filter or SensitiveFilter(),
@@ -211,6 +295,9 @@ def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
         frame_client=frame_client or FrameClient(bus),
         bus=bus,
         speech_buffer=speech_buffer,
+        text_client=text_client,
+        text_summary_chars=text_summary_chars,
+        text_key_point_chars=text_key_point_chars,
     )
     bus.subscribe(Topics.CONTENT_READY, pipeline.on_content_ready)
     bus.subscribe(Topics.FOCUS_CHANGED, pipeline.on_focus_changed)

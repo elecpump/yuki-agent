@@ -85,7 +85,15 @@ class WgcCapture(FrameCapture):
             return
         try:
             png = self._frame_to_png(frame)
-            self.on_frame(png, {"width": frame.width, "height": frame.height, "ts": time.time()})
+            self.on_frame(
+                png,
+                {
+                    "width": frame.width,
+                    "height": frame.height,
+                    "ts": time.time(),
+                    "hwnd": self.window_hwnd,
+                },
+            )
         except Exception:
             logger.exception("wgc frame callback failed")
 
@@ -199,6 +207,7 @@ class FrameStore:
         height: int,
         ts: float,
         sensitive: bool,
+        hwnd: int | None = None,
     ) -> dict:
         with self._lock:
             self._next_frame_id += 1
@@ -210,6 +219,8 @@ class FrameStore:
                 "ts": ts,
                 "sensitive": sensitive,
             }
+            if hwnd is not None:
+                snapshot["hwnd"] = int(hwnd)
             self._latest = dict(snapshot)
             self._frames[snapshot["frame_id"]] = dict(snapshot)
             while len(self._frames) > self._max_frames:
@@ -238,7 +249,7 @@ def make_frame_service(
     hwnd: int | None = None,
     on_frame_stored: Callable[[dict], None] | None = None,
     max_stored_frames: int = 32,
-) -> None:
+) -> FrameStore:
     """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。
 
     应用 FrameStrategy 门控：敏感窗口发布占位黑帧；滚动中暂停截屏不更新 latest。
@@ -260,6 +271,7 @@ def make_frame_service(
         info = window_info()
         class_name, title = info if info is not None else (None, None)
         capture_ok, is_sensitive = strategy.should_capture(class_name, title)
+        frame_hwnd = meta.get("hwnd", hwnd or getattr(capture, "window_hwnd", None))
         if not capture_ok and is_sensitive:
             snapshot = store.store(
                 png_b64=base64.b64encode(strategy.black_frame()).decode("ascii"),
@@ -267,6 +279,7 @@ def make_frame_service(
                 height=meta["height"],
                 ts=meta["ts"],
                 sensitive=True,
+                hwnd=frame_hwnd,
             )
             notify_stored(snapshot)
             return
@@ -278,6 +291,7 @@ def make_frame_service(
             height=meta["height"],
             ts=meta["ts"],
             sensitive=False,
+            hwnd=frame_hwnd,
         )
         notify_stored(snapshot)
 
@@ -290,3 +304,4 @@ def make_frame_service(
         return store.latest()
 
     bus.respond("frame", handler)
+    return store

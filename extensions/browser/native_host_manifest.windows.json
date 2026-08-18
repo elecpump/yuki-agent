@@ -1,0 +1,9 @@
+{
+  "name": "com.yuki.dom_text",
+  "description": "Yuki DOM text Native Messaging host",
+  "path": "REPLACE_WITH_ABSOLUTE_PATH_TO_yuki_dom_text_host.cmd",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

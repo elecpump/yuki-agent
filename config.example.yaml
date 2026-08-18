@@ -23,6 +23,17 @@ memory:
   short_term_ttl_s: 1800
   short_term_capacity: 50
   cleanup_interval_s: 300.0
+text:
+  enabled: true
+  dom_enabled: true
+  uia_enabled: true
+  ocr_enabled: false
+  ttl_s: 2.0
+  max_chars: 50000
+  summary_chars: 500
+  key_point_chars: 160
+  provider_timeout_ms: 80
+  ocr_timeout_ms: 250
 brain:
   proactive_cooldown_s: 120.0
   proactive_enabled: true

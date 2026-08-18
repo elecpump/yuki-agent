@@ -38,6 +38,19 @@ class MemoryConfig(BaseModel):
     cleanup_interval_s: float = Field(300.0, ge=10.0)
 
 
+class TextConfig(BaseModel):
+    enabled: bool = True
+    dom_enabled: bool = True
+    uia_enabled: bool = True
+    ocr_enabled: bool = False
+    ttl_s: float = Field(2.0, ge=0.0)
+    max_chars: int = Field(50000, ge=100)
+    summary_chars: int = Field(500, ge=50)
+    key_point_chars: int = Field(160, ge=20)
+    provider_timeout_ms: int = Field(80, ge=1)
+    ocr_timeout_ms: int = Field(250, ge=1)
+
+
 class BrainConfig(BaseModel):
     proactive_cooldown_s: float = Field(120.0, ge=0.0)
     proactive_enabled: bool = True
@@ -90,6 +103,7 @@ class Config(BaseModel):
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    text: TextConfig = Field(default_factory=TextConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
@@ -115,6 +129,7 @@ class Config(BaseModel):
             ("supervisor", SupervisorConfig),
             ("health", HealthConfig),
             ("memory", MemoryConfig),
+            ("text", TextConfig),
             ("brain", BrainConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),

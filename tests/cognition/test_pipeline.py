@@ -74,7 +74,25 @@ class FakeSpeechBuffer:
         self.frames.append(samples)
 
 
-def _make_pipeline(bus=None, vlm=None, sensitive=None, stt=None, frame_client=None, speech_buffer=None):
+class FakeTextClient:
+    def __init__(self, evidence=None):
+        self.evidence = evidence or {}
+        self.calls = []
+
+    def get_for_observation(self, observation, frame=None):
+        self.calls.append((dict(observation), dict(frame or {})))
+        return dict(self.evidence)
+
+
+def _make_pipeline(
+    bus=None,
+    vlm=None,
+    sensitive=None,
+    stt=None,
+    frame_client=None,
+    speech_buffer=None,
+    text_client=None,
+):
     return build_pipeline(
         bus or FakeBus(),
         vlm=vlm or FakeVLM(),
@@ -82,6 +100,7 @@ def _make_pipeline(bus=None, vlm=None, sensitive=None, stt=None, frame_client=No
         stt=stt or FakeSTT(),
         frame_client=frame_client or FakeFrameClient(),
         speech_buffer=speech_buffer,
+        text_client=text_client,
     )
 
 
@@ -166,6 +185,84 @@ def test_pipeline_content_ready_reads_bound_frame_id():
     assert payload["frame_id"] == 42
 
 
+def test_pipeline_content_ready_uses_text_evidence_before_vlm():
+    bus = FakeBus()
+    vlm = FakeVLM()
+    text_client = FakeTextClient({
+        "source": "dom",
+        "text": "Document heading\n- first point\n- second point",
+        "title": "Document title",
+        "url": "https://x.com/doc",
+        "confidence": 0.95,
+        "sensitive": False,
+        "degraded": False,
+        "reason": "native_dom",
+    })
+    build_pipeline(
+        bus,
+        vlm=vlm,
+        sensitive_filter=FakeSensitive(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        text_client=text_client,
+    )
+
+    bus.subscriptions[Topics.CONTENT_READY][0](
+        "event/perception/content_ready",
+        {
+            "app": "chrome",
+            "url": "https://x.com/doc",
+            "title": "Document title",
+            "reason": "focus_changed",
+            "frame_id": 1,
+        },
+    )
+
+    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    assert vlm.understand_calls == []
+    assert payload["topic"] == "Document title"
+    assert payload["content_type"] == "text/dom"
+    assert payload["reason"] == "text_dom"
+    assert payload["key_points"] == ["- first point", "- second point"]
+
+
+def test_pipeline_content_ready_blocks_sensitive_text_evidence():
+    class SecretSensitive:
+        def scan(self, text):
+            return ["secret"] if "secret" in text else []
+
+    bus = FakeBus()
+    text_client = FakeTextClient({
+        "source": "uia",
+        "text": "secret token",
+        "title": "Editor",
+        "url": "",
+        "confidence": 0.8,
+        "sensitive": False,
+        "degraded": False,
+        "reason": "",
+    })
+    build_pipeline(
+        bus,
+        vlm=FakeVLM(),
+        sensitive_filter=SecretSensitive(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        text_client=text_client,
+    )
+
+    bus.subscriptions[Topics.CONTENT_READY][0](
+        "event/perception/content_ready",
+        {"title": "Editor", "reason": "focus_changed", "frame_id": 1},
+    )
+
+    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    assert payload["sensitive"] is True
+    assert payload["summary"] == ""
+    assert payload["key_points"] == []
+    assert payload["reason"] == "sensitive"
+
+
 def test_pipeline_skips_unidentified_frames():
     class UnidentifiedFrameClient:
         def get_latest(self):
@@ -231,6 +328,30 @@ def test_pipeline_understand_screen_returns_vlm_context():
     assert context["topic"] == "climate"
     assert context["content_type"] == "article"
     assert not any(t == Topics.REPLY for t, _ in bus.published)
+
+
+def test_pipeline_understand_screen_uses_text_evidence_before_vlm():
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(
+        vlm=vlm,
+        text_client=FakeTextClient({
+            "source": "uia",
+            "text": "Awake document\n1. immediate point",
+            "title": "Awake title",
+            "url": "",
+            "confidence": 0.8,
+            "sensitive": False,
+            "degraded": False,
+            "reason": "",
+        }),
+    )
+
+    context = pipeline.understand_screen()
+
+    assert vlm.understand_calls == []
+    assert context["topic"] == "Awake title"
+    assert context["content_type"] == "text/uia"
+    assert context["key_points"] == ["1. immediate point"]
 
 
 def test_pipeline_stt_on_mic_publishes_utterance():

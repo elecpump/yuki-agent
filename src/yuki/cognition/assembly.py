@@ -84,6 +84,8 @@ class CognitionAssembler:
             stt=self.stt,
             frame_client=self.frame_client,
             speech_buffer=self.speech_buffer,
+            text_summary_chars=self.config.text.summary_chars,
+            text_key_point_chars=self.config.text.key_point_chars,
         )
         pipeline.warmup_vlm()
 

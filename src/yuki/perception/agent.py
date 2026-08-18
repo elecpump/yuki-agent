@@ -6,6 +6,7 @@ from yuki.perception.capture import FrameStrategy, WgcCapture, make_frame_servic
 from yuki.perception.scroll import ScrollHook, ScrollIdleDetector
 from yuki.perception.sensitive import SensitiveDetector
 from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor
+from yuki.perception.text import build_text_services
 from yuki.process import ProcessAgent
 from yuki.topics import Topics
 
@@ -71,7 +72,7 @@ class PerceptionAgent(ProcessAgent):
 
         scroll_hook = self._scroll_hook or ScrollHook(on_scroll=on_scroll)
 
-        make_frame_service(
+        frame_store = make_frame_service(
             self.bus,
             capture,
             strategy,
@@ -79,12 +80,21 @@ class PerceptionAgent(ProcessAgent):
             hwnd=gate_hwnd,
             on_frame_stored=observation.on_frame_stored,
         )
+        text_chain = None
+        if self.config.text.enabled:
+            text_chain = build_text_services(
+                self.bus,
+                config=self.config.text,
+                sensitive=detector,
+                frame_store=frame_store,
+            )
 
         self._components = {
             "capture": capture,
             "monitor": monitor,
             "audio": audio,
             "scroll_hook": scroll_hook,
+            "text": text_chain,
         }
         monitor.start()
         audio.start()
@@ -106,6 +116,7 @@ class PerceptionAgent(ProcessAgent):
             "capture": self._health_capture,
             "monitor": self._health_monitor,
             "scroll_hook": self._health_scroll,
+            "text": self._health_text,
         }
 
     def _health_audio(self) -> HealthStatus:
@@ -126,3 +137,9 @@ class PerceptionAgent(ProcessAgent):
     def _health_scroll(self) -> HealthStatus:
         scroll = self._components.get("scroll_hook")
         return HealthStatus(scroll is not None, {"installed": scroll is not None})
+
+    def _health_text(self) -> HealthStatus:
+        chain = self._components.get("text")
+        if chain is None:
+            return HealthStatus(True, {"enabled": False})
+        return HealthStatus(True, {"enabled": True, **chain.health()})
