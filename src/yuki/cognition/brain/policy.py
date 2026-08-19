@@ -45,10 +45,13 @@ class DecisionPolicy:
         *,
         proactive_enabled: bool = True,
         policy_table: dict[Intent, list[str]] | None = None,
+        binding_core_values: list[dict] | None = None,
     ) -> None:
         self._cooldown = proactive_cooldown_s
         self._enabled = proactive_enabled
         self._table = policy_table if policy_table is not None else DEFAULT_POLICY_TABLE
+        self._binding_blocks: set[str] = set()
+        self.set_binding_core_values(binding_core_values or [])
 
     @property
     def cooldown_s(self) -> float:
@@ -56,6 +59,16 @@ class DecisionPolicy:
 
     def set_cooldown_s(self, value: float) -> None:
         self._cooldown = value
+
+    def set_binding_core_values(self, values: list[dict]) -> None:
+        blocks = set()
+        for value in values:
+            if not isinstance(value, dict) or value.get("role") != "binding":
+                continue
+            for action_name in value.get("blocks") or []:
+                if isinstance(action_name, str):
+                    blocks.add(action_name)
+        self._binding_blocks = blocks
 
     def tier_for(self, intent: Intent) -> Tier:
         return Tier.L2 if intent in L2_INTENTS else Tier.L1
@@ -78,9 +91,9 @@ class DecisionPolicy:
 
     def _decide_utterance(self, intent: Intent, text: str) -> list[Action]:
         if intent == Intent.SAFETY:
-            return [Action("safety_escalate")]
+            return self._apply_binding_constraints([Action("safety_escalate")])
         if intent == Intent.SYSTEM and any(kw in text for kw in FAREWELL_KEYWORDS):
-            return [Action("farewell")]
+            return self._apply_binding_constraints([Action("farewell")])
         names = self._table.get(intent, ["inform"])
         actions = [Action(name) for name in names]
         if intent in DISCLOSURE_INTENTS:
@@ -88,7 +101,13 @@ class DecisionPolicy:
                 "memory_type": "preference",
                 "content": text,
             }))
-        return actions
+        return self._apply_binding_constraints(actions)
+
+    def _apply_binding_constraints(self, actions: list[Action]) -> list[Action]:
+        if not self._binding_blocks:
+            return actions
+        filtered = [action for action in actions if action.name not in self._binding_blocks]
+        return filtered or [Action("stay_silent")]
 
     def _decide_situation(
         self,

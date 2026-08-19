@@ -58,6 +58,7 @@ cloud:
   max_turns: 3
 soul:
   path: data/soul.json
+  tuner_state_path: data/tuner_state.json
 context:
   max_turns: 20
   max_tokens: 1500

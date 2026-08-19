@@ -4,11 +4,14 @@ from dataclasses import dataclass
 from typing import Callable
 
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE, DecisionHub, build_brain
-from yuki.cognition.brain.persona import generate as generate_persona
+from yuki.cognition.brain.persona import (
+    compose_personality_description,
+    generate as generate_persona,
+)
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.brain.sedimenter import PreferenceSedimenter
 from yuki.cognition.brain.snapshots import PersonaStore
-from yuki.cognition.brain.soul import SoulStore
+from yuki.cognition.brain.soul import PREFS_PER_PERSONA_REGEN, SoulStore, TunerStateStore
 from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
@@ -39,7 +42,7 @@ class CognitionRuntime:
     hub: DecisionHub
     context: WorkingContext
     persona_store: PersonaStore
-    persona_refresh: Callable[[], None]
+    persona_refresh: Callable[..., None]
 
     def handle_awake_request(self, payload: dict) -> dict:
         payload = dict(payload or {})
@@ -106,13 +109,25 @@ class CognitionAssembler:
             max_versions=self.config.persona.max_versions,
             persona_name=self.config.persona_name,
         )
-        persona_refresh = self._build_persona_refresh(memory, bridge, persona_store)
+        soul_store = SoulStore(
+            self.config.soul.path,
+            self.config.persona_name,
+            default_description=self.config.persona.prompt.format(persona=self.config.persona_name),
+            tuner_state_path=self.config.soul.tuner_state_path,
+        )
+        soul_store.ensure()
+        persona_refresh = self._build_persona_refresh(memory, bridge, persona_store, soul_store)
 
         policy = DecisionPolicy(
             proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
             proactive_enabled=self.config.brain.proactive_enabled,
+            binding_core_values=soul_store.binding_core_values(),
         )
-        tuner = FeedbackTuner(policy, SoulStore(self.config.soul.path, self.config.persona_name))
+        tuner = FeedbackTuner(
+            policy,
+            TunerStateStore(self.config.soul.tuner_state_path, self.config.persona_name),
+            soul=soul_store,
+        )
         tuner.load_soul()
         context = WorkingContext(
             ShortTermTurnStore(memory),
@@ -126,6 +141,7 @@ class CognitionAssembler:
             min_signals=self.config.sedimenter.min_signals,
             confidence_threshold=self.config.sedimenter.confidence_threshold,
             topic_engagement_threshold=self.config.sedimenter.topic_engagement_threshold,
+            soul=soul_store,
             on_sedimented=persona_refresh,
         )
         hub = build_brain(
@@ -147,7 +163,13 @@ class CognitionAssembler:
             bridge.set_system_prompt(
                 active.persona_prompt
                 if active
-                else self.config.persona.prompt.format(persona=self.config.persona_name)
+                else generate_persona(
+                    self.config.persona_name,
+                    [],
+                    {},
+                    base_prompt=self.config.persona.prompt,
+                    soul=soul_store.load_or_default(),
+                )
             )
         persona_refresh()
 
@@ -217,22 +239,53 @@ class CognitionAssembler:
         memory: MemoryManager,
         bridge: CloudBridge | None,
         persona_store: PersonaStore,
+        soul_store: SoulStore,
     ) -> Callable[[], None]:
-        def persona_refresh() -> None:
+        def persona_refresh(
+            *,
+            label: str = "",
+            confidence: float = 0.0,
+            content: str = "",
+            is_new: bool = True,
+        ) -> None:
+            if label:
+                soul = soul_store.on_preference_sedimented(
+                    label,
+                    confidence,
+                    is_new=is_new,
+                )
+            else:
+                soul = soul_store.load_or_default()
             prefs = MemoryAccess(memory).list(
                 purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
                 memory_type="preference",
             )
             refine = bridge.refine_persona if self.config.persona.enable_llm_refine and bridge else None
+            should_regenerate_description = (
+                int(soul.get("prefs_since_regen", 0)) >= PREFS_PER_PERSONA_REGEN
+            )
+            if should_regenerate_description:
+                description = compose_personality_description(
+                    soul,
+                    base_description=self.config.persona.prompt.format(
+                        persona=self.config.persona_name
+                    ),
+                    refine=refine,
+                )
+                if soul_store.set_personality_description(description):
+                    soul = soul_store.load_or_default()
             prompt = generate_persona(
                 self.config.persona_name,
                 prefs,
                 {},
                 base_prompt=self.config.persona.prompt,
                 refine=refine,
+                soul=soul,
             )
-            snap = persona_store.save(prompt, {})
+            snap = persona_store.save(prompt, {}, soul=soul_store.snapshot())
             if snap is not None and bridge is not None:
                 bridge.set_system_prompt(snap.persona_prompt)
+            if should_regenerate_description:
+                soul_store.reset_prefs_since_regen()
 
         return persona_refresh

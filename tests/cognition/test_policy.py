@@ -109,3 +109,30 @@ def test_set_cooldown_s_changes_gate():
                             situation={"topic": "x", "sensitive": False},
                             last_open_ts=0.0, now=150.0)
     assert [a.name for a in actions] == ["stay_silent"]
+
+
+def test_binding_core_values_filter_utterance_actions_only():
+    policy = DecisionPolicy(
+        proactive_cooldown_s=120.0,
+        binding_core_values=[{
+            "id": "cv.test",
+            "role": "binding",
+            "blocks": ["ask"],
+        }],
+    )
+    actions = policy.decide(
+        TriggerKind.UTTERANCE,
+        Intent.EMOTIONAL,
+        Emotion.SADNESS,
+        text="我有点难过",
+    )
+    assert [a.name for a in actions] == ["empathize", "write_memory"]
+    situation_actions = policy.decide(
+        TriggerKind.SITUATION,
+        Intent.UNKNOWN,
+        Emotion.NEUTRAL,
+        situation={"topic": "x", "sensitive": False},
+        last_open_ts=None,
+        now=150.0,
+    )
+    assert [a.name for a in situation_actions] == ["acknowledge", "ask"]

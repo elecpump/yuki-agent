@@ -135,3 +135,43 @@ def test_on_sedimented_callback_fires_on_write(tmp_path):
     sed = PreferenceSedimenter(memory, min_signals=1, on_sedimented=lambda: fired.append(1))
     sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
     assert fired  # 沉淀即回调
+
+
+def test_on_sedimented_callback_receives_preference_context(tmp_path):
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    events = []
+    sed = PreferenceSedimenter(
+        memory,
+        min_signals=1,
+        on_sedimented=lambda **kw: events.append(kw),
+    )
+    sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
+    assert events[0]["label"] == LABEL_FREQUENCY_LOW
+    assert events[0]["confidence"] == pytest.approx(1.0)
+    assert events[0]["is_new"] is True
+
+
+def test_sedimented_frequency_low_promotes_soul_core_value(tmp_path):
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    soul = SoulStore(tmp_path / "soul.json", "yuki")
+    sed = PreferenceSedimenter(
+        memory,
+        soul=soul,
+        min_signals=1,
+        on_sedimented=lambda **kw: soul.on_preference_sedimented(
+            kw["label"],
+            kw["confidence"],
+            is_new=kw["is_new"],
+        ),
+    )
+    sed.on_user_utterance("太吵了", Intent.CHIT_CHAT)
+    assert any(v["id"] == "cv.rhythm.restraint" for v in soul.load()["core_values"])
+
+
+def test_core_value_explicit_opposition_removes_guiding_value(tmp_path):
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    soul = SoulStore(tmp_path / "soul.json", "yuki")
+    soul.on_preference_sedimented(LABEL_FREQUENCY_LOW, 1.0)
+    sed = PreferenceSedimenter(memory, soul=soul)
+    sed.on_user_utterance("我不需要主动克制", Intent.CHIT_CHAT)
+    assert all(v["id"] != "cv.rhythm.restraint" for v in soul.load()["core_values"])

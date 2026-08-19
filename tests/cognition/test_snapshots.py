@@ -17,6 +17,14 @@ def test_save_creates_active_and_increments(tmp_path):
     assert [v.version for v in store.list_versions()] == [1, 2]
 
 
+def test_save_records_soul_snapshot(tmp_path):
+    store = make(tmp_path, max_versions=10)
+    soul = {"core_values": [{"id": "cv.x"}], "personality_traits": {"warmth": 0.6}}
+    snap = store.save("prompt", {}, soul=soul)
+    assert snap.soul == soul
+    assert store.export(snap.version)["soul"] == soul
+
+
 def test_save_skips_identical(tmp_path):
     store = make(tmp_path)
     store.save("same", {"a": 1})

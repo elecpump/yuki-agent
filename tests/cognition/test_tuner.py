@@ -2,7 +2,7 @@ import pytest
 
 from yuki.cognition.brain import tuner as tuner_mod
 from yuki.cognition.brain.policy import DecisionPolicy
-from yuki.cognition.brain.soul import SoulStore
+from yuki.cognition.brain.soul import COOLDOWN_KEY, SoulStore, TunerStateStore
 from yuki.cognition.brain.tuner import FeedbackTuner
 
 
@@ -77,20 +77,20 @@ def test_clamp_lower_and_upper(tmp_path):
     assert tuner.cooldown_s == 600.0
 
 
-def test_adjust_syncs_policy_and_soul(tmp_path):
+def test_adjust_syncs_policy_and_tuner_state(tmp_path):
     policy = DecisionPolicy(120.0)
-    soul = SoulStore(tmp_path / "s.json", "yuki")
-    tuner = FeedbackTuner(policy, soul)
+    state = TunerStateStore(tmp_path / "tuner_state.json", "yuki")
+    tuner = FeedbackTuner(policy, state)
     tuner.adjust(1.5)
     assert policy.cooldown_s == pytest.approx(180.0)
-    assert soul.load()["proactive_cooldown_s"] == pytest.approx(180.0)
+    assert state.load()[COOLDOWN_KEY] == pytest.approx(180.0)
 
 
 def test_load_soul_restores_cooldown(tmp_path):
     policy = DecisionPolicy(120.0)
-    soul = SoulStore(tmp_path / "s.json", "yuki")
-    soul.save({"proactive_cooldown_s": 240.0})
-    tuner = FeedbackTuner(policy, soul)
+    state = TunerStateStore(tmp_path / "tuner_state.json", "yuki")
+    state.save({COOLDOWN_KEY: 240.0})
+    tuner = FeedbackTuner(policy, state)
     tuner.load_soul()
     assert tuner.cooldown_s == 240.0
     assert policy.cooldown_s == 240.0
@@ -106,12 +106,12 @@ def test_detect_polarity():
 
 def test_set_cooldown_floor_raises_min(tmp_path):
     policy = DecisionPolicy(120.0)
-    soul = SoulStore(tmp_path / "s.json", "yuki")
-    tuner = FeedbackTuner(policy, soul, cooldown_min_s=30.0)
+    state = TunerStateStore(tmp_path / "tuner_state.json", "yuki")
+    tuner = FeedbackTuner(policy, state, cooldown_min_s=30.0)
     tuner.set_cooldown_floor(200.0)
     assert tuner.cooldown_s == 200.0   # 当前 120 < 200 → 提升
     assert policy.cooldown_s == 200.0
-    assert soul.load()["proactive_cooldown_s"] == pytest.approx(200.0)
+    assert state.load()[COOLDOWN_KEY] == pytest.approx(200.0)
     # 后续 adjust 不再低于 floor
     tuner.adjust(0.5)
     assert tuner.cooldown_s >= 200.0
@@ -123,3 +123,30 @@ def test_set_cooldown_floor_lower_than_min_noop(tmp_path):
     tuner.set_cooldown_floor(20.0)  # 低于现有 min → no-op
     assert tuner._min_s == 30.0
     assert tuner.cooldown_s == 120.0
+
+
+def test_negative_feedback_adjusts_traits_once(tmp_path):
+    policy = DecisionPolicy(120.0)
+    soul = SoulStore(tmp_path / "soul.json", "yuki")
+    tuner = FeedbackTuner(policy, TunerStateStore(tmp_path / "tuner_state.json", "yuki"), soul=soul)
+    tuner.on_user_utterance("太吵了")
+    traits = soul.load()["personality_traits"]
+    assert traits["warmth"] == pytest.approx(0.47)
+    assert traits["directness"] == pytest.approx(0.52)
+
+
+def test_timeout_feedback_adjusts_proactiveness(tmp_path, monkeypatch):
+    policy = DecisionPolicy(120.0)
+    soul = SoulStore(tmp_path / "soul.json", "yuki")
+    tuner = FeedbackTuner(
+        policy,
+        TunerStateStore(tmp_path / "tuner_state.json", "yuki"),
+        soul=soul,
+        window_s=10.0,
+    )
+    t = [1000.0]
+    monkeypatch.setattr(tuner_mod.time, "time", lambda: t[0])
+    tuner.on_proactive_open()
+    t[0] += 11.0
+    tuner.on_user_utterance("嗯")
+    assert soul.load()["personality_traits"]["proactiveness"] == pytest.approx(0.47)

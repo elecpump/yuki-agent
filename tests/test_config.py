@@ -161,12 +161,15 @@ def test_cloud_env_override(monkeypatch):
 def test_soul_defaults():
     config = Config()
     assert config.soul.path == "data/soul.json"
+    assert config.soul.tuner_state_path == "data/tuner_state.json"
 
 
 def test_soul_env_override(monkeypatch):
     monkeypatch.setenv("YUKI_SOUL_PATH", "tmp/soul.json")
+    monkeypatch.setenv("YUKI_SOUL_TUNER_STATE_PATH", "tmp/tuner_state.json")
     config = Config.load(None)
     assert config.soul.path == "tmp/soul.json"
+    assert config.soul.tuner_state_path == "tmp/tuner_state.json"
 
 
 def test_context_defaults():

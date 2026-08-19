@@ -1,6 +1,7 @@
 from typing import Callable
 
 from yuki.cognition.brain.classifier import Intent
+from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.tuner import FeedbackTuner, detect_polarity
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.memory.manager import MemoryManager
@@ -27,11 +28,13 @@ class PreferenceSedimenter:
                  min_signals: int = 3, confidence_threshold: float = 0.6,
                  topic_engagement_threshold: int = 3,
                  frequency_floor_s: float = 120.0,
-                 on_sedimented: Callable[[], None] | None = None,
+                 on_sedimented: Callable[..., None] | None = None,
+                 soul: SoulStore | None = None,
                  sensitive_filter: SensitiveFilter | None = None) -> None:
         self._memory = memory
         self._tuner = tuner
         self._on_sedimented = on_sedimented
+        self._soul = soul
         self._sensitive_filter = sensitive_filter or SensitiveFilter()
         self._min_signals = min_signals
         self._confidence_threshold = confidence_threshold
@@ -49,6 +52,8 @@ class PreferenceSedimenter:
 
     def on_user_utterance(self, text: str, intent) -> None:
         text = text or ""
+        if self._soul is not None:
+            self._soul.apply_core_value_feedback(text)
         if intent == Intent.SYSTEM:
             if any(kw in text for kw in CORRECTION_KEYWORDS):
                 self._apply_correction(text)
@@ -128,11 +133,18 @@ class PreferenceSedimenter:
         confidence: float,
         sensitivity: int = 0,
     ) -> None:
+        is_new = label == "yuki.explicit" or not any(
+            m.get("metadata", {}).get("label") == label
+            for m in self._memory.list(memory_type="preference")
+        )
         self._remove_by_label(label)
         self._memory.write("preference", content, confidence=confidence, source=source,
                            sensitivity=sensitivity, metadata={"label": label})
         if self._on_sedimented is not None:
-            self._on_sedimented()
+            try:
+                self._on_sedimented(label=label, confidence=confidence, content=content, is_new=is_new)
+            except TypeError:
+                self._on_sedimented()
 
     def _remove_by_label(self, label: str) -> None:
         for m in self._memory.list(memory_type="preference"):

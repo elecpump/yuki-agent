@@ -35,6 +35,23 @@ def test_generate_omits_empty_sections():
     assert "参数说明" not in out
 
 
+def test_generate_does_not_duplicate_baked_soul_sections():
+    description = (
+        "你是yuki,一个温柔的中文语音陪伴 agent。\n\n"
+        "人格内核：\n"
+        "- [binding] 安全优先。\n\n"
+        "性格参数：保持均衡、自然、贴近当下语境。"
+    )
+    soul = {
+        "personality_description": description,
+        "core_values": [{"role": "binding", "text": "安全优先。"}],
+        "personality_traits": {"warmth": 0.5},
+    }
+    out = generate("yuki", [], {}, soul=soul)
+    assert out.count("人格内核") == 1
+    assert out.count("性格参数") == 1
+
+
 def test_generate_refine_success():
     out = generate("yuki", [], {}, base_prompt="base", refine=lambda text: "精修后的文本")
     assert out == "精修后的文本"

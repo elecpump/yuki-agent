@@ -15,6 +15,7 @@ class PersonaSnapshot:
     persona_prompt: str
     params: dict
     created_at: float
+    soul: dict | None = None
     locked: bool = False
 
 
@@ -66,6 +67,7 @@ class PersonaStore:
             persona_prompt=v["persona_prompt"],
             params=v.get("params", {}),
             created_at=v.get("created_at", 0.0),
+            soul=v.get("soul"),
             locked=bool(v.get("locked", False)),
         )
 
@@ -78,14 +80,25 @@ class PersonaStore:
     def list_versions(self) -> list[PersonaSnapshot]:
         return [self._as_snapshot(self._versions[k]) for k in sorted(self._versions)]
 
-    def save(self, persona_prompt: str, params: dict) -> PersonaSnapshot | None:
+    def save(
+        self,
+        persona_prompt: str,
+        params: dict,
+        *,
+        soul: dict | None = None,
+    ) -> PersonaSnapshot | None:
         current = self.active()
-        if current is not None and current.persona_prompt == persona_prompt and current.params == params:
+        if (
+            current is not None
+            and current.persona_prompt == persona_prompt
+            and current.params == params
+            and current.soul == soul
+        ):
             return None  # 跳过相同
         version = (max(self._versions) if self._versions else 0) + 1
         self._versions[version] = {
             "version": version, "persona_prompt": persona_prompt, "params": params,
-            "created_at": time.time(), "locked": False,
+            "created_at": time.time(), "locked": False, "soul": soul,
         }
         self._active = version
         self._prune()
@@ -142,6 +155,7 @@ class PersonaStore:
             "persona_prompt": data["persona_prompt"],
             "params": data.get("params", {}),
             "created_at": data.get("created_at", time.time()),
+            "soul": data.get("soul"),
             "locked": bool(data.get("locked", False)),
         }
         self._persist()

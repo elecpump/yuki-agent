@@ -236,15 +236,25 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
                 tuner=None, context=None, projector=None, sedimenter=None,
                 register_awake_service: bool = True) -> DecisionHub:
     from yuki.config import Config
+    from yuki.cognition.brain.soul import SoulStore
     cfg = config or Config.from_env()
+    if policy is None:
+        soul = SoulStore(
+            cfg.soul.path,
+            cfg.persona_name,
+            default_description=cfg.persona.prompt.format(persona=cfg.persona_name),
+            tuner_state_path=cfg.soul.tuner_state_path,
+        )
+        policy = DecisionPolicy(
+            proactive_cooldown_s=cfg.brain.proactive_cooldown_s,
+            proactive_enabled=cfg.brain.proactive_enabled,
+            binding_core_values=soul.binding_core_values(),
+        )
     hub = DecisionHub(
         bus,
         intent_clf=intent_clf,
         emotion_clf=emotion_clf,
-        policy=policy or DecisionPolicy(
-            proactive_cooldown_s=cfg.brain.proactive_cooldown_s,
-            proactive_enabled=cfg.brain.proactive_enabled,
-        ),
+        policy=policy,
         memory=memory,
         registry=registry,
         bridge=bridge,

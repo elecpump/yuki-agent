@@ -81,6 +81,7 @@ class CloudConfig(BaseModel):
 
 class SoulConfig(BaseModel):
     path: str = "data/soul.json"
+    tuner_state_path: str = "data/tuner_state.json"
 
 
 class ContextConfig(BaseModel):
