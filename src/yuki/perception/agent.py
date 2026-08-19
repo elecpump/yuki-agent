@@ -30,7 +30,7 @@ class PerceptionAgent(ProcessAgent):
         detector = SensitiveDetector()
         idle = ScrollIdleDetector(idle_ms=300)
         strategy = self._strategy or FrameStrategy(sensitive=detector, idle=idle, require_idle=True)
-        observation = StableContentObservation(self.bus)
+        observation = StableContentObservation(self.bus, dwell_s=self.config.perception.dwell_s)
 
         gate_hwnd = 0
         window_info = None
@@ -94,6 +94,7 @@ class PerceptionAgent(ProcessAgent):
             "monitor": monitor,
             "audio": audio,
             "scroll_hook": scroll_hook,
+            "observation": observation,
             "text": text_chain,
         }
         monitor.start()
@@ -102,11 +103,13 @@ class PerceptionAgent(ProcessAgent):
         scroll_hook.start()
 
     def teardown(self) -> None:
-        for key in ("scroll_hook", "capture", "monitor", "audio"):
+        for key in ("scroll_hook", "capture", "monitor", "audio", "observation"):
             comp = self._components.get(key)
             if comp is not None:
                 try:
-                    comp.stop()
+                    stop = getattr(comp, "stop", None) or getattr(comp, "close", None)
+                    if stop is not None:
+                        stop()
                 except Exception:
                     pass
 

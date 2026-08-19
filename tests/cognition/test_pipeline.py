@@ -6,7 +6,7 @@ import time
 import numpy as np
 from PIL import Image
 
-from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline, scroll_band
+from yuki.cognition.pipeline import DeepRateLimiter, PerceptionPipeline, build_pipeline, scroll_band
 from yuki.cognition.sensitive import SensitiveFilter
 from yuki.topics import Topics
 
@@ -114,15 +114,27 @@ def _wait_for_topic(bus, topic, timeout=1.0):
     raise AssertionError(f"timed out waiting for {topic}")
 
 
+def _wait_for_situation_layer(bus, layer, timeout=1.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        events = [p for t, p in bus.published if t == Topics.SITUATION_UPDATE and p.get("layer") == layer]
+        if events:
+            return events[0]
+        time.sleep(0.01)
+    raise AssertionError(f"timed out waiting for situation layer {layer}")
+
+
 def test_pipeline_focus_publishes_situation_update():
     bus = FakeBus()
     build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed",
         {"app": "chrome", "url": "https://x.com/a", "title": "A"})
-    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    payload = _wait_for_situation_layer(bus, "deep")
     assert payload["topic"] == "climate"
     assert payload["source_id"] == "https://x.com/a"
+    assert payload["layer"] == "deep"
+    assert payload["confidence"] == 0.85
     assert "scroll_band" in payload
     assert payload["degraded"] is False
     # 管线不直接回复
@@ -137,7 +149,7 @@ def test_pipeline_content_ready_publishes_situation_update():
         "event/perception/content_ready",
         {"app": "chrome", "url": "https://x.com/a", "title": "A", "reason": "scroll_idle"},
     )
-    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    payload = _wait_for_situation_layer(bus, "deep")
     assert payload["topic"] == "climate"
     assert payload["source_id"] == "https://x.com/a"
     assert payload["situation_id"] == "frame:1"
@@ -178,9 +190,9 @@ def test_pipeline_content_ready_reads_bound_frame_id():
         },
     )
 
-    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    payload = _wait_for_situation_layer(bus, "deep")
     assert frame_client.latest_requests == 0
-    assert frame_client.requested_ids == [42]
+    assert frame_client.requested_ids == [42, 42]
     assert payload["situation_id"] == "frame:42"
     assert payload["frame_id"] == 42
 
@@ -221,6 +233,8 @@ def test_pipeline_content_ready_uses_text_evidence_before_vlm():
     payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
     assert vlm.understand_calls == []
     assert payload["topic"] == "Document title"
+    assert payload["layer"] == "fast"
+    assert payload["confidence"] == 0.6
     assert payload["content_type"] == "text/dom"
     assert payload["reason"] == "text_dom"
     assert payload["key_points"] == ["- first point", "- second point"]
@@ -413,7 +427,7 @@ def test_pipeline_focus_cache_key_uses_source_id_scroll_band():
     deadline = time.monotonic() + 1.0
     while not vlm.understand_calls and time.monotonic() < deadline:
         time.sleep(0.01)
-    assert vlm.understand_calls[0][1] == "https://x.com/a|25-50"
+    assert vlm.understand_calls[0][1] == "https://x.com/a"
 
 
 def test_scroll_band_clamps_to_valid_range():
@@ -429,8 +443,10 @@ def test_pipeline_focus_skips_placeholder_frame():
     build_pipeline(bus, vlm=vlm, sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=FakeFrameClient(png=""))
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
+    fast = _wait_for_situation_layer(bus, "fast")
     assert vlm.understand_calls == []
-    assert bus.published == []
+    assert fast["degraded"] is True
+    assert fast["reason"] == "no_text"
 
 
 def test_pipeline_understand_screen_skips_placeholder_frame():
@@ -470,7 +486,7 @@ def test_pipeline_focus_blocks_sensitive_key_points():
     build_pipeline(bus, vlm=SensitiveKeyPointsVLM(), sensitive_filter=SensitiveFilter(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
-    event = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    event = _wait_for_situation_layer(bus, "deep")
     assert event["sensitive"] is True
     assert event["degraded"] is True
     assert event["reason"] == "sensitive"
@@ -486,7 +502,7 @@ def test_pipeline_focus_publishes_degraded_on_vlm_failure():
     build_pipeline(bus, vlm=BoomVLM(), sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
-    event = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+    event = _wait_for_situation_layer(bus, "deep")
     assert event["degraded"] is True
     assert event["reason"] == "inference_failed"
 
@@ -519,10 +535,129 @@ def test_pipeline_content_ready_does_not_block_on_slow_vlm():
 
     assert elapsed < 0.2
     assert vlm.started.wait(timeout=1.0)
-    assert not any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
+    fast = _wait_for_situation_layer(bus, "fast")
+    assert fast["degraded"] is True
+    assert fast["reason"] == "no_text"
 
     vlm.release.set()
     _wait_for_topic(bus, Topics.SITUATION_UPDATE)
+
+
+def test_fast_and_deep_workers_do_not_block_each_other():
+    class BlockingVLM(FakeVLM):
+        def __init__(self):
+            super().__init__()
+            self.started = threading.Event()
+            self.release = threading.Event()
+
+        def understand(self, image, cache_key=None):
+            self.started.set()
+            self.release.wait(timeout=2.0)
+            return super().understand(image, cache_key=cache_key)
+
+    bus = FakeBus()
+    vlm = BlockingVLM()
+    pipeline = _make_pipeline(bus=bus, vlm=vlm)
+    pipeline.on_content_ready("event/perception/content_ready", {"title": "t", "url": "u"})
+
+    fast = _wait_for_situation_layer(bus, "fast")
+    assert fast["reason"] == "no_text"
+    assert vlm.started.wait(timeout=1.0)
+    assert not any(
+        t == Topics.SITUATION_UPDATE and p.get("layer") == "deep"
+        for t, p in bus.published
+    )
+    vlm.release.set()
+    deep = _wait_for_situation_layer(bus, "deep")
+    assert deep["topic"] == "climate"
+
+
+def test_deep_rate_limiter_blocks_until_interval():
+    limiter = DeepRateLimiter(300.0, clock=lambda: 0.0)
+    assert limiter.allow(now=1000.0) is True
+    assert limiter.allow(now=1299.0) is False
+    assert limiter.allow(now=1300.0) is True
+
+
+def test_content_ready_deep_is_rate_limited():
+    bus = FakeBus()
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(bus=bus, vlm=vlm)
+
+    pipeline.on_content_ready("event/perception/content_ready", {"title": "t", "url": "u"})
+    _wait_for_situation_layer(bus, "deep")
+    bus.published = []
+
+    pipeline.on_content_ready("event/perception/content_ready", {"title": "t", "url": "u"})
+    _wait_for_situation_layer(bus, "fast")
+    time.sleep(0.05)
+
+    assert len(vlm.understand_calls) == 1
+    assert not any(
+        t == Topics.SITUATION_UPDATE and p.get("layer") == "deep"
+        for t, p in bus.published
+    )
+
+
+def test_user_requested_deep_bypasses_rate_limit():
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(vlm=vlm)
+
+    first = pipeline.understand_screen_deep()
+    second = pipeline.understand_screen_deep()
+
+    assert first["topic"] == "climate"
+    assert second["topic"] == "climate"
+    assert len(vlm.understand_calls) == 2
+
+
+def test_user_requested_deep_can_respect_rate_limit_when_disabled():
+    vlm = FakeVLM()
+    pipeline = PerceptionPipeline(
+        vlm=vlm,
+        sensitive_filter=FakeSensitive(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        bus=FakeBus(),
+        user_bypass_rate_limit=False,
+        start_deep_timer=False,
+    )
+
+    first = pipeline.understand_screen_deep()
+    second = pipeline.understand_screen_deep()
+
+    assert first["topic"] == "climate"
+    assert second["reason"] == "rate_limited"
+    assert len(vlm.understand_calls) == 1
+
+
+def test_periodic_check_fills_missing_deep_result():
+    bus = FakeBus()
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(
+        bus=bus,
+        vlm=vlm,
+        text_client=FakeTextClient({
+            "source": "dom",
+            "text": "Document heading",
+            "title": "Document title",
+            "confidence": 0.95,
+            "sensitive": False,
+            "degraded": False,
+        }),
+    )
+    pipeline.on_content_ready(
+        "event/perception/content_ready",
+        {"title": "Document title", "url": "https://x.com/doc"},
+    )
+    _wait_for_situation_layer(bus, "fast")
+    assert vlm.understand_calls == []
+
+    pipeline.check_deep_due()
+    deep = _wait_for_situation_layer(bus, "deep")
+
+    assert deep["topic"] == "climate"
+    assert vlm.understand_calls
 
 
 def test_pipeline_utterance_callback_does_not_block_on_slow_stt():

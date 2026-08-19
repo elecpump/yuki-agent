@@ -1,3 +1,5 @@
+import time
+
 from yuki.perception.observation import StableContentObservation
 from yuki.topics import Topics
 
@@ -6,7 +8,7 @@ from tests.fakes import FakeBus
 
 def test_focus_change_waits_for_stored_frame_before_content_ready():
     bus = FakeBus()
-    obs = StableContentObservation(bus, clock=lambda: 123.0)
+    obs = StableContentObservation(bus, clock=lambda: 123.0, dwell_s=0.0)
 
     obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
     assert bus.published == []
@@ -36,7 +38,7 @@ def test_focus_change_waits_for_stored_frame_before_content_ready():
 
 def test_scroll_idle_uses_last_focus_when_next_frame_is_stored():
     bus = FakeBus()
-    obs = StableContentObservation(bus, clock=lambda: 200.0)
+    obs = StableContentObservation(bus, clock=lambda: 200.0, dwell_s=0.0)
     obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
     obs.on_frame_stored(
         {"frame_id": 1, "ts": 1.0, "width": 800, "height": 600, "sensitive": False}
@@ -60,7 +62,7 @@ def test_scroll_idle_uses_last_focus_when_next_frame_is_stored():
 
 def test_focus_pending_reason_is_not_overwritten_by_scroll_before_frame():
     bus = FakeBus()
-    obs = StableContentObservation(bus, clock=lambda: 300.0)
+    obs = StableContentObservation(bus, clock=lambda: 300.0, dwell_s=0.0)
 
     obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
     obs.on_scroll_activity()
@@ -98,3 +100,61 @@ def test_pending_observation_requires_identified_frame():
     obs.on_frame_stored({"ts": 1.0, "width": 800, "height": 600, "sensitive": False})
 
     assert bus.published == []
+
+
+def test_content_ready_waits_for_dwell_without_scroll_or_focus_switch():
+    now = [100.0]
+    bus = FakeBus()
+    obs = StableContentObservation(bus, clock=lambda: now[0], dwell_s=2.0)
+    obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
+
+    now[0] += 1.9
+    obs.on_frame_stored(
+        {"frame_id": 1, "ts": 1.0, "width": 800, "height": 600, "sensitive": False}
+    )
+    assert bus.published == []
+
+    now[0] += 0.2
+    obs.on_frame_stored(
+        {"frame_id": 2, "ts": 2.0, "width": 800, "height": 600, "sensitive": False}
+    )
+    assert bus.published[0][0] == Topics.CONTENT_READY
+    assert bus.published[0][1]["frame_id"] == 2
+
+
+def test_content_ready_releases_after_dwell_without_second_frame():
+    bus = FakeBus()
+    obs = StableContentObservation(bus, dwell_s=0.03)
+    try:
+        obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
+        obs.on_frame_stored(
+            {"frame_id": 1, "ts": 1.0, "width": 800, "height": 600, "sensitive": False}
+        )
+        assert bus.published == []
+
+        deadline = time.time() + 1.0
+        while not bus.published and time.time() < deadline:
+            time.sleep(0.01)
+
+        assert bus.published[0][0] == Topics.CONTENT_READY
+        assert bus.published[0][1]["frame_id"] == 1
+        assert bus.published[0][1]["reason"] == "focus_changed"
+    finally:
+        obs.close()
+
+
+def test_scroll_activity_resets_dwell_timer():
+    now = [100.0]
+    bus = FakeBus()
+    obs = StableContentObservation(bus, clock=lambda: now[0], dwell_s=2.0)
+    try:
+        obs.on_focus_changed({"app": "chrome", "url": "https://example.com/a", "title": "A"})
+        now[0] += 1.0
+        obs.on_scroll_activity()
+        now[0] += 1.5
+        obs.on_frame_stored(
+            {"frame_id": 1, "ts": 1.0, "width": 800, "height": 600, "sensitive": False}
+        )
+        assert bus.published == []
+    finally:
+        obs.close()

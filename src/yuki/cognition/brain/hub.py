@@ -85,16 +85,19 @@ class DecisionHub:
         self._sensitive_filter = sensitive_filter or SensitiveFilter()
         self._decision_lock = threading.Lock()
         self._context = None
+        self._situation_fast = None
+        self._situation_deep = None
         self._last_open_ts = None
         self._context_wrapper = context
         self._projector = projector
         self._sedimenter = sedimenter
 
     def on_situation_update(self, topic: str, payload: dict) -> None:
+        selected = self._select_situation(payload)
         if self._context_wrapper is not None:
-            self._context_wrapper.update_situation(payload)
-        self._context = payload
-        self._handle(TriggerKind.SITUATION, "", situation=payload, publish_reply=True)
+            self._context_wrapper.update_situation(selected)
+        self._context = selected
+        self._handle(TriggerKind.SITUATION, "", situation=selected, publish_reply=True)
 
     def handle_awake_request(self, payload: dict) -> dict:
         return self._handle(TriggerKind.AWAKE, "", publish_reply=False)
@@ -193,6 +196,29 @@ class DecisionHub:
             situation_provenance=situation_provenance(effective_situation),
         ).to_dict())
         return {"text": rendered, "ts": reply_ts, "spoke": spoke, "reason": reason}
+
+    def _select_situation(self, payload: dict) -> dict:
+        layer = payload.get("layer")
+        if layer == "deep":
+            self._situation_deep = dict(payload)
+        elif layer == "fast":
+            self._situation_fast = dict(payload)
+        else:
+            self._situation_fast = dict(payload)
+            self._situation_deep = None
+            return dict(payload)
+
+        fast = self._situation_fast
+        deep = self._situation_deep
+        if (
+            deep is not None
+            and not deep.get("degraded")
+            and (fast is None or deep.get("source_id") == fast.get("source_id"))
+        ):
+            return dict(deep)
+        if fast is not None:
+            return dict(fast)
+        return dict(payload)
 
 
     def _try_l2(self, text: str, situation: dict | None, snapshot=None) -> tuple[str, bool, bool]:

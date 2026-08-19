@@ -91,6 +91,8 @@ class CognitionAssembler:
             speech_buffer=self.speech_buffer,
             text_summary_chars=self.config.text.summary_chars,
             text_key_point_chars=self.config.text.key_point_chars,
+            deep_interval_s=self.config.vlm.deep_interval_s,
+            user_bypass_rate_limit=self.config.vlm.user_bypass_rate_limit,
         )
         pipeline.warmup_vlm()
 
@@ -101,6 +103,7 @@ class CognitionAssembler:
         if self.registry is None:
             register_builtin_system(registry)
         register_memory_functions(registry, memory)
+        self._register_perception_functions(registry, pipeline)
         register_function_services(self.bus, registry)
 
         bridge = self._build_bridge(registry)
@@ -233,6 +236,24 @@ class CognitionAssembler:
             max_turns=self.config.cloud.max_turns,
             persona_name=self.config.persona_name,
         )
+
+    def _register_perception_functions(
+        self,
+        registry: FunctionRegistry,
+        pipeline: PerceptionPipeline,
+    ) -> None:
+        if "perception.deep_understand_screen" in registry.names():
+            return
+
+        @registry.tool(
+            "perception.deep_understand_screen",
+            description="用户明确请求时立即用 VLM 深度理解当前屏幕。",
+            params=None,
+        )
+        def _deep_understand(params=None) -> dict:
+            return pipeline.understand_screen_deep(
+                bypass_rate_limit=self.config.vlm.user_bypass_rate_limit
+            )
 
     def _build_persona_refresh(
         self,

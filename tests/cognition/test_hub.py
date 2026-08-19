@@ -351,6 +351,38 @@ def test_hub_context_situation_used_for_situation_update(hub):
     assert ctx.situations == [{"topic": "量子计算", "sensitive": False, "ts": 0.0}]
 
 
+def test_hub_prefers_deep_situation_for_same_source(hub):
+    h, bus, _ = hub
+    h.on_situation_update(
+        Topics.SITUATION_UPDATE,
+        {"layer": "fast", "source_id": "article-1", "topic": "fast", "sensitive": False},
+    )
+    h.on_situation_update(
+        Topics.SITUATION_UPDATE,
+        {"layer": "deep", "source_id": "article-1", "topic": "deep", "sensitive": False},
+    )
+    assert h._context["topic"] == "deep"
+
+
+def test_hub_falls_back_to_fast_when_deep_degraded(hub):
+    h, bus, _ = hub
+    h.on_situation_update(
+        Topics.SITUATION_UPDATE,
+        {"layer": "fast", "source_id": "article-1", "topic": "fast", "sensitive": False},
+    )
+    h.on_situation_update(
+        Topics.SITUATION_UPDATE,
+        {
+            "layer": "deep",
+            "source_id": "article-1",
+            "topic": "",
+            "sensitive": False,
+            "degraded": True,
+        },
+    )
+    assert h._context["topic"] == "fast"
+
+
 class FakeSedimenter:
     def __init__(self):
         self.utterances = []

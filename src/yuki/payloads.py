@@ -49,6 +49,8 @@ class SituationUpdatePayload(TypedDict):
     frame_width: int
     frame_height: int
     cache_key: str
+    layer: str
+    confidence: float
     topic: str
     summary: str
     content_type: str

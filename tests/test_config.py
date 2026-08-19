@@ -158,6 +158,20 @@ def test_cloud_env_override(monkeypatch):
     assert config.cloud.timeout_s == 20.0
 
 
+def test_vlm_deep_defaults():
+    config = Config()
+    assert config.vlm.deep_interval_s == 300.0
+    assert config.vlm.user_bypass_rate_limit is True
+
+
+def test_vlm_deep_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_VLM_DEEP_INTERVAL_S", "120.0")
+    monkeypatch.setenv("YUKI_VLM_USER_BYPASS_RATE_LIMIT", "false")
+    config = Config.load(None)
+    assert config.vlm.deep_interval_s == 120.0
+    assert config.vlm.user_bypass_rate_limit is False
+
+
 def test_soul_defaults():
     config = Config()
     assert config.soul.path == "data/soul.json"
@@ -170,6 +184,17 @@ def test_soul_env_override(monkeypatch):
     config = Config.load(None)
     assert config.soul.path == "tmp/soul.json"
     assert config.soul.tuner_state_path == "tmp/tuner_state.json"
+
+
+def test_perception_defaults():
+    config = Config()
+    assert config.perception.dwell_s == 2.0
+
+
+def test_perception_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_PERCEPTION_DWELL_S", "1.5")
+    config = Config.load(None)
+    assert config.perception.dwell_s == 1.5
 
 
 def test_context_defaults():

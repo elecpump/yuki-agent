@@ -49,6 +49,8 @@ vlm:
   enabled: true
   model: Qwen/Qwen3-VL-8B-Instruct
   cache_dir: ""
+  deep_interval_s: 300.0
+  user_bypass_rate_limit: true
 cloud:
   enabled: false
   base_url: https://api.deepseek.com/v1
@@ -59,6 +61,8 @@ cloud:
 soul:
   path: data/soul.json
   tuner_state_path: data/tuner_state.json
+perception:
+  dwell_s: 2.0
 context:
   max_turns: 20
   max_tokens: 1500

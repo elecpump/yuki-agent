@@ -68,6 +68,8 @@ class VlmConfig(BaseModel):
     enabled: bool = True
     model: str = "Qwen/Qwen3-VL-8B-Instruct"
     cache_dir: str = ""
+    deep_interval_s: float = Field(300.0, ge=0.0)
+    user_bypass_rate_limit: bool = True
 
 
 class CloudConfig(BaseModel):
@@ -82,6 +84,10 @@ class CloudConfig(BaseModel):
 class SoulConfig(BaseModel):
     path: str = "data/soul.json"
     tuner_state_path: str = "data/tuner_state.json"
+
+
+class PerceptionConfig(BaseModel):
+    dwell_s: float = Field(2.0, ge=0.0)
 
 
 class ContextConfig(BaseModel):
@@ -123,6 +129,7 @@ class Config(BaseModel):
     vlm: VlmConfig = Field(default_factory=VlmConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
+    perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     sedimenter: SedimenterConfig = Field(default_factory=SedimenterConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -150,6 +157,7 @@ class Config(BaseModel):
             ("vlm", VlmConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
+            ("perception", PerceptionConfig),
             ("context", ContextConfig),
             ("sedimenter", SedimenterConfig),
             ("persona", PersonaConfig),

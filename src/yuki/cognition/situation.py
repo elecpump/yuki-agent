@@ -14,7 +14,7 @@ def scroll_band(scroll_percent: float | None) -> str:
 
 
 def source_id_for(observation: dict) -> str:
-    return observation.get("url") or observation.get("title") or "unknown"
+    return observation.get("source_id") or observation.get("url") or observation.get("title") or "unknown"
 
 
 def cache_key_for(observation: dict) -> str:
@@ -23,6 +23,10 @@ def cache_key_for(observation: dict) -> str:
     if scroll_percent is None:
         return source_id
     return f"{source_id}|{scroll_band(scroll_percent)}"
+
+
+def deep_cache_key_for(observation: dict) -> str:
+    return source_id_for(observation)
 
 
 def _int_or_none(value) -> int | None:
@@ -43,6 +47,8 @@ def build_situation_update(
     frame: dict,
     context: dict,
     *,
+    layer: str = "fast",
+    confidence: float | None = None,
     sensitive: bool = False,
     reason: str | None = None,
     clock: Callable[[], float] = time.time,
@@ -53,6 +59,15 @@ def build_situation_update(
     if frame_id is None:
         raise ValueError("situation update requires frame_id")
     frame_ts = frame.get("ts", observation.get("frame_ts", 0.0))
+
+    if layer not in ("fast", "deep"):
+        layer = "fast"
+    if confidence is None:
+        confidence = 0.0 if sensitive or context.get("degraded", False) else 0.6
+    try:
+        confidence = min(max(float(confidence), 0.0), 1.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
 
     payload = {
         "situation_id": f"frame:{frame_id}",
@@ -66,6 +81,8 @@ def build_situation_update(
         "frame_width": frame.get("width", observation.get("frame_width", 0)),
         "frame_height": frame.get("height", observation.get("frame_height", 0)),
         "cache_key": cache_key_for(observation),
+        "layer": layer,
+        "confidence": confidence,
         "topic": "" if sensitive else context.get("topic", ""),
         "summary": "" if sensitive else context.get("summary", ""),
         "content_type": "unknown" if sensitive else context.get("content_type", "unknown"),

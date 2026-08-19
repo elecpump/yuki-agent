@@ -13,8 +13,10 @@ from yuki.cognition.sensitive import SensitiveFilter
 from yuki.cognition.situation import (
     build_situation_update,
     cache_key_for,
+    deep_cache_key_for,
     frame_id_for,
     scroll_band,
+    source_id_for,
 )
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
@@ -80,6 +82,24 @@ class _LatestJobWorker:
             thread.join(timeout=2.0)
 
 
+class DeepRateLimiter:
+    """Single arbiter for expensive VLM deep understanding attempts."""
+
+    def __init__(self, interval_s: float = 300.0, clock: Callable[[], float] = time.monotonic) -> None:
+        self._interval_s = max(0.0, float(interval_s))
+        self._clock = clock
+        self._last_deep: float | None = None
+        self._lock = threading.Lock()
+
+    def allow(self, *, bypass: bool = False, now: float | None = None) -> bool:
+        now = self._clock() if now is None else now
+        with self._lock:
+            if bypass or self._last_deep is None or now - self._last_deep >= self._interval_s:
+                self._last_deep = now
+                return True
+            return False
+
+
 class PerceptionPipeline:
     """纯感知管线：产出结构化理解事件，不产生任何回复。
 
@@ -99,6 +119,10 @@ class PerceptionPipeline:
         text_client: TextClient | None = None,
         text_summary_chars: int = 500,
         text_key_point_chars: int = 160,
+        deep_interval_s: float = 300.0,
+        user_bypass_rate_limit: bool = True,
+        clock: Callable[[], float] = time.monotonic,
+        start_deep_timer: bool = True,
     ) -> None:
         self._vlm = vlm
         self._sensitive = sensitive_filter
@@ -108,12 +132,23 @@ class PerceptionPipeline:
         self._bus = bus
         self._text_summary_chars = text_summary_chars
         self._text_key_point_chars = text_key_point_chars
+        self._user_bypass_rate_limit = user_bypass_rate_limit
+        self._clock = clock
+        self._deep_interval_s = max(0.0, float(deep_interval_s))
+        self._deep_limiter = DeepRateLimiter(self._deep_interval_s, clock=clock)
+        self._latest_deep_payload: dict | None = None
+        self._deep_results: dict[str, dict] = {}
+        self._deep_timer_stop = threading.Event()
+        self._deep_timer_thread: threading.Thread | None = None
         self._listening = False
         self._speech_buffer = speech_buffer or SpeechBuffer(
             on_utterance=self._on_utterance
         )
-        self._vlm_worker = _LatestJobWorker("yuki-cognition-vlm")
+        self._fast_worker = _LatestJobWorker("yuki-cognition-fast_worker")
+        self._deep_worker = _LatestJobWorker("yuki-cognition-deep_worker")
         self._stt_worker = _LatestJobWorker("yuki-cognition-stt")
+        if start_deep_timer:
+            self._start_deep_timer()
 
     def _frame_for_payload(self, payload: dict) -> dict:
         frame_id = payload.get("frame_id")
@@ -132,11 +167,11 @@ class PerceptionPipeline:
             "text": text, "duration_s": round(len(samples) / 16000, 2), "ts": time.time(),
         })
 
-    def _process_content_ready(self, topic: str, payload: dict) -> None:
+    def _process_content_ready_fast(self, topic: str, payload: dict) -> None:
         frame = self._frame_for_payload(payload)
         if frame_id_for(payload, frame or {}) is None:
             return
-        context = self._understand_observation(payload, frame)
+        context = self._understand_observation_fast(payload, frame)
         if context is None:
             return
         if context.get("sensitive"):
@@ -145,15 +180,76 @@ class PerceptionPipeline:
                     payload,
                     frame or {},
                     {},
+                    layer="fast",
+                    confidence=0.0,
                     sensitive=True,
                     reason=context.get("reason", "sensitive"),
                 )
             )
             return
-        self._publish_situation(build_situation_update(payload, frame or {}, context))
+        self._publish_situation(
+            build_situation_update(
+                payload,
+                frame or {},
+                context,
+                layer="fast",
+                confidence=context.get("confidence", 0.6),
+            )
+        )
 
-    def _understand_observation(self, payload: dict, frame: dict | None) -> dict | None:
-        evidence = self._text_client.get_for_observation(payload, frame)
+    def _process_content_ready_deep_if_needed(self, topic: str, payload: dict) -> None:
+        frame = self._frame_for_payload(payload)
+        if frame_id_for(payload, frame or {}) is None:
+            return
+        evidence = self._safe_text_evidence(payload, frame)
+        if not self._needs_deep(evidence):
+            return
+        self._process_content_ready_deep(topic, payload, frame=frame, bypass=False)
+
+    def _process_content_ready_deep(
+        self,
+        topic: str,
+        payload: dict,
+        *,
+        frame: dict | None = None,
+        bypass: bool = False,
+    ) -> dict | None:
+        if not self._deep_limiter.allow(bypass=bypass):
+            logger.info(
+                "deep understanding skipped by rate limit",
+                source_id=source_id_for(payload),
+            )
+            return None
+        frame = self._frame_for_payload(payload) if frame is None else frame
+        if frame_id_for(payload, frame or {}) is None:
+            return None
+        context = self._understand_observation_deep(payload, frame)
+        if context is None:
+            context = {"topic": "", "summary": "", "content_type": "unknown",
+                       "key_points": [], "degraded": True, "reason": "no_frame"}
+        sensitive = bool(context.get("sensitive"))
+        update = build_situation_update(
+            payload,
+            frame or {},
+            {} if sensitive else context,
+            layer="deep",
+            confidence=0.0 if context.get("degraded") or sensitive else 0.85,
+            sensitive=sensitive,
+            reason=context.get("reason", "sensitive") if sensitive else context.get("reason", ""),
+        )
+        self._deep_results[source_id_for(payload)] = update
+        self._publish_situation(update)
+        return update
+
+    def _safe_text_evidence(self, payload: dict, frame: dict | None) -> dict:
+        try:
+            return self._text_client.get_for_observation(payload, frame)
+        except Exception:
+            logger.exception("fast text evidence failed")
+            return {"text": "", "degraded": True, "reason": "text_failed"}
+
+    def _understand_observation_fast(self, payload: dict, frame: dict | None) -> dict | None:
+        evidence = self._safe_text_evidence(payload, frame)
         if evidence.get("sensitive"):
             return {
                 "topic": "",
@@ -178,12 +274,23 @@ class PerceptionPipeline:
                 }
             return self._context_from_text(evidence, payload)
 
+        return {
+            "topic": "",
+            "summary": "",
+            "content_type": "unknown",
+            "key_points": [],
+            "degraded": True,
+            "reason": evidence.get("reason", "no_text") or "no_text",
+            "confidence": 0.0,
+        }
+
+    def _understand_observation_deep(self, payload: dict, frame: dict | None) -> dict | None:
         if not frame or not frame.get("png") or frame.get("sensitive"):
             return None
         image = decode_png_b64(frame["png"])
         if image is None:
             return {"topic": "", "degraded": True, "reason": "decode_failed"}
-        cache_key = cache_key_for(payload)
+        cache_key = deep_cache_key_for(payload)
         context = self._vlm.understand(image, cache_key=cache_key)
         text = " ".join([
             context.get("topic", ""),
@@ -193,6 +300,13 @@ class PerceptionPipeline:
         if self._sensitive.scan(text):
             return {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
         return context
+
+    def _understand_observation(self, payload: dict, frame: dict | None) -> dict | None:
+        context = self._understand_observation_fast(payload, frame)
+        if context is not None and not context.get("degraded"):
+            return context
+        deep_context = self._understand_observation_deep(payload, frame)
+        return deep_context if deep_context is not None else context
 
     def _context_from_text(self, evidence: dict, payload: dict) -> dict:
         text = self._normalize_text(str(evidence.get("text", "")))
@@ -212,6 +326,7 @@ class PerceptionPipeline:
             "summary": summary,
             "content_type": f"text/{evidence.get('source', 'unknown')}",
             "key_points": points,
+            "confidence": 0.55 if evidence.get("source") == "ocr" else 0.6,
             "degraded": False,
             "reason": f"text_{evidence.get('source', 'unknown')}",
         }
@@ -236,7 +351,10 @@ class PerceptionPipeline:
         return bool(re.match(r"^\d+[.)]", stripped))
 
     def on_content_ready(self, topic: str, payload: dict) -> None:
-        self._vlm_worker.submit(self._process_content_ready, topic, dict(payload))
+        payload = dict(payload)
+        self._latest_deep_payload = payload
+        self._fast_worker.submit(self._process_content_ready_fast, topic, payload)
+        self._deep_worker.submit(self._process_content_ready_deep_if_needed, topic, payload)
 
     def on_focus_changed(self, topic: str, payload: dict) -> None:
         if payload.get("content_ready_deferred"):
@@ -247,6 +365,8 @@ class PerceptionPipeline:
         data.setdefault("source_id", "unknown")
         data.setdefault("scroll_band", "unknown")
         data.setdefault("key_points", [])
+        data.setdefault("layer", "fast")
+        data.setdefault("confidence", 0.0)
         data.setdefault("ts", time.time())
         self._bus.publish(Topics.SITUATION_UPDATE, data)
 
@@ -267,6 +387,8 @@ class PerceptionPipeline:
 
     def understand_screen(self) -> dict:
         frame = self._frame_client.get_latest()
+        if not frame or not frame.get("png") or frame.get("sensitive"):
+            return {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
         payload = {
             "reason": "awake",
             "frame_id": frame.get("frame_id") if frame else None,
@@ -277,17 +399,76 @@ class PerceptionPipeline:
             return {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
         return context
 
+    def understand_screen_deep(self, *, bypass_rate_limit: bool | None = None) -> dict:
+        frame = self._frame_client.get_latest()
+        payload = {
+            "reason": "user_request",
+            "frame_id": frame.get("frame_id") if frame else None,
+            "hwnd": frame.get("hwnd") if frame else None,
+        }
+        if frame_id_for(payload, frame or {}) is None:
+            return {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
+        bypass = self._user_bypass_rate_limit if bypass_rate_limit is None else bypass_rate_limit
+        if not self._deep_limiter.allow(bypass=bypass):
+            return {"topic": "", "degraded": True, "reason": "rate_limited"}
+        context = self._understand_observation_deep(payload, frame)
+        if context is None:
+            return {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
+        return context
+
+    def check_deep_due(self) -> None:
+        payload = self._latest_deep_payload
+        if payload is None:
+            return
+        source_id = source_id_for(payload)
+        if source_id in self._deep_results:
+            return
+        self._deep_worker.submit(self._process_content_ready_deep, Topics.CONTENT_READY, dict(payload))
+
     def warmup_vlm(self) -> None:
         self._vlm.warmup()
 
     def close(self) -> None:
-        self._vlm_worker.close()
+        self._deep_timer_stop.set()
+        if self._deep_timer_thread is not None and self._deep_timer_thread.is_alive():
+            self._deep_timer_thread.join(timeout=2.0)
+        self._fast_worker.close()
+        self._deep_worker.close()
         self._stt_worker.close()
+
+    def _needs_deep(self, evidence: dict) -> bool:
+        text = str(evidence.get("text", "") or "").strip()
+        if not text:
+            return True
+        if evidence.get("degraded"):
+            return True
+        confidence = evidence.get("confidence")
+        try:
+            return float(confidence) < 0.6
+        except (TypeError, ValueError):
+            return False
+
+    def _start_deep_timer(self) -> None:
+        if self._deep_interval_s <= 0:
+            return
+
+        def run() -> None:
+            while not self._deep_timer_stop.wait(self._deep_interval_s):
+                self.check_deep_due()
+
+        self._deep_timer_thread = threading.Thread(
+            target=run,
+            daemon=True,
+            name="yuki-cognition-deep-timer",
+        )
+        self._deep_timer_thread.start()
 
 
 def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
                    frame_client=None, speech_buffer=None, text_client=None,
-                   text_summary_chars: int = 500, text_key_point_chars: int = 160) -> PerceptionPipeline:
+                   text_summary_chars: int = 500, text_key_point_chars: int = 160,
+                   deep_interval_s: float = 300.0,
+                   user_bypass_rate_limit: bool = True) -> PerceptionPipeline:
     pipeline = PerceptionPipeline(
         vlm=vlm or VisualUnderstander(),
         sensitive_filter=sensitive_filter or SensitiveFilter(),
@@ -298,6 +479,8 @@ def build_pipeline(bus, *, vlm=None, sensitive_filter=None, stt=None,
         text_client=text_client,
         text_summary_chars=text_summary_chars,
         text_key_point_chars=text_key_point_chars,
+        deep_interval_s=deep_interval_s,
+        user_bypass_rate_limit=user_bypass_rate_limit,
     )
     bus.subscribe(Topics.CONTENT_READY, pipeline.on_content_ready)
     bus.subscribe(Topics.FOCUS_CHANGED, pipeline.on_focus_changed)

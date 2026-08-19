@@ -1,6 +1,6 @@
 import pytest
 
-from yuki.cognition.situation import build_situation_update, scroll_band
+from yuki.cognition.situation import build_situation_update, deep_cache_key_for, scroll_band
 
 
 def test_build_situation_update_includes_provenance():
@@ -43,6 +43,8 @@ def test_build_situation_update_includes_provenance():
         "frame_width": 801,
         "frame_height": 601,
         "cache_key": "https://x.com/a|25-50",
+        "layer": "fast",
+        "confidence": 0.6,
         "topic": "climate",
         "summary": "s",
         "content_type": "article",
@@ -70,7 +72,24 @@ def test_build_sensitive_situation_preserves_provenance():
     assert payload["topic"] == ""
     assert payload["sensitive"] is True
     assert payload["degraded"] is True
+    assert payload["layer"] == "fast"
+    assert payload["confidence"] == 0.0
     assert payload["reason"] == "sensitive"
+
+
+def test_build_deep_situation_uses_layer_confidence_and_source_cache_key():
+    payload = build_situation_update(
+        {"url": "https://x.com/a", "scroll_percent": 80, "frame_id": 7},
+        {"frame_id": 7, "width": 800, "height": 600, "ts": 9.0},
+        {"topic": "climate"},
+        layer="deep",
+        confidence=0.85,
+    )
+
+    assert payload["layer"] == "deep"
+    assert payload["confidence"] == 0.85
+    assert payload["cache_key"] == "https://x.com/a|75-100"
+    assert deep_cache_key_for(payload) == "https://x.com/a"
 
 
 def test_build_situation_update_requires_frame_id():
