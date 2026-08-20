@@ -11,6 +11,14 @@ _PROMPT = (
     '{"topic": 主题, "summary": 一两句摘要, "content_type": article|pdf|web|unknown, "key_points": [要点列表]}。'
 )
 
+_QUESTION_PROMPT = (
+    "你是读屏问答路由助手。请结合用户问题和截图判断截图是否足以回答。"
+    "输出严格 JSON："
+    '{"topic": 主题, "summary": 一两句摘要, "content_type": article|pdf|web|unknown, '
+    '"key_points": [要点列表], "can_answer": true|false}。'
+    "只有截图中有足够证据回答用户问题时 can_answer 才为 true。用户问题：{question}"
+)
+
 
 class VisualUnderstander:
     """VLM 读屏 → 阅读情境，带 context cache。"""
@@ -79,12 +87,22 @@ class VisualUnderstander:
         threading.Thread(target=_load_thread, daemon=True).start()
 
     def _infer(self, image) -> dict:
+        return self._infer_with_prompt(image, _PROMPT, include_can_answer=False)
+
+    def _infer_for_question(self, image, question: str) -> dict:
+        return self._infer_with_prompt(
+            image,
+            _QUESTION_PROMPT.replace("{question}", question or ""),
+            include_can_answer=True,
+        )
+
+    def _infer_with_prompt(self, image, prompt: str, *, include_can_answer: bool) -> dict:
         self._load()
         from qwen_vl_utils import process_vision_info
         messages = [
             {"role": "user", "content": [
                 {"type": "image", "image": image},
-                {"type": "text", "text": _PROMPT},
+                {"type": "text", "text": prompt},
             ]}
         ]
         text = self._processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -94,20 +112,29 @@ class VisualUnderstander:
         with torch.no_grad():
             outputs = self._model.generate(**inputs, max_new_tokens=200)
         generated = outputs[0][inputs["input_ids"].shape[-1]:]
-        return self._parse(self._processor.decode(generated, skip_special_tokens=True))
+        return self._parse(
+            self._processor.decode(generated, skip_special_tokens=True),
+            include_can_answer=include_can_answer,
+        )
 
-    def _parse(self, raw: str) -> dict:
+    def _parse(self, raw: str, *, include_can_answer: bool = False) -> dict:
         try:
             data = json.loads(raw.strip().lstrip("```json").rstrip("```").strip())
-            return {
+            result = {
                 "topic": str(data.get("topic", "")),
                 "summary": str(data.get("summary", "")),
                 "content_type": str(data.get("content_type", "unknown")),
                 "key_points": list(data.get("key_points", [])),
             }
+            if include_can_answer:
+                result["can_answer"] = bool(data.get("can_answer", False))
+            return result
         except (json.JSONDecodeError, AttributeError):
             logger.warning("vlm output parse failed, degrading")
-            return {"topic": "", "summary": "", "content_type": "unknown", "key_points": []}
+            result = {"topic": "", "summary": "", "content_type": "unknown", "key_points": []}
+            if include_can_answer:
+                result["can_answer"] = False
+            return result
 
     def understand(self, image, cache_key: str | None = None) -> dict:
         if cache_key:
@@ -122,6 +149,31 @@ class VisualUnderstander:
                       "key_points": [], "degraded": True, "reason": "inference_failed"}
         if not isinstance(result, dict):
             result = self._parse(result if isinstance(result, str) else "")
+        if cache_key:
+            self._cache.put(cache_key, result)
+        return result
+
+    def understand_for_question(self, image, question: str, cache_key: str | None = None) -> dict:
+        if cache_key:
+            hit = self._cache.get(cache_key)
+            if hit is not None:
+                return hit
+        try:
+            result = self._infer_for_question(image, question)
+        except Exception:
+            logger.exception("vlm question inference failed, degrading")
+            result = {
+                "topic": "",
+                "summary": "",
+                "content_type": "unknown",
+                "key_points": [],
+                "can_answer": False,
+                "degraded": True,
+                "reason": "inference_failed",
+            }
+        if not isinstance(result, dict):
+            result = self._parse(result if isinstance(result, str) else "", include_can_answer=True)
+        result["can_answer"] = bool(result.get("can_answer", False))
         if cache_key:
             self._cache.put(cache_key, result)
         return result

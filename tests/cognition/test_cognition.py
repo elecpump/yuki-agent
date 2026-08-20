@@ -64,7 +64,8 @@ def test_cognition_agent_awake_service_coordinates_pipeline_and_brain(tmp_path):
     agent.setup()
     try:
         result = bus.request(COGNITION_AWAKE_SERVICE, {"source": "hotkey", "ts": 0.0})
-        assert result["text"]
+        assert result["text"] == ""
+        assert result["spoke"] is False
         assert pipeline.awake_payloads == [
             (Topics.AWAKE, {"source": "hotkey", "ts": 0.0})
         ]

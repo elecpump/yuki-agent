@@ -1,21 +1,20 @@
-import time
 import threading
+import time
 
-from yuki.cognition.brain.actions import ACTION_EXECUTORS, ActionContext
-from yuki.cognition.brain.classifier import (
-    Emotion,
-    Intent,
-    RuleEmotionClassifier,
-    RuleIntentClassifier,
-)
-from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
-from yuki.cognition.l1 import L1Engine
+from yuki.cognition.brain.classifier import Emotion, Intent
+from yuki.cognition.brain.local.router import LocalRoute, RouterDecision, is_crisis
+from yuki.cognition.brain.policy import DecisionPolicy, SituationAction, TriggerKind
+from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.logger import get_decision_logger, get_logger
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.brain.hub")
 
 L2_UNAVAILABLE_NOTICE = "（云端暂时不可用，我先用本地模式陪你。）"
+CRISIS_FALLBACK_REPLY = (
+    "我在。你现在的安全最重要：如果你可能会伤害自己，请立刻联系身边可信任的人，"
+    "或拨打当地紧急电话/危机热线。先不要一个人扛着，我们把眼前这一刻撑过去。"
+)
 COGNITION_AWAKE_SERVICE = "cognition.awake"
 
 
@@ -34,8 +33,20 @@ def situation_provenance(situation: dict | None) -> dict:
 
 
 class DecisionTrace:
-    def __init__(self, *, ts, trigger, intent, emotion, actions, rendered, reason,
-                 tier, cooldown_state, situation_provenance=None) -> None:
+    def __init__(
+        self,
+        *,
+        ts,
+        trigger,
+        intent,
+        emotion,
+        actions,
+        rendered,
+        reason,
+        route,
+        cooldown_state,
+        situation_provenance=None,
+    ) -> None:
         self.ts = ts
         self.trigger = trigger
         self.intent = intent
@@ -43,7 +54,7 @@ class DecisionTrace:
         self.actions = actions
         self.rendered = rendered
         self.reason = reason
-        self.tier = tier
+        self.route = route
         self.cooldown_state = cooldown_state
         self.situation_provenance = situation_provenance or {}
 
@@ -53,33 +64,49 @@ class DecisionTrace:
             "trigger": self.trigger,
             "intent": self.intent,
             "emotion": self.emotion,
-            "actions": [a.name for a in self.actions],
+            "actions": [a.name if hasattr(a, "name") else str(a) for a in self.actions],
             "rendered": self.rendered,
             "reason": self.reason,
-            "tier": self.tier,
+            "route": self.route,
             "cooldown_state": self.cooldown_state,
             "situation_provenance": self.situation_provenance,
         }
 
 
 class DecisionHub:
-    """Brain 内核：分类 → tier 路由（L2 云桥 / L1 动作链）→ 执行 → 发布 REPLY + 轨迹。"""
+    """Brain core after local-brain route rewrite."""
 
-    def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
-                 memory=None, registry=None, l1=None, executors=None, trace_logger=None,
-                 bridge=None, tuner=None,
-                 context=None, projector=None, sedimenter=None) -> None:
+    def __init__(
+        self,
+        bus,
+        *,
+        policy=None,
+        memory=None,
+        registry=None,
+        trace_logger=None,
+        bridge=None,
+        tuner=None,
+        context=None,
+        projector=None,
+        sedimenter=None,
+        local_router=None,
+        local_composer=None,
+        vision_screen=None,
+        local_enabled: bool = False,
+        local_tool_allowlist: list[str] | None = None,
+    ) -> None:
         self._bus = bus
-        self._intent_clf = intent_clf or RuleIntentClassifier()
-        self._emotion_clf = emotion_clf or RuleEmotionClassifier()
         self._policy = policy or DecisionPolicy(proactive_cooldown_s=120.0)
         self._memory = memory
         self._registry = registry
-        self._l1 = l1 or L1Engine()
-        self._executors = executors if executors is not None else ACTION_EXECUTORS
         self._trace_logger = trace_logger or get_decision_logger()
         self._bridge = bridge
         self._tuner = tuner
+        self._local_router = local_router
+        self._local_composer = local_composer
+        self._vision_screen = vision_screen
+        self._local_enabled = local_enabled
+        self._local_tool_allowlist = set(local_tool_allowlist or [])
         self._decision_lock = threading.Lock()
         self._context = None
         self._situation_fast = None
@@ -103,7 +130,6 @@ class DecisionHub:
         text = payload.get("text", "")
         self._handle(TriggerKind.UTTERANCE, text, publish_reply=True)
 
-
     def _handle(
         self,
         trigger: TriggerKind,
@@ -112,8 +138,6 @@ class DecisionHub:
         *,
         publish_reply: bool,
     ) -> dict:
-        # SUB worker 会把不同 topic 的 handler 派发到不同线程；
-        # 决策状态（context/last_open_ts）必须串行。
         with self._decision_lock:
             return self._handle_locked(trigger, text, situation, publish_reply=publish_reply)
 
@@ -131,39 +155,29 @@ class DecisionHub:
         effective_situation = situation
         if effective_situation is None:
             effective_situation = (
-                getattr(snapshot, "situation", None) if snapshot is not None else self._context)
+                getattr(snapshot, "situation", None) if snapshot is not None else self._context
+            )
+        if snapshot is None:
+            snapshot = ContextSnapshot(situation=effective_situation)
 
-        intent = Intent.UNKNOWN
-        emotion = Emotion.NEUTRAL
-        tier = Tier.L1
         if trigger == TriggerKind.UTTERANCE:
-            intent = self._intent_clf.classify(text)
-            emotion = self._emotion_clf.classify(text)
-            tier = self._policy.tier_for(intent)
+            result = self._handle_utterance(text, snapshot, effective_situation)
+        elif trigger == TriggerKind.SITUATION:
+            result = self._handle_situation(trigger, effective_situation)
+        else:
+            result = {
+                "rendered": "",
+                "spoke": False,
+                "reason": "silent",
+                "route": "silent",
+                "intent": Intent.UNKNOWN,
+                "emotion": Emotion.NEUTRAL,
+                "actions": [],
+                "trusted_metadata": False,
+            }
 
-        actions: list = []
-        rendered, spoke, reason = "", False, "silent"
-        l2_wanted = tier == Tier.L2
-        l2_unavailable = l2_wanted and self._bridge is None
-        if l2_wanted and self._bridge is not None:
-            rendered, spoke, l2_failed = self._try_l2(text, effective_situation, snapshot)
-            l2_unavailable = l2_failed
-            if spoke:
-                reason = "l2"
-        if not spoke:
-            actions = self._policy.decide(
-                trigger, intent, emotion, text=text, situation=effective_situation,
-                last_open_ts=self._last_open_ts, now=time.time(),
-            )
-            rendered, spoke = self._execute(
-                actions, intent, emotion, text, effective_situation
-            )
-            reason = "l1" if spoke else "silent"
-            if l2_unavailable:
-                # §8.2：云端不可用时明确告知用户正在降级到本地，避免"哑巴"。
-                rendered = f"{rendered}{L2_UNAVAILABLE_NOTICE}" if spoke else L2_UNAVAILABLE_NOTICE
-                spoke = True
-                reason = "l2_unavailable_fallback"
+        rendered = result["rendered"]
+        spoke = result["spoke"]
         reply_ts = time.time()
         if spoke:
             self._last_open_ts = reply_ts
@@ -181,18 +195,252 @@ class DecisionHub:
                 self._tuner.on_proactive_open()
             if trigger == TriggerKind.UTTERANCE:
                 self._tuner.on_user_utterance(text)
-        if self._sedimenter is not None and trigger == TriggerKind.UTTERANCE:
+
+        intent = result["intent"]
+        if (
+            self._sedimenter is not None
+            and trigger == TriggerKind.UTTERANCE
+            and result.get("trusted_metadata")
+            and intent != Intent.UNKNOWN
+            and result.get("reason") != "crisis"
+        ):
             self._sedimenter.on_user_utterance(text, intent)
             topic = (effective_situation or {}).get("topic")
             if topic:
                 self._sedimenter.on_engagement(topic)
-        self._trace_logger.info("decision", **DecisionTrace(
-            ts=time.time(), trigger=trigger.value, intent=intent.value, emotion=emotion.value,
-            actions=actions, rendered=rendered, reason=reason, tier=tier.value,
-            cooldown_state={"last_open_ts": self._last_open_ts},
-            situation_provenance=situation_provenance(effective_situation),
-        ).to_dict())
-        return {"text": rendered, "ts": reply_ts, "spoke": spoke, "reason": reason}
+
+        self._trace_logger.info(
+            "decision",
+            **DecisionTrace(
+                ts=time.time(),
+                trigger=trigger.value,
+                intent=intent.value,
+                emotion=result["emotion"].value,
+                actions=result["actions"],
+                rendered=rendered,
+                reason=result["reason"],
+                route=result["route"],
+                cooldown_state={"last_open_ts": self._last_open_ts},
+                situation_provenance=situation_provenance(effective_situation),
+            ).to_dict(),
+        )
+        return {"text": rendered, "ts": reply_ts, "spoke": spoke, "reason": result["reason"]}
+
+    def _handle_utterance(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        situation: dict | None,
+    ) -> dict:
+        if is_crisis(text):
+            rendered, spoke, failed = self._try_cloud(text, snapshot)
+            if failed or not spoke:
+                rendered, spoke = CRISIS_FALLBACK_REPLY, True
+            return self._result(
+                rendered,
+                spoke,
+                reason="crisis",
+                route=LocalRoute.CLOUD,
+                intent=Intent.SAFETY,
+                emotion=Emotion.SADNESS,
+            )
+
+        if not self._local_enabled or self._local_router is None:
+            return self._cloud_or_notice(text, snapshot, reason="cloud")
+
+        decision = self._local_router.route(text, snapshot=snapshot, situation=situation)
+        if decision.route == LocalRoute.CHAT_LOCAL:
+            return self._dispatch_chat_local(text, snapshot, decision)
+        if decision.route == LocalRoute.TOOL_LOCAL:
+            return self._dispatch_tool_local(text, snapshot, decision)
+        if decision.route == LocalRoute.VISION:
+            return self._dispatch_vision(text, snapshot, decision)
+        return self._cloud_or_notice(text, snapshot, decision=decision, reason="cloud")
+
+    def _handle_situation(self, trigger: TriggerKind, situation: dict | None) -> dict:
+        actions = self._policy.decide(
+            trigger,
+            situation=situation,
+            last_open_ts=self._last_open_ts,
+            now=time.time(),
+        )
+        rendered = self._render_situation_actions(actions, situation)
+        return self._result(
+            rendered,
+            bool(rendered),
+            reason="situation" if rendered else "silent",
+            route="situation",
+            actions=actions,
+        )
+
+    def _dispatch_chat_local(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        decision: RouterDecision,
+    ) -> dict:
+        if self._local_composer is None:
+            return self._cloud_or_notice(text, snapshot, decision=decision, reason="chat_local_failed")
+        try:
+            rendered = self._local_composer.generate(text, snapshot=snapshot, memory=self._memory)
+        except Exception:
+            logger.warning("local reply failed, falling back to cloud", exc_info=True)
+            return self._cloud_or_notice(text, snapshot, decision=decision, reason="chat_local_failed")
+        if not rendered:
+            return self._cloud_or_notice(text, snapshot, decision=decision, reason="chat_local_empty")
+        return self._result(
+            rendered,
+            True,
+            reason="chat_local",
+            route=decision.route,
+            intent=decision.intent,
+            emotion=decision.emotion,
+            trusted_metadata=decision.trusted_metadata,
+        )
+
+    def _dispatch_tool_local(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        decision: RouterDecision,
+    ) -> dict:
+        if self._registry is None or not self._is_allowed_tool_call(decision.tool_call):
+            return self._cloud_or_notice(text, snapshot, decision=decision, reason="tool_local_invalid")
+        result = self._registry.dispatch(decision.tool_call)
+        if not result.get("ok"):
+            return self._cloud_or_notice(text, snapshot, decision=decision, reason="tool_local_failed")
+        rendered = self._render_tool_result(result.get("result"))
+        return self._result(
+            rendered,
+            bool(rendered),
+            reason="tool_local",
+            route=decision.route,
+            intent=decision.intent,
+            emotion=decision.emotion,
+            trusted_metadata=decision.trusted_metadata,
+        )
+
+    def _dispatch_vision(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        decision: RouterDecision,
+    ) -> dict:
+        if self._vision_screen is None:
+            return self._cloud_or_notice(text, snapshot, decision=decision, reason="vision_unavailable")
+        context = self._vision_screen.inspect(text)
+        if context.get("can_answer"):
+            vision_snapshot = self._snapshot_with_situation(snapshot, context)
+            return self._dispatch_chat_local(text, vision_snapshot, decision)
+        cloud_snapshot = (
+            self._snapshot_with_situation(snapshot, context)
+            if context and not context.get("degraded")
+            else self._snapshot_with_situation(snapshot, None)
+        )
+        return self._cloud_or_notice(text, cloud_snapshot, decision=decision, reason="vision_cloud")
+
+    def _cloud_or_notice(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        *,
+        decision: RouterDecision | None = None,
+        reason: str,
+    ) -> dict:
+        rendered, spoke, failed = self._try_cloud(text, snapshot)
+        if failed or not spoke:
+            rendered, spoke, reason = L2_UNAVAILABLE_NOTICE, True, "l2_unavailable_fallback"
+        return self._result(
+            rendered,
+            spoke,
+            reason=reason,
+            route=LocalRoute.CLOUD,
+            intent=decision.intent if decision else Intent.UNKNOWN,
+            emotion=decision.emotion if decision else Emotion.NEUTRAL,
+            trusted_metadata=bool(decision and decision.trusted_metadata),
+        )
+
+    def _try_cloud(self, text: str, snapshot: ContextSnapshot | None) -> tuple[str, bool, bool]:
+        if self._bridge is None:
+            return "", False, True
+        try:
+            reply = self._bridge.generate(text, snapshot, self._memory)
+        except Exception:
+            logger.warning("cloud bridge failed", exc_info=True)
+            return "", False, True
+        reply = (reply or "").strip()
+        if not reply:
+            return "", False, True
+        return reply, True, False
+
+    def _is_allowed_tool_call(self, tool_call: dict | None) -> bool:
+        if not isinstance(tool_call, dict):
+            return False
+        name = tool_call.get("name")
+        return isinstance(name, str) and name in self._local_tool_allowlist
+
+    def _render_tool_result(self, result) -> str:
+        if isinstance(result, str):
+            return result.strip()
+        if isinstance(result, dict):
+            for key in ("reply", "text", "message"):
+                value = result.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+        if result is not None:
+            return "好的。"
+        return ""
+
+    def _render_situation_actions(
+        self,
+        actions: list[SituationAction],
+        situation: dict | None,
+    ) -> str:
+        fragments = []
+        for action in actions:
+            if action.name == "acknowledge":
+                topic = (action.params or {}).get("topic") or (situation or {}).get("topic")
+                if topic:
+                    fragments.append(f"嗯，你正在看{topic}。")
+            elif action.name == "ask":
+                topic = (situation or {}).get("topic")
+                fragments.append(f"关于{topic}，你想聊哪一块？" if topic else "想聊聊吗？")
+        return " ".join(fragments)
+
+    def _snapshot_with_situation(
+        self,
+        snapshot: ContextSnapshot,
+        situation: dict | None,
+    ) -> ContextSnapshot:
+        return ContextSnapshot(
+            situation=situation,
+            recent_turns=snapshot.recent_turns,
+            summaries=snapshot.summaries,
+            long_term_memory=snapshot.long_term_memory,
+        )
+
+    def _result(
+        self,
+        rendered: str,
+        spoke: bool,
+        *,
+        reason: str,
+        route,
+        intent: Intent = Intent.UNKNOWN,
+        emotion: Emotion = Emotion.NEUTRAL,
+        actions: list | None = None,
+        trusted_metadata: bool = False,
+    ) -> dict:
+        return {
+            "rendered": rendered,
+            "spoke": spoke,
+            "reason": reason,
+            "route": route.value if hasattr(route, "value") else str(route),
+            "intent": intent,
+            "emotion": emotion,
+            "actions": actions or [],
+            "trusted_metadata": trusted_metadata,
+        }
 
     def _select_situation(self, payload: dict) -> dict:
         layer = payload.get("layer")
@@ -218,37 +466,26 @@ class DecisionHub:
         return dict(payload)
 
 
-    def _try_l2(self, text: str, situation: dict | None, snapshot=None) -> tuple[str, bool, bool]:
-        try:
-            reply = self._bridge.generate(text, snapshot, self._memory)
-        except Exception:
-            logger.warning("L2 cloud bridge failed, falling back to L1", exc_info=True)
-            return "", False, True
-        reply = (reply or "").strip()
-        if not reply:
-            return "", False, True
-        return reply, True, False
-
-    def _execute(self, actions, intent, emotion, text, situation):
-        ctx = ActionContext(intent=intent, emotion=emotion, text=text,
-                            situation=situation, memory=self._memory,
-                            registry=self._registry, l1=self._l1)
-        fragments = []
-        for action in actions:
-            executor = self._executors.get(action.name)
-            if executor is None:
-                continue
-            fragments.append(executor(action, ctx))
-        rendered = " ".join(f for f in fragments if f)
-        return rendered, bool(rendered)
-
-
-def build_brain(bus, *, memory=None, registry=None, config=None,
-                intent_clf=None, emotion_clf=None, policy=None, bridge=None,
-                tuner=None, context=None, projector=None, sedimenter=None,
-                register_awake_service: bool = True) -> DecisionHub:
+def build_brain(
+    bus,
+    *,
+    memory=None,
+    registry=None,
+    config=None,
+    policy=None,
+    bridge=None,
+    tuner=None,
+    context=None,
+    projector=None,
+    sedimenter=None,
+    local_router=None,
+    local_composer=None,
+    vision_screen=None,
+    register_awake_service: bool = True,
+) -> DecisionHub:
     from yuki.config import Config
     from yuki.cognition.brain.soul import SoulStore
+
     cfg = config or Config.from_env()
     if policy is None:
         soul = SoulStore(
@@ -264,8 +501,6 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         )
     hub = DecisionHub(
         bus,
-        intent_clf=intent_clf,
-        emotion_clf=emotion_clf,
         policy=policy,
         memory=memory,
         registry=registry,
@@ -274,6 +509,11 @@ def build_brain(bus, *, memory=None, registry=None, config=None,
         context=context,
         projector=projector,
         sedimenter=sedimenter,
+        local_router=local_router,
+        local_composer=local_composer,
+        vision_screen=vision_screen,
+        local_enabled=cfg.local_brain.enabled,
+        local_tool_allowlist=cfg.local_brain.local_tool_allowlist,
     )
     if register_awake_service:
         bus.respond(COGNITION_AWAKE_SERVICE, hub.handle_awake_request)

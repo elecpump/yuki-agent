@@ -4,6 +4,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE, DecisionHub, build_brain
+from yuki.cognition.brain.local import (
+    LocalChatModel,
+    LocalComposer,
+    LocalRouter,
+    LocalViewBuilder,
+    VisionScreenAdapter,
+)
 from yuki.cognition.brain.persona import (
     compose_personality_description,
     generate as generate_persona,
@@ -144,6 +151,10 @@ class CognitionAssembler:
             soul=soul_store,
             on_sedimented=persona_refresh,
         )
+        local_router, local_composer, vision_screen = self._build_local_brain(
+            registry,
+            pipeline,
+        )
         hub = build_brain(
             self.bus,
             memory=memory,
@@ -155,21 +166,18 @@ class CognitionAssembler:
             context=context,
             projector=projector,
             sedimenter=sedimenter,
+            local_router=local_router,
+            local_composer=local_composer,
+            vision_screen=vision_screen,
             register_awake_service=False,
         )
 
         active = persona_store.active()
         if bridge is not None:
-            bridge.set_system_prompt(
-                active.persona_prompt
-                if active
-                else generate_persona(
-                    self.config.persona_name,
-                    [],
-                    {},
-                    base_prompt=self.config.persona.prompt,
-                    soul=soul_store.load_or_default(),
-                )
+            bridge.set_system_prompt(self._active_persona_prompt(active, soul_store))
+        if local_composer is not None:
+            local_composer.set_system_prompt(
+                self._active_persona_prompt(active, soul_store)
             )
         persona_refresh()
 
@@ -232,6 +240,59 @@ class CognitionAssembler:
             registry=registry,
             max_turns=self.config.cloud.max_turns,
             persona_name=self.config.persona_name,
+        )
+
+    def _build_local_brain(
+        self,
+        registry: FunctionRegistry,
+        pipeline: PerceptionPipeline,
+    ) -> tuple[LocalRouter | None, LocalComposer | None, VisionScreenAdapter | None]:
+        local_cfg = self.config.local_brain
+        if not local_cfg.enabled:
+            return None, None, None
+        model = LocalChatModel(
+            model_id=local_cfg.model_id,
+            cache_dir=local_cfg.cache_dir,
+            device=local_cfg.device,
+            enabled=local_cfg.enabled,
+        )
+        router = LocalRouter(
+            model,
+            registry=registry,
+            threshold=local_cfg.router_threshold,
+            retry=local_cfg.retry,
+            prompt_max_tokens=local_cfg.router_prompt_max_tokens,
+            timeout_ms=local_cfg.router_timeout_ms,
+            local_tool_allowlist=local_cfg.local_tool_allowlist,
+        )
+        composer = LocalComposer(
+            model,
+            persona_name=self.config.persona_name,
+            view_builder=LocalViewBuilder(max_tokens=local_cfg.local_prompt_max_tokens),
+            reply_max_tokens=local_cfg.reply_max_tokens,
+            timeout_ms=local_cfg.local_reply_timeout_ms,
+        )
+        frame_client = getattr(pipeline, "_frame_client", None)
+        vlm = getattr(pipeline, "_vlm", None)
+        screen = (
+            VisionScreenAdapter(frame_client, vlm, timeout_ms=local_cfg.vision_timeout_ms)
+            if frame_client is not None and vlm is not None
+            else None
+        )
+        router.warmup()
+        return router, composer, screen
+
+    def _active_persona_prompt(self, active, soul_store: SoulStore) -> str:
+        return (
+            active.persona_prompt
+            if active
+            else generate_persona(
+                self.config.persona_name,
+                [],
+                {},
+                base_prompt=self.config.persona.prompt,
+                soul=soul_store.load_or_default(),
+            )
         )
 
     def _register_perception_functions(

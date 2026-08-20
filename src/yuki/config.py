@@ -64,6 +64,22 @@ class BrainConfig(BaseModel):
     proactive_enabled: bool = True
 
 
+class LocalBrainConfig(BaseModel):
+    enabled: bool = False
+    model_id: str = "Qwen/Qwen3-1.7B-FP8"
+    cache_dir: str = ""
+    device: str = "auto"
+    router_threshold: float = Field(0.7, ge=0.0, le=1.0)
+    router_prompt_max_tokens: int = Field(1200, ge=100)
+    router_timeout_ms: int = Field(150, ge=1)
+    local_prompt_max_tokens: int = Field(6000, ge=100)
+    reply_max_tokens: int = Field(256, ge=1)
+    local_reply_timeout_ms: int = Field(700, ge=1)
+    vision_timeout_ms: int = Field(1200, ge=1)
+    retry: int = Field(1, ge=0)
+    local_tool_allowlist: list[str] = Field(default_factory=list)
+
+
 class VlmConfig(BaseModel):
     enabled: bool = True
     model: str = "Qwen/Qwen3-VL-8B-Instruct"
@@ -126,6 +142,7 @@ class Config(BaseModel):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     text: TextConfig = Field(default_factory=TextConfig)
     brain: BrainConfig = Field(default_factory=BrainConfig)
+    local_brain: LocalBrainConfig = Field(default_factory=LocalBrainConfig)
     vlm: VlmConfig = Field(default_factory=VlmConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
@@ -154,6 +171,7 @@ class Config(BaseModel):
             ("memory", MemoryConfig),
             ("text", TextConfig),
             ("brain", BrainConfig),
+            ("local_brain", LocalBrainConfig),
             ("vlm", VlmConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),

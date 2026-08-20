@@ -153,3 +153,21 @@ def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):
     assert model_kwargs["quantization_config"] == {"cfg": {"load_in_4bit": True,
         "bnb_4bit_quant_type": "nf4", "bnb_4bit_compute_dtype": "float16"}}
     assert calls["processor_kwargs"]["cache_dir"] == "D:/hf"
+
+
+def test_question_prompt_formats_literal_json_without_degrading():
+    vlm = VisualUnderstander(model=object(), processor=object())
+    prompts = []
+
+    def fake_infer(image, prompt, *, include_can_answer):
+        prompts.append(prompt)
+        assert include_can_answer is True
+        return {"topic": "t", "summary": "s", "content_type": "web", "key_points": [], "can_answer": True}
+
+    vlm._infer_with_prompt = fake_infer
+
+    result = vlm.understand_for_question(None, "这页讲什么")
+
+    assert result["can_answer"] is True
+    assert '"topic"' in prompts[0]
+    assert "这页讲什么" in prompts[0]
