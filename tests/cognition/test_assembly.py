@@ -43,6 +43,12 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert COGNITION_AWAKE_SERVICE in bus.services
         assert Topics.USER_UTTERANCE in bus.subscriptions
         assert Topics.SITUATION_UPDATE in bus.subscriptions
+        names = runtime.registry.names()
+        assert "window.info" in names
+        assert "screen.capture" in names
+        assert "text.extract" in names
+        assert "vision.understand" in names
+        assert "perception.deep_understand_screen" not in names
     finally:
         runtime.context.close()
         memory.close()

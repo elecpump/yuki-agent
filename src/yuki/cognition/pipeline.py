@@ -372,6 +372,18 @@ class PerceptionPipeline:
             return {"topic": "", "degraded": True, "reason": "no_frame"}
         return context
 
+    def latest_frame(self) -> dict:
+        return self._frame_client.get_latest()
+
+    def current_text(self) -> dict:
+        frame = self.latest_frame()
+        payload = {
+            "reason": "tool_call",
+            "frame_id": frame.get("frame_id") if frame else None,
+            "hwnd": frame.get("hwnd") if frame else None,
+        }
+        return self._safe_text_evidence(payload, frame)
+
     def understand_screen_deep(self, *, bypass_rate_limit: bool | None = None) -> dict:
         frame = self._frame_client.get_latest()
         payload = {

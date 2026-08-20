@@ -289,6 +289,23 @@ def test_pipeline_understand_screen_uses_text_evidence_before_vlm():
     assert context["key_points"] == ["1. immediate point"]
 
 
+def test_pipeline_latest_frame_and_current_text_use_clients():
+    frame_client = FakeFrameClient()
+    frame_client.latest["hwnd"] = 123
+    text_client = FakeTextClient({"source": "dom", "text": "current"})
+    pipeline = _make_pipeline(frame_client=frame_client, text_client=text_client)
+
+    assert pipeline.latest_frame()["frame_id"] == 1
+    evidence = pipeline.current_text()
+
+    assert evidence["text"] == "current"
+    observation, frame = text_client.calls[-1]
+    assert observation["reason"] == "tool_call"
+    assert observation["frame_id"] == 1
+    assert observation["hwnd"] == 123
+    assert frame["frame_id"] == 1
+
+
 def test_pipeline_stt_on_mic_publishes_utterance():
     sb = FakeSpeechBuffer()
     bus = FakeBus()

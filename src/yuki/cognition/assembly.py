@@ -29,6 +29,7 @@ from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.memory_tools import register_memory_functions
+from yuki.functions.perception_tools import register_perception_tools
 from yuki.functions.registry import FunctionRegistry
 from yuki.functions.service import register_function_services
 from yuki.functions.system import register_builtin_system
@@ -300,18 +301,7 @@ class CognitionAssembler:
         registry: FunctionRegistry,
         pipeline: PerceptionPipeline,
     ) -> None:
-        if "perception.deep_understand_screen" in registry.names():
-            return
-
-        @registry.tool(
-            "perception.deep_understand_screen",
-            description="用户明确请求时立即用 VLM 深度理解当前屏幕。",
-            params=None,
-        )
-        def _deep_understand(params=None) -> dict:
-            return pipeline.understand_screen_deep(
-                bypass_rate_limit=self.config.vlm.user_bypass_rate_limit
-            )
+        register_perception_tools(registry, pipeline)
 
     def _build_persona_refresh(
         self,
