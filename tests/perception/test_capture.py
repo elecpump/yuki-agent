@@ -177,31 +177,6 @@ def test_make_frame_service_notifies_when_frame_is_stored():
     assert stored[0]["sensitive"] is False
 
 
-def test_make_frame_service_returns_frame_by_id():
-    capture = FakeCapture()
-    bus = FakeBus()
-    strategy = FakeStrategy(results=[(True, False), (True, False)])
-    make_frame_service(
-        bus,
-        capture,
-        strategy,
-        window_info=lambda: ("Chrome_WidgetWin_1", "Article"),
-    )
-
-    first_png = black_frame_png(width=64, height=48, color=(1, 2, 3))
-    second_png = black_frame_png(width=64, height=48, color=(9, 9, 9))
-    capture.on_frame(first_png, {"width": 64, "height": 48, "ts": 1.0})
-    first = bus.services["frame"]({})
-    capture.on_frame(second_png, {"width": 64, "height": 48, "ts": 2.0})
-    second = bus.services["frame"]({})
-
-    assert first["frame_id"] == 1
-    assert second["frame_id"] == 2
-    assert bus.services["frame"]({"frame_id": 1})["ts"] == 1.0
-    assert bus.services["frame"]({"frame_id": 2})["ts"] == 2.0
-    assert bus.services["frame"]({"frame_id": 999}) == {}
-
-
 def test_make_frame_service_keeps_latest_when_suppressed():
     capture = FakeCapture()
     bus = FakeBus()

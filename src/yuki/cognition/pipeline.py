@@ -151,10 +151,23 @@ class PerceptionPipeline:
             self._start_deep_timer()
 
     def _frame_for_payload(self, payload: dict) -> dict:
-        frame_id = payload.get("frame_id")
-        if frame_id is not None:
-            return self._frame_client.get_by_id(frame_id)
         return self._frame_client.get_latest()
+
+    def _frame_matches_observation(self, payload: dict, frame: dict | None) -> bool:
+        payload_hwnd = self._int_or_none(payload.get("hwnd"))
+        frame_hwnd = self._int_or_none(frame.get("hwnd")) if frame else None
+        if payload_hwnd is not None and frame_hwnd is not None:
+            return payload_hwnd == frame_hwnd
+        return True
+
+    @staticmethod
+    def _int_or_none(value) -> int | None:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def _on_utterance(self, samples) -> None:
         self._stt_worker.submit(self._recognize_utterance, samples)
@@ -222,6 +235,12 @@ class PerceptionPipeline:
             return None
         frame = self._frame_for_payload(payload) if frame is None else frame
         if frame_id_for(payload, frame or {}) is None:
+            return None
+        if not self._frame_matches_observation(payload, frame):
+            logger.info(
+                "deep understanding skipped: latest frame window mismatch",
+                source_id=source_id_for(payload),
+            )
             return None
         context = self._understand_observation_deep(payload, frame)
         if context is None:

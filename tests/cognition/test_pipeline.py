@@ -39,7 +39,7 @@ class FakeSTT:
 
 
 class FakeFrameClient:
-    def __init__(self, png=None, frames=None):
+    def __init__(self, png=None):
         self.latest = {
             "frame_id": 1,
             "png": _png_b64() if png is None else png,
@@ -48,17 +48,11 @@ class FakeFrameClient:
             "ts": 1.0,
             "sensitive": False,
         }
-        self.frames = frames or {}
         self.latest_requests = 0
-        self.requested_ids = []
 
     def get_latest(self):
         self.latest_requests += 1
         return dict(self.latest)
-
-    def get_by_id(self, frame_id):
-        self.requested_ids.append(frame_id)
-        return dict(self.frames.get(frame_id, {}))
 
 
 class FakeSpeechBuffer:
@@ -161,21 +155,9 @@ def test_pipeline_content_ready_publishes_situation_update():
     assert payload["cache_key"] == "https://x.com/a"
 
 
-def test_pipeline_content_ready_reads_bound_frame_id():
+def test_pipeline_content_ready_uses_latest_frame_not_payload_id():
     bus = FakeBus()
-    frame_client = FakeFrameClient(
-        png="",
-        frames={
-            42: {
-                "frame_id": 42,
-                "png": _png_b64(),
-                "width": 4,
-                "height": 4,
-                "ts": 1.0,
-                "sensitive": False,
-            }
-        },
-    )
+    frame_client = FakeFrameClient()
     build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
                    stt=FakeSTT(), frame_client=frame_client)
 
@@ -191,10 +173,9 @@ def test_pipeline_content_ready_reads_bound_frame_id():
     )
 
     payload = _wait_for_situation_layer(bus, "deep")
-    assert frame_client.latest_requests == 0
-    assert frame_client.requested_ids == [42, 42]
-    assert payload["situation_id"] == "frame:42"
-    assert payload["frame_id"] == 42
+    assert frame_client.latest_requests > 0
+    assert payload["situation_id"] == "frame:1"
+    assert payload["frame_id"] == 1
 
 
 def test_pipeline_content_ready_uses_text_evidence_before_vlm():
@@ -287,9 +268,6 @@ def test_pipeline_skips_unidentified_frames():
                 "ts": 1.0,
                 "sensitive": False,
             }
-
-        def get_by_id(self, frame_id):
-            raise AssertionError("unexpected frame_id request")
 
     vlm = FakeVLM()
     bus = FakeBus()
@@ -657,6 +635,54 @@ def test_periodic_check_fills_missing_deep_result():
     deep = _wait_for_situation_layer(bus, "deep")
 
     assert deep["topic"] == "climate"
+    assert vlm.understand_calls
+
+
+def test_deep_skips_frame_with_mismatched_window():
+    bus = FakeBus()
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(bus=bus, vlm=vlm)
+    frame = {
+        "frame_id": 5,
+        "png": _png_b64(),
+        "width": 4,
+        "height": 4,
+        "ts": 2.0,
+        "sensitive": False,
+        "hwnd": 999,
+    }
+    result = pipeline._process_content_ready_deep(
+        "event/perception/content_ready",
+        {"app": "chrome", "url": "https://x.com/a", "title": "A", "hwnd": 42},
+        frame=frame,
+        bypass=True,
+    )
+    assert result is None
+    assert vlm.understand_calls == []
+    assert not any(t == Topics.SITUATION_UPDATE for t, _ in bus.published)
+
+
+def test_deep_runs_when_frame_window_matches():
+    bus = FakeBus()
+    vlm = FakeVLM()
+    pipeline = _make_pipeline(bus=bus, vlm=vlm)
+    frame = {
+        "frame_id": 5,
+        "png": _png_b64(),
+        "width": 4,
+        "height": 4,
+        "ts": 2.0,
+        "sensitive": False,
+        "hwnd": 42,
+    }
+    update = pipeline._process_content_ready_deep(
+        "event/perception/content_ready",
+        {"app": "chrome", "url": "https://x.com/a", "title": "A", "hwnd": 42},
+        frame=frame,
+        bypass=True,
+    )
+    assert update is not None
+    assert update["situation_id"] == "frame:5"
     assert vlm.understand_calls
 
 

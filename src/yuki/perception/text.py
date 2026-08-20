@@ -245,8 +245,7 @@ class OcrTextProvider:
         )
 
     def _frame_for_payload(self, payload: dict) -> dict:
-        frame_id = _int_or_none(payload.get("frame_id"))
-        return self._frame_store.get(frame_id) if frame_id is not None else self._frame_store.latest()
+        return self._frame_store.latest()
 
     def _recognize(self, png_b64: str) -> str:
         if self._ocr is None:

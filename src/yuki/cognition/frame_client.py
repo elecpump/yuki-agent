@@ -20,6 +20,3 @@ class FrameClient:
 
     def get_latest(self) -> dict:
         return self._request({})
-
-    def get_by_id(self, frame_id: int) -> dict:
-        return self._request({"frame_id": frame_id})

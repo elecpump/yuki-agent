@@ -3,7 +3,6 @@ import io
 import threading
 import time
 from abc import ABC, abstractmethod
-from collections import OrderedDict
 from typing import Callable
 
 from PIL import Image
@@ -184,10 +183,9 @@ def _window_info_from_hwnd(hwnd: int) -> Callable[[], tuple[str, str] | None]:
 
 
 class FrameStore:
-    """Keeps recent captured frames addressable by stable frame_id."""
+    """Keeps the most recently captured frame; frame_id stays monotonic for event identity."""
 
-    def __init__(self, max_frames: int = 32) -> None:
-        self._max_frames = max(1, max_frames)
+    def __init__(self) -> None:
         self._latest: dict = {
             "png": "",
             "width": 0,
@@ -195,7 +193,6 @@ class FrameStore:
             "ts": 0.0,
             "sensitive": False,
         }
-        self._frames: OrderedDict[int, dict] = OrderedDict()
         self._next_frame_id = 0
         self._lock = threading.Lock()
 
@@ -222,22 +219,11 @@ class FrameStore:
             if hwnd is not None:
                 snapshot["hwnd"] = int(hwnd)
             self._latest = dict(snapshot)
-            self._frames[snapshot["frame_id"]] = dict(snapshot)
-            while len(self._frames) > self._max_frames:
-                self._frames.popitem(last=False)
             return dict(snapshot)
 
     def latest(self) -> dict:
         with self._lock:
             return dict(self._latest)
-
-    def get(self, frame_id) -> dict:
-        try:
-            key = int(frame_id)
-        except (TypeError, ValueError):
-            return {}
-        with self._lock:
-            return dict(self._frames.get(key, {}))
 
 
 def make_frame_service(
@@ -248,7 +234,6 @@ def make_frame_service(
     *,
     hwnd: int | None = None,
     on_frame_stored: Callable[[dict], None] | None = None,
-    max_stored_frames: int = 32,
 ) -> FrameStore:
     """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。
 
@@ -257,7 +242,7 @@ def make_frame_service(
     """
     if window_info is None:
         window_info = _window_info_from_hwnd(hwnd) if hwnd else _foreground_window_info
-    store = FrameStore(max_frames=max_stored_frames)
+    store = FrameStore()
 
     def notify_stored(snapshot: dict) -> None:
         if on_frame_stored is None:
@@ -298,9 +283,6 @@ def make_frame_service(
     capture.on_frame = on_frame
 
     def handler(payload: dict) -> dict:
-        frame_id = payload.get("frame_id")
-        if frame_id is not None:
-            return store.get(frame_id)
         return store.latest()
 
     bus.respond("frame", handler)
