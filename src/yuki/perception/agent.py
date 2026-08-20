@@ -4,7 +4,6 @@ from yuki.perception.observation import StableContentObservation
 from yuki.perception.audio import AudioCapture
 from yuki.perception.capture import FrameStrategy, WgcCapture, make_frame_service
 from yuki.perception.scroll import ScrollHook, ScrollIdleDetector
-from yuki.perception.sensitive import SensitiveDetector
 from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor
 from yuki.perception.text import build_text_services
 from yuki.process import ProcessAgent
@@ -27,13 +26,11 @@ class PerceptionAgent(ProcessAgent):
         self._components: dict = {}
 
     def setup(self) -> None:
-        detector = SensitiveDetector()
         idle = ScrollIdleDetector(idle_ms=300)
-        strategy = self._strategy or FrameStrategy(sensitive=detector, idle=idle, require_idle=True)
+        strategy = self._strategy or FrameStrategy(idle=idle, require_idle=True)
         observation = StableContentObservation(self.bus, dwell_s=self.config.perception.dwell_s)
 
         gate_hwnd = 0
-        window_info = None
         capture = self._capture
         if capture is None:
             hwnd = self._foreground_hwnd
@@ -47,8 +44,6 @@ class PerceptionAgent(ProcessAgent):
             capture = WgcCapture(hwnd or 0)
         elif isinstance(capture, WgcCapture):
             gate_hwnd = capture.window_hwnd
-        if hasattr(capture, "window_info"):
-            window_info = capture.window_info
 
         def on_focus_changed(payload: dict) -> None:
             hwnd = payload.get("hwnd")
@@ -76,7 +71,6 @@ class PerceptionAgent(ProcessAgent):
             self.bus,
             capture,
             strategy,
-            window_info=window_info,
             hwnd=gate_hwnd,
             on_frame_stored=observation.on_frame_stored,
         )
@@ -85,7 +79,6 @@ class PerceptionAgent(ProcessAgent):
             text_chain = build_text_services(
                 self.bus,
                 config=self.config.text,
-                sensitive=detector,
                 frame_store=frame_store,
             )
 

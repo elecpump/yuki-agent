@@ -16,7 +16,7 @@ class CognitionAgent(ProcessAgent):
 
     def __init__(self, config: Config, *, bus=None, shutdown=None,
                  pipeline=None, l1=None, vlm=None, stt=None,
-                 frame_client=None, sensitive_filter=None, speech_buffer=None,
+                 frame_client=None, speech_buffer=None,
                  memory: MemoryManager | None = None,
                  registry: FunctionRegistry | None = None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
@@ -25,7 +25,6 @@ class CognitionAgent(ProcessAgent):
         self._vlm = vlm
         self._stt = stt
         self._frame_client = frame_client
-        self._sensitive_filter = sensitive_filter
         self._speech_buffer = speech_buffer
         self._memory = memory
         self._registry = registry
@@ -43,7 +42,6 @@ class CognitionAgent(ProcessAgent):
             vlm=self._vlm,
             stt=self._stt,
             frame_client=self._frame_client,
-            sensitive_filter=self._sensitive_filter,
             speech_buffer=self._speech_buffer,
             memory=self._memory,
             registry=self._registry,

@@ -7,7 +7,6 @@ import numpy as np
 from PIL import Image
 
 from yuki.cognition.pipeline import DeepRateLimiter, PerceptionPipeline, build_pipeline, scroll_band
-from yuki.cognition.sensitive import SensitiveFilter
 from yuki.topics import Topics
 
 from tests.fakes import FakeBus
@@ -28,11 +27,6 @@ class FakeVLM:
         return {"topic": "climate", "summary": "s", "content_type": "article", "key_points": []}
 
 
-class FakeSensitive:
-    def scan(self, text):
-        return []
-
-
 class FakeSTT:
     def recognize(self, samples, sample_rate=16000):
         return "你好"
@@ -46,7 +40,6 @@ class FakeFrameClient:
             "width": 4,
             "height": 4,
             "ts": 1.0,
-            "sensitive": False,
         }
         self.latest_requests = 0
 
@@ -81,7 +74,6 @@ class FakeTextClient:
 def _make_pipeline(
     bus=None,
     vlm=None,
-    sensitive=None,
     stt=None,
     frame_client=None,
     speech_buffer=None,
@@ -90,7 +82,6 @@ def _make_pipeline(
     return build_pipeline(
         bus or FakeBus(),
         vlm=vlm or FakeVLM(),
-        sensitive_filter=sensitive or FakeSensitive(),
         stt=stt or FakeSTT(),
         frame_client=frame_client or FakeFrameClient(),
         speech_buffer=speech_buffer,
@@ -120,8 +111,7 @@ def _wait_for_situation_layer(bus, layer, timeout=1.0):
 
 def test_pipeline_focus_publishes_situation_update():
     bus = FakeBus()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed",
         {"app": "chrome", "url": "https://x.com/a", "title": "A"})
     payload = _wait_for_situation_layer(bus, "deep")
@@ -137,8 +127,7 @@ def test_pipeline_focus_publishes_situation_update():
 
 def test_pipeline_content_ready_publishes_situation_update():
     bus = FakeBus()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.CONTENT_READY][0](
         "event/perception/content_ready",
         {"app": "chrome", "url": "https://x.com/a", "title": "A", "reason": "scroll_idle"},
@@ -158,8 +147,7 @@ def test_pipeline_content_ready_publishes_situation_update():
 def test_pipeline_content_ready_uses_latest_frame_not_payload_id():
     bus = FakeBus()
     frame_client = FakeFrameClient()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=frame_client)
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=frame_client)
 
     bus.subscriptions[Topics.CONTENT_READY][0](
         "event/perception/content_ready",
@@ -187,14 +175,12 @@ def test_pipeline_content_ready_uses_text_evidence_before_vlm():
         "title": "Document title",
         "url": "https://x.com/doc",
         "confidence": 0.95,
-        "sensitive": False,
         "degraded": False,
         "reason": "native_dom",
     })
     build_pipeline(
         bus,
         vlm=vlm,
-        sensitive_filter=FakeSensitive(),
         stt=FakeSTT(),
         frame_client=FakeFrameClient(),
         text_client=text_client,
@@ -221,43 +207,6 @@ def test_pipeline_content_ready_uses_text_evidence_before_vlm():
     assert payload["key_points"] == ["- first point", "- second point"]
 
 
-def test_pipeline_content_ready_blocks_sensitive_text_evidence():
-    class SecretSensitive:
-        def scan(self, text):
-            return ["secret"] if "secret" in text else []
-
-    bus = FakeBus()
-    text_client = FakeTextClient({
-        "source": "uia",
-        "text": "secret token",
-        "title": "Editor",
-        "url": "",
-        "confidence": 0.8,
-        "sensitive": False,
-        "degraded": False,
-        "reason": "",
-    })
-    build_pipeline(
-        bus,
-        vlm=FakeVLM(),
-        sensitive_filter=SecretSensitive(),
-        stt=FakeSTT(),
-        frame_client=FakeFrameClient(),
-        text_client=text_client,
-    )
-
-    bus.subscriptions[Topics.CONTENT_READY][0](
-        "event/perception/content_ready",
-        {"title": "Editor", "reason": "focus_changed", "frame_id": 1},
-    )
-
-    payload = _wait_for_topic(bus, Topics.SITUATION_UPDATE)
-    assert payload["sensitive"] is True
-    assert payload["summary"] == ""
-    assert payload["key_points"] == []
-    assert payload["reason"] == "sensitive"
-
-
 def test_pipeline_skips_unidentified_frames():
     class UnidentifiedFrameClient:
         def get_latest(self):
@@ -266,7 +215,6 @@ def test_pipeline_skips_unidentified_frames():
                 "width": 4,
                 "height": 4,
                 "ts": 1.0,
-                "sensitive": False,
             }
 
     vlm = FakeVLM()
@@ -274,7 +222,6 @@ def test_pipeline_skips_unidentified_frames():
     build_pipeline(
         bus,
         vlm=vlm,
-        sensitive_filter=FakeSensitive(),
         stt=FakeSTT(),
         frame_client=UnidentifiedFrameClient(),
     )
@@ -290,8 +237,7 @@ def test_pipeline_skips_unidentified_frames():
 
 def test_pipeline_ignores_deferred_focus_changed():
     bus = FakeBus()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0](
         "event/focus_changed",
         {
@@ -306,16 +252,14 @@ def test_pipeline_ignores_deferred_focus_changed():
 
 def test_pipeline_awake_no_direct_reply():
     bus = FakeBus()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.AWAKE][0]("event/awake", {"source": "hotkey", "ts": 0.0})
     assert not any(t == Topics.REPLY for t, _ in bus.published)
 
 
 def test_pipeline_understand_screen_returns_vlm_context():
     bus = FakeBus()
-    pipeline = build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                              stt=FakeSTT(), frame_client=FakeFrameClient())
+    pipeline = build_pipeline(bus, vlm=FakeVLM(),                               stt=FakeSTT(), frame_client=FakeFrameClient())
     context = pipeline.understand_screen()
     assert context["topic"] == "climate"
     assert context["content_type"] == "article"
@@ -332,7 +276,6 @@ def test_pipeline_understand_screen_uses_text_evidence_before_vlm():
             "title": "Awake title",
             "url": "",
             "confidence": 0.8,
-            "sensitive": False,
             "degraded": False,
             "reason": "",
         }),
@@ -349,8 +292,7 @@ def test_pipeline_understand_screen_uses_text_evidence_before_vlm():
 def test_pipeline_stt_on_mic_publishes_utterance():
     sb = FakeSpeechBuffer()
     bus = FakeBus()
-    pipeline = build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                              stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
+    pipeline = build_pipeline(bus, vlm=FakeVLM(),                               stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
     bus.subscriptions[Topics.AWAKE][0]("event/awake", {"source": "hotkey", "ts": 0.0})
     bus.published = []
     pcm = base64.b64encode(np.zeros(320, dtype=np.float32).tobytes()).decode("ascii")
@@ -365,8 +307,7 @@ def test_pipeline_stt_on_mic_publishes_utterance():
 def test_pipeline_mic_before_awake_is_blocked():
     sb = FakeSpeechBuffer()
     bus = FakeBus()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
     pcm = base64.b64encode(np.zeros(320, dtype=np.float32).tobytes()).decode("ascii")
     bus.subscriptions[Topics.MIC][0]("audio/mic", {"pcm": pcm, "sample_rate": 16000, "ts": 0.0})
     assert sb.frames == []
@@ -376,8 +317,7 @@ def test_pipeline_mic_before_awake_is_blocked():
 def test_pipeline_awake_resets_speech_buffer():
     sb = FakeSpeechBuffer()
     bus = FakeBus()
-    build_pipeline(bus, vlm=FakeVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
+    build_pipeline(bus, vlm=FakeVLM(),                    stt=FakeSTT(), frame_client=FakeFrameClient(), speech_buffer=sb)
     sb.frames = [np.zeros(320, dtype=np.float32)]
     bus.subscriptions[Topics.AWAKE][0]("event/awake", {"source": "hotkey", "ts": 0.0})
     assert sb.reset_calls == 1
@@ -418,8 +358,7 @@ def test_scroll_band_clamps_to_valid_range():
 def test_pipeline_focus_skips_placeholder_frame():
     vlm = FakeVLM()
     bus = FakeBus()
-    build_pipeline(bus, vlm=vlm, sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient(png=""))
+    build_pipeline(bus, vlm=vlm,                    stt=FakeSTT(), frame_client=FakeFrameClient(png=""))
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
     fast = _wait_for_situation_layer(bus, "fast")
     assert vlm.understand_calls == []
@@ -430,44 +369,8 @@ def test_pipeline_focus_skips_placeholder_frame():
 def test_pipeline_understand_screen_skips_placeholder_frame():
     vlm = FakeVLM()
     pipeline = _make_pipeline(vlm=vlm, frame_client=FakeFrameClient(png=""))
-    assert pipeline.understand_screen() == {"topic": "", "sensitive": True, "degraded": True, "reason": "no_frame"}
+    assert pipeline.understand_screen() == {"topic": "", "degraded": True, "reason": "no_frame"}
     assert vlm.understand_calls == []
-
-
-def test_pipeline_understand_screen_blocks_sensitive_key_points():
-    class SensitiveKeyPointsVLM(FakeVLM):
-        def understand(self, image, cache_key=None):
-            self.understand_calls.append((image, cache_key))
-            return {
-                "topic": "理财",
-                "summary": "推荐方案",
-                "content_type": "web",
-                "key_points": ["联系方式 13812345678"],
-            }
-
-    pipeline = _make_pipeline(vlm=SensitiveKeyPointsVLM(), sensitive=SensitiveFilter())
-    assert pipeline.understand_screen() == {"topic": "", "sensitive": True, "degraded": True, "reason": "sensitive"}
-
-
-def test_pipeline_focus_blocks_sensitive_key_points():
-    class SensitiveKeyPointsVLM(FakeVLM):
-        def understand(self, image, cache_key=None):
-            self.understand_calls.append((image, cache_key))
-            return {
-                "topic": "理财",
-                "summary": "推荐方案",
-                "content_type": "web",
-                "key_points": ["联系方式 13812345678"],
-            }
-
-    bus = FakeBus()
-    build_pipeline(bus, vlm=SensitiveKeyPointsVLM(), sensitive_filter=SensitiveFilter(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient())
-    bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
-    event = _wait_for_situation_layer(bus, "deep")
-    assert event["sensitive"] is True
-    assert event["degraded"] is True
-    assert event["reason"] == "sensitive"
 
 
 def test_pipeline_focus_publishes_degraded_on_vlm_failure():
@@ -477,8 +380,7 @@ def test_pipeline_focus_publishes_degraded_on_vlm_failure():
                     "key_points": [], "degraded": True, "reason": "inference_failed"}
 
     bus = FakeBus()
-    build_pipeline(bus, vlm=BoomVLM(), sensitive_filter=FakeSensitive(),
-                   stt=FakeSTT(), frame_client=FakeFrameClient())
+    build_pipeline(bus, vlm=BoomVLM(), stt=FakeSTT(), frame_client=FakeFrameClient())
     bus.subscriptions[Topics.FOCUS_CHANGED][0]("event/focus_changed", {"title": "t", "url": "u"})
     event = _wait_for_situation_layer(bus, "deep")
     assert event["degraded"] is True
@@ -502,7 +404,6 @@ def test_pipeline_content_ready_does_not_block_on_slow_vlm():
     pipeline = build_pipeline(
         bus,
         vlm=vlm,
-        sensitive_filter=FakeSensitive(),
         stt=FakeSTT(),
         frame_client=FakeFrameClient(),
     )
@@ -593,7 +494,6 @@ def test_user_requested_deep_can_respect_rate_limit_when_disabled():
     vlm = FakeVLM()
     pipeline = PerceptionPipeline(
         vlm=vlm,
-        sensitive_filter=FakeSensitive(),
         stt=FakeSTT(),
         frame_client=FakeFrameClient(),
         bus=FakeBus(),
@@ -620,7 +520,6 @@ def test_periodic_check_fills_missing_deep_result():
             "text": "Document heading",
             "title": "Document title",
             "confidence": 0.95,
-            "sensitive": False,
             "degraded": False,
         }),
     )
@@ -648,7 +547,6 @@ def test_deep_skips_frame_with_mismatched_window():
         "width": 4,
         "height": 4,
         "ts": 2.0,
-        "sensitive": False,
         "hwnd": 999,
     }
     result = pipeline._process_content_ready_deep(
@@ -672,7 +570,6 @@ def test_deep_runs_when_frame_window_matches():
         "width": 4,
         "height": 4,
         "ts": 2.0,
-        "sensitive": False,
         "hwnd": 42,
     }
     update = pipeline._process_content_ready_deep(
@@ -702,7 +599,6 @@ def test_pipeline_utterance_callback_does_not_block_on_slow_stt():
     pipeline = build_pipeline(
         bus,
         vlm=FakeVLM(),
-        sensitive_filter=FakeSensitive(),
         stt=stt,
         frame_client=FakeFrameClient(),
     )

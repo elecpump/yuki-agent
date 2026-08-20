@@ -1,7 +1,10 @@
+import io
+
+from PIL import Image
+
 from yuki.config import Config
 from yuki.perception.agent import PerceptionAgent
-from yuki.perception.capture import FrameStrategy, black_frame_png
-from yuki.perception.sensitive import SensitiveDetector
+from yuki.perception.capture import FrameStrategy
 from yuki.perception.scroll import ScrollIdleDetector
 from yuki.topics import Topics
 
@@ -95,7 +98,7 @@ class RecordingMonitor:
 
 def test_perception_agent_setup_wires_components():
     bus = FakeBus()
-    strategy = FrameStrategy(sensitive=SensitiveDetector(), idle=ScrollIdleDetector())
+    strategy = FrameStrategy(idle=ScrollIdleDetector())
     log = []
     capture = FakeCapture(log)
     monitor = FakeMonitor(log)
@@ -117,7 +120,6 @@ def test_perception_agent_setup_wires_components():
         "width": 0,
         "height": 0,
         "ts": 0.0,
-        "sensitive": False,
     }
     assert capture.started
     assert monitor.started
@@ -150,9 +152,7 @@ def test_perception_agent_default_constructs():
 def test_perception_agent_default_strategy_gates_on_scroll():
     recorded = {}
     idle = ScrollIdleDetector()
-    # 空黑名单/关键词：避免真实前台窗口触发敏感分支，隔离滚动静止门控逻辑
     strategy = FrameStrategy(
-        sensitive=SensitiveDetector(class_blacklist=set(), title_keywords=()),
         idle=idle,
         require_idle=True,
     )
@@ -181,8 +181,9 @@ def test_perception_agent_default_strategy_gates_on_scroll():
     agent.setup()
     assert "frame" in bus.services
     recorded["on_scroll"]()
-    png = black_frame_png(width=64, height=48, color=(1, 2, 3))
-    capture.on_frame(png, {"width": 64, "height": 48, "ts": 1.0})
+    png = io.BytesIO()
+    Image.new("RGB", (64, 48), color=(1, 2, 3)).save(png, format="PNG")
+    capture.on_frame(png.getvalue(), {"width": 64, "height": 48, "ts": 1.0})
     assert bus.services["frame"]({})["png"] == ""
     agent.teardown()
 
@@ -237,6 +238,5 @@ def test_perception_agent_registers_frame_service_when_no_capture():
         "width": 0,
         "height": 0,
         "ts": 0.0,
-        "sensitive": False,
     }
     agent.teardown()

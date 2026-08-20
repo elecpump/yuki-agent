@@ -65,7 +65,6 @@ class CognitionAssembler:
         vlm=None,
         stt=None,
         frame_client=None,
-        sensitive_filter=None,
         speech_buffer=None,
         memory: MemoryManager | None = None,
         registry: FunctionRegistry | None = None,
@@ -76,7 +75,6 @@ class CognitionAssembler:
         self.vlm = vlm
         self.stt = stt
         self.frame_client = frame_client
-        self.sensitive_filter = sensitive_filter
         self.speech_buffer = speech_buffer
         self.memory = memory
         self.registry = registry
@@ -85,7 +83,6 @@ class CognitionAssembler:
         pipeline = self.pipeline or build_pipeline(
             self.bus,
             vlm=self.vlm or self._build_vlm(),
-            sensitive_filter=self.sensitive_filter,
             stt=self.stt,
             frame_client=self.frame_client,
             speech_buffer=self.speech_buffer,

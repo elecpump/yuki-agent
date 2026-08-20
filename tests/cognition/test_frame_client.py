@@ -14,7 +14,6 @@ def test_get_latest_returns_frame():
             "width": 100,
             "height": 50,
             "ts": 1.0,
-            "sensitive": False,
         },
     )
     client = FrameClient(bus)

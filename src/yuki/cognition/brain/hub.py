@@ -10,8 +10,7 @@ from yuki.cognition.brain.classifier import (
 )
 from yuki.cognition.brain.policy import DecisionPolicy, Tier, TriggerKind
 from yuki.cognition.l1 import L1Engine
-from yuki.cognition.sensitive import SensitiveFilter
-from yuki.logger import get_audit_logger, get_decision_logger, get_logger
+from yuki.logger import get_decision_logger, get_logger
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.brain.hub")
@@ -68,7 +67,7 @@ class DecisionHub:
 
     def __init__(self, bus, *, intent_clf=None, emotion_clf=None, policy=None,
                  memory=None, registry=None, l1=None, executors=None, trace_logger=None,
-                 bridge=None, tuner=None, sensitive_filter=None, audit_logger=None,
+                 bridge=None, tuner=None,
                  context=None, projector=None, sedimenter=None) -> None:
         self._bus = bus
         self._intent_clf = intent_clf or RuleIntentClassifier()
@@ -79,10 +78,8 @@ class DecisionHub:
         self._l1 = l1 or L1Engine()
         self._executors = executors if executors is not None else ACTION_EXECUTORS
         self._trace_logger = trace_logger or get_decision_logger()
-        self._audit_logger = audit_logger or get_audit_logger()
         self._bridge = bridge
         self._tuner = tuner
-        self._sensitive_filter = sensitive_filter or SensitiveFilter()
         self._decision_lock = threading.Lock()
         self._context = None
         self._situation_fast = None
@@ -222,17 +219,6 @@ class DecisionHub:
 
 
     def _try_l2(self, text: str, situation: dict | None, snapshot=None) -> tuple[str, bool, bool]:
-        hits = self._sensitive_filter.scan(text)
-        if hits:
-            # §9.3：审计只记录过滤动作（时间/规则编号/命中类别），不存原文。
-            self._audit_logger.info(
-                "filter_action",
-                action="block_l2_route",
-                ts=time.time(),
-                rules=hits,
-                categories=hits,
-            )
-            return "", False, False
         try:
             reply = self._bridge.generate(text, snapshot, self._memory)
         except Exception:

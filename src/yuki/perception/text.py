@@ -11,7 +11,6 @@ from typing import Protocol
 from yuki.config import TextConfig
 from yuki.logger import get_logger
 from yuki.perception.capture import FrameStore
-from yuki.perception.sensitive import SensitiveDetector
 
 TEXT_SERVICE = "text"
 TEXT_INGEST_SERVICE = "text/ingest"
@@ -40,7 +39,6 @@ def _evidence(
     text: str = "",
     payload: dict | None = None,
     confidence: float = 0.0,
-    sensitive: bool = False,
     degraded: bool = False,
     reason: str = "",
     max_chars: int = 50000,
@@ -53,7 +51,6 @@ def _evidence(
         "url": str(payload.get("url", "")),
         "confidence": float(confidence),
         "ts": float(payload.get("ts") or time.time()),
-        "sensitive": bool(sensitive),
         "degraded": bool(degraded),
         "reason": reason,
     }
@@ -88,7 +85,6 @@ class TextStore:
             text=str(payload.get("text", "")),
             payload=payload,
             confidence=float(payload.get("confidence", 0.95)),
-            sensitive=bool(payload.get("sensitive", False)),
             degraded=bool(payload.get("degraded", False)),
             reason=str(payload.get("reason", "")),
             max_chars=self._max_chars,
@@ -216,7 +212,7 @@ class OcrTextProvider:
 
     def extract(self, payload: dict, frame: dict | None = None) -> dict | None:
         frame = frame or self._frame_for_payload(payload)
-        if not frame or not frame.get("png") or frame.get("sensitive"):
+        if not frame or not frame.get("png"):
             return None
         future = self._executor.submit(self._recognize, frame["png"])
         try:
@@ -278,16 +274,10 @@ class TextExtractorChain:
         self,
         *,
         config: TextConfig,
-        sensitive: SensitiveDetector,
         providers: list[TextProvider],
-        class_name_for_hwnd=None,
-        title_for_hwnd=None,
     ) -> None:
         self._config = config
-        self._sensitive = sensitive
         self._providers = providers
-        self._class_name_for_hwnd = class_name_for_hwnd
-        self._title_for_hwnd = title_for_hwnd
         self._last_provider = ""
         self._provider_timeout_s = config.provider_timeout_ms / 1000.0
         self._provider_executor = ThreadPoolExecutor(
@@ -301,21 +291,11 @@ class TextExtractorChain:
         if frame:
             payload.setdefault("frame_id", frame.get("frame_id"))
             payload.setdefault("hwnd", frame.get("hwnd"))
-        class_name, title = self._window_identity(payload)
-        if self._sensitive.is_sensitive(class_name, title):
-            return _evidence(
-                source="blocked",
-                payload=payload,
-                sensitive=True,
-                degraded=True,
-                reason="sensitive_window",
-                max_chars=self._config.max_chars,
-            )
         for provider in self._providers:
             result = self._extract_with_timeout(provider, payload, frame)
             if result is None:
                 continue
-            if result.get("text") or result.get("sensitive") or result.get("degraded"):
+            if result.get("text") or result.get("degraded"):
                 self._last_provider = provider.name
                 return result
         return _evidence(
@@ -349,37 +329,6 @@ class TextExtractorChain:
             logger.warning("text provider timed out", provider=provider.name)
             return None
 
-    def _window_identity(self, payload: dict) -> tuple[str, str]:
-        class_name = str(payload.get("class_name", "") or "")
-        title = str(payload.get("title", "") or "")
-        hwnd = _int_or_none(payload.get("hwnd"))
-        if hwnd is not None:
-            if not class_name:
-                class_name = self._class_name(hwnd)
-            if not title:
-                title = self._title(hwnd)
-        return class_name, title
-
-    def _class_name(self, hwnd: int) -> str:
-        if self._class_name_for_hwnd is not None:
-            return self._class_name_for_hwnd(hwnd) or ""
-        try:
-            import win32gui
-
-            return win32gui.GetClassName(hwnd)
-        except Exception:
-            return ""
-
-    def _title(self, hwnd: int) -> str:
-        if self._title_for_hwnd is not None:
-            return self._title_for_hwnd(hwnd) or ""
-        try:
-            import win32gui
-
-            return win32gui.GetWindowText(hwnd)
-        except Exception:
-            return ""
-
     def health(self) -> dict:
         return {
             "ok": True,
@@ -393,7 +342,6 @@ def build_text_services(
     bus,
     *,
     config: TextConfig,
-    sensitive: SensitiveDetector,
     frame_store: FrameStore,
 ) -> TextExtractorChain:
     store = TextStore(max_chars=config.max_chars)
@@ -410,7 +358,7 @@ def build_text_services(
                 max_chars=config.max_chars,
             )
         )
-    chain = TextExtractorChain(config=config, sensitive=sensitive, providers=providers)
+    chain = TextExtractorChain(config=config, providers=providers)
 
     bus.respond(TEXT_INGEST_SERVICE, lambda payload: store.ingest(payload))
     bus.respond(TEXT_SERVICE, lambda payload: chain.extract(payload))

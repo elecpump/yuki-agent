@@ -49,7 +49,6 @@ def build_situation_update(
     *,
     layer: str = "fast",
     confidence: float | None = None,
-    sensitive: bool = False,
     reason: str | None = None,
     clock: Callable[[], float] = time.time,
 ) -> dict:
@@ -63,7 +62,7 @@ def build_situation_update(
     if layer not in ("fast", "deep"):
         layer = "fast"
     if confidence is None:
-        confidence = 0.0 if sensitive or context.get("degraded", False) else 0.6
+        confidence = 0.0 if context.get("degraded", False) else 0.6
     try:
         confidence = min(max(float(confidence), 0.0), 1.0)
     except (TypeError, ValueError):
@@ -83,12 +82,11 @@ def build_situation_update(
         "cache_key": cache_key_for(observation),
         "layer": layer,
         "confidence": confidence,
-        "topic": "" if sensitive else context.get("topic", ""),
-        "summary": "" if sensitive else context.get("summary", ""),
-        "content_type": "unknown" if sensitive else context.get("content_type", "unknown"),
-        "key_points": [] if sensitive else context.get("key_points", []),
-        "sensitive": bool(sensitive),
-        "degraded": bool(sensitive or context.get("degraded", False)),
+        "topic": context.get("topic", ""),
+        "summary": context.get("summary", ""),
+        "content_type": context.get("content_type", "unknown"),
+        "key_points": context.get("key_points", []),
+        "degraded": bool(context.get("degraded", False)),
         "reason": reason if reason is not None else context.get("reason", ""),
         "ts": clock(),
         "frame_id": frame_id,

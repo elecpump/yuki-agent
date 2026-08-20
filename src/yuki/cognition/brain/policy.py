@@ -117,7 +117,7 @@ class DecisionPolicy:
     ) -> list[Action]:
         if not self._enabled:
             return [Action("stay_silent")]
-        if situation is None or situation.get("sensitive") or not situation.get("topic"):
+        if situation is None or not situation.get("topic"):
             return [Action("stay_silent")]
         if last_open_ts is not None and now - last_open_ts < self._cooldown:
             return [Action("stay_silent")]

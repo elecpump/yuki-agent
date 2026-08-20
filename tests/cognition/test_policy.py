@@ -38,14 +38,14 @@ def test_awake_returns_inform():
 def test_situation_stay_silent_when_disabled():
     policy = DecisionPolicy(120.0, proactive_enabled=False)
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                            situation={"topic": "量子计算", "sensitive": False}, last_open_ts=0.0, now=999.0)
+                            situation={"topic": "量子计算"}, last_open_ts=0.0, now=999.0)
     assert [a.name for a in actions] == ["stay_silent"]
 
 
 def test_situation_proactive_at_exact_cooldown_boundary():
     policy = DecisionPolicy(proactive_cooldown_s=120.0)
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                            situation={"topic": "量子计算", "sensitive": False},
+                            situation={"topic": "量子计算"},
                             last_open_ts=180.0, now=300.0)
     assert [a.name for a in actions] == ["acknowledge", "ask"]
 
@@ -53,23 +53,21 @@ def test_situation_proactive_at_exact_cooldown_boundary():
 def test_situation_proactive_when_cooldown_passed():
     policy = DecisionPolicy(proactive_cooldown_s=120.0)
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                            situation={"topic": "量子计算", "sensitive": False}, last_open_ts=100.0, now=300.0)
+                            situation={"topic": "量子计算"}, last_open_ts=100.0, now=300.0)
     assert [a.name for a in actions] == ["acknowledge", "ask"]
 
 
 def test_situation_stay_silent_within_cooldown():
     policy = DecisionPolicy(proactive_cooldown_s=120.0)
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                            situation={"topic": "量子计算", "sensitive": False}, last_open_ts=200.0, now=300.0)
+                            situation={"topic": "量子计算"}, last_open_ts=200.0, now=300.0)
     assert [a.name for a in actions] == ["stay_silent"]
 
 
-def test_situation_stay_silent_when_sensitive_or_no_topic():
+def test_situation_stay_silent_when_no_topic():
     policy = DecisionPolicy(proactive_cooldown_s=120.0)
     assert [a.name for a in policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                                          situation={"topic": "x", "sensitive": True}, last_open_ts=0.0, now=999.0)] == ["stay_silent"]
-    assert [a.name for a in policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                                          situation={"topic": "", "sensitive": False}, last_open_ts=0.0, now=999.0)] == ["stay_silent"]
+                                          situation={"topic": ""}, last_open_ts=0.0, now=999.0)] == ["stay_silent"]
     assert [a.name for a in policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
                                           situation=None, last_open_ts=0.0, now=999.0)] == ["stay_silent"]
 
@@ -99,14 +97,14 @@ def test_set_cooldown_s_changes_gate():
     assert policy.cooldown_s == 120.0
     # 基线：原冷却 120 在 now-last=150 时会开口
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                            situation={"topic": "x", "sensitive": False},
+                            situation={"topic": "x"},
                             last_open_ts=0.0, now=150.0)
     assert [a.name for a in actions] == ["acknowledge", "ask"]
     policy.set_cooldown_s(200.0)
     assert policy.cooldown_s == 200.0
     # 新冷却 200 在 now-last=150 时应静默
     actions = policy.decide(TriggerKind.SITUATION, Intent.UNKNOWN, Emotion.NEUTRAL,
-                            situation={"topic": "x", "sensitive": False},
+                            situation={"topic": "x"},
                             last_open_ts=0.0, now=150.0)
     assert [a.name for a in actions] == ["stay_silent"]
 
@@ -131,7 +129,7 @@ def test_binding_core_values_filter_utterance_actions_only():
         TriggerKind.SITUATION,
         Intent.UNKNOWN,
         Emotion.NEUTRAL,
-        situation={"topic": "x", "sensitive": False},
+        situation={"topic": "x"},
         last_open_ts=None,
         now=150.0,
     )

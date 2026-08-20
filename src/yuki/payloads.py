@@ -31,7 +31,6 @@ class ContentReadyPayload(TypedDict):
     frame_ts: float
     frame_width: int
     frame_height: int
-    sensitive: bool
     hwnd: NotRequired[int]
     scroll_percent: NotRequired[float]
 
@@ -55,7 +54,6 @@ class SituationUpdatePayload(TypedDict):
     summary: str
     content_type: str
     key_points: list[str]
-    sensitive: bool
     degraded: bool
     reason: str
     ts: float
@@ -87,7 +85,6 @@ class FrameResult(TypedDict):
     width: int
     height: int
     ts: float
-    sensitive: bool
     hwnd: NotRequired[int]
 
 
@@ -101,7 +98,6 @@ class TextEvidencePayload(TypedDict):
     frame_id: NotRequired[int]
     confidence: float
     ts: float
-    sensitive: bool
     degraded: bool
     reason: str
 

@@ -18,7 +18,6 @@ def test_build_situation_update_includes_provenance():
             "width": 801,
             "height": 601,
             "ts": 9.5,
-            "sensitive": False,
         },
         {
             "topic": "climate",
@@ -49,32 +48,23 @@ def test_build_situation_update_includes_provenance():
         "summary": "s",
         "content_type": "article",
         "key_points": ["k"],
-        "sensitive": False,
         "degraded": False,
         "reason": "",
         "ts": 12.0,
     }
 
 
-def test_build_sensitive_situation_preserves_provenance():
+def test_build_situation_update_uses_degraded_confidence():
     payload = build_situation_update(
         {"url": "https://x.com/a", "reason": "focus_changed", "ts": 10.0},
-        {"frame_id": 7, "width": 800, "height": 600, "ts": 9.0, "sensitive": False},
-        {},
-        sensitive=True,
-        reason="sensitive",
+        {"frame_id": 7, "width": 800, "height": 600, "ts": 9.0},
+        {"topic": "", "degraded": True, "reason": "no_text"},
         clock=lambda: 12.0,
     )
 
-    assert payload["situation_id"] == "frame:7"
-    assert payload["frame_id"] == 7
-    assert payload["observation_reason"] == "focus_changed"
-    assert payload["topic"] == ""
-    assert payload["sensitive"] is True
-    assert payload["degraded"] is True
-    assert payload["layer"] == "fast"
     assert payload["confidence"] == 0.0
-    assert payload["reason"] == "sensitive"
+    assert payload["degraded"] is True
+    assert payload["reason"] == "no_text"
 
 
 def test_build_deep_situation_uses_layer_confidence_and_source_cache_key():
@@ -96,7 +86,7 @@ def test_build_situation_update_requires_frame_id():
     with pytest.raises(ValueError, match="frame_id"):
         build_situation_update(
             {"url": "https://x.com/a", "reason": "focus_changed", "ts": 10.0},
-            {"width": 800, "height": 600, "ts": 9.0, "sensitive": False},
+            {"width": 800, "height": 600, "ts": 9.0},
             {},
         )
 

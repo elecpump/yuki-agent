@@ -9,7 +9,6 @@ from PIL import Image
 
 from yuki.logger import get_logger
 from yuki.perception.scroll import ScrollIdleDetector
-from yuki.perception.sensitive import SensitiveDetector
 
 logger = get_logger("yuki.perception.capture")
 
@@ -24,12 +23,6 @@ class FrameCapture(ABC):
 
     @abstractmethod
     def stop(self) -> None: ...
-
-
-def black_frame_png(width: int = 1920, height: int = 1080, color=(0, 0, 0)) -> bytes:
-    buf = io.BytesIO()
-    Image.new("RGB", (width, height), color).save(buf, format="PNG")
-    return buf.getvalue()
 
 
 class WgcCapture(FrameCapture):
@@ -72,9 +65,6 @@ class WgcCapture(FrameCapture):
             self.window_hwnd = window_hwnd
             if was_running and self.window_hwnd:
                 self._start_locked()
-
-    def window_info(self) -> tuple[str, str] | None:
-        return _window_info_from_hwnd(self.window_hwnd)()
 
     def _handle_closed(self) -> None:
         logger.debug("wgc capture closed")
@@ -129,57 +119,20 @@ class NullCapture(FrameCapture):
 
 
 class FrameStrategy:
-    """帧策略：敏感窗口发黑帧、滚动中暂停截屏（纯逻辑）。"""
+    """帧策略：滚动中暂停截屏（纯逻辑）。"""
 
     def __init__(
         self,
-        sensitive: SensitiveDetector,
         idle: ScrollIdleDetector,
         require_idle: bool = False,
-        black: bytes | None = None,
     ) -> None:
-        self._sensitive = sensitive
         self._idle = idle
         self._require_idle = require_idle
-        self._black = black
 
-    def should_capture(self, class_name: str, title: str) -> tuple[bool, bool]:
-        if self._sensitive.is_sensitive(class_name, title):
-            return False, True
+    def should_capture(self) -> bool:
         if self._require_idle and not self._idle.is_idle():
-            return False, False
-        return True, False
-
-    def black_frame(self) -> bytes:
-        return self._black if self._black is not None else black_frame_png()
-
-
-def _foreground_window_info() -> tuple[str, str] | None:
-    try:
-        import win32gui
-
-        hwnd = win32gui.GetForegroundWindow()
-        if not hwnd:
-            return None
-        return win32gui.GetClassName(hwnd), win32gui.GetWindowText(hwnd)
-    except Exception:
-        return None
-
-
-def _window_info_from_hwnd(hwnd: int) -> Callable[[], tuple[str, str] | None]:
-    """从捕获目标 hwnd 解析窗口身份（不依赖实时前台窗口）。"""
-
-    def info() -> tuple[str, str] | None:
-        if not hwnd:
-            return None
-        try:
-            import win32gui
-
-            return win32gui.GetClassName(hwnd), win32gui.GetWindowText(hwnd)
-        except Exception:
-            return None
-
-    return info
+            return False
+        return True
 
 
 class FrameStore:
@@ -191,7 +144,6 @@ class FrameStore:
             "width": 0,
             "height": 0,
             "ts": 0.0,
-            "sensitive": False,
         }
         self._next_frame_id = 0
         self._lock = threading.Lock()
@@ -203,7 +155,6 @@ class FrameStore:
         width: int,
         height: int,
         ts: float,
-        sensitive: bool,
         hwnd: int | None = None,
     ) -> dict:
         with self._lock:
@@ -214,7 +165,6 @@ class FrameStore:
                 "width": width,
                 "height": height,
                 "ts": ts,
-                "sensitive": sensitive,
             }
             if hwnd is not None:
                 snapshot["hwnd"] = int(hwnd)
@@ -230,18 +180,14 @@ def make_frame_service(
     bus,
     capture: FrameCapture,
     strategy: FrameStrategy,
-    window_info: Callable[[], tuple[str, str] | None] | None = None,
     *,
     hwnd: int | None = None,
     on_frame_stored: Callable[[dict], None] | None = None,
 ) -> FrameStore:
     """注册 frame REQ/REP 服务：返回最新帧（PNG base64 + 元数据）。
 
-    应用 FrameStrategy 门控：敏感窗口发布占位黑帧；滚动中暂停截屏不更新 latest。
-    门控基于捕获目标窗口（hwnd）的身份，而非实时前台窗口。
+    应用 FrameStrategy 门控：滚动中暂停截屏不更新 latest。
     """
-    if window_info is None:
-        window_info = _window_info_from_hwnd(hwnd) if hwnd else _foreground_window_info
     store = FrameStore()
 
     def notify_stored(snapshot: dict) -> None:
@@ -253,29 +199,14 @@ def make_frame_service(
             logger.exception("frame stored callback failed")
 
     def on_frame(png: bytes, meta: dict) -> None:
-        info = window_info()
-        class_name, title = info if info is not None else (None, None)
-        capture_ok, is_sensitive = strategy.should_capture(class_name, title)
+        if not strategy.should_capture():
+            return
         frame_hwnd = meta.get("hwnd", hwnd or getattr(capture, "window_hwnd", None))
-        if not capture_ok and is_sensitive:
-            snapshot = store.store(
-                png_b64=base64.b64encode(strategy.black_frame()).decode("ascii"),
-                width=meta["width"],
-                height=meta["height"],
-                ts=meta["ts"],
-                sensitive=True,
-                hwnd=frame_hwnd,
-            )
-            notify_stored(snapshot)
-            return
-        if not capture_ok:
-            return
         snapshot = store.store(
             png_b64=base64.b64encode(png).decode("ascii"),
             width=meta["width"],
             height=meta["height"],
             ts=meta["ts"],
-            sensitive=False,
             hwnd=frame_hwnd,
         )
         notify_stored(snapshot)

@@ -80,7 +80,7 @@ def test_situation_within_cooldown_stays_silent(hub):
     h, bus, _ = hub
     h.handle_awake_request({"source": "hotkey", "ts": 0.0})  # 记录 last_open
     before = len(bus.published)
-    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 0.0})
     assert len(bus.published) == before  # 无新 REPLY
 
 
@@ -88,9 +88,9 @@ def test_situation_proactive_after_cooldown(hub, monkeypatch):
     h, bus, _ = hub
     import time
     monkeypatch.setattr("time.time", lambda: 0.0)
-    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 0.0})
     monkeypatch.setattr("time.time", lambda: 200.0)
-    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 0.0})
     text = _reply_text(bus)
     assert "量子计算" in text
 
@@ -128,28 +128,6 @@ class FakeBridge:
         return self._reply
 
 
-class FakeSensitive:
-    def __init__(self, flag: bool = False):
-        self.flag = flag
-        self.scanned = []
-
-    def is_sensitive(self, text: str) -> bool:
-        return self.flag
-
-    def scan(self, text: str) -> list[str]:
-        self.scanned.append(text)
-        return ["test_rule"] if self.flag else []
-
-
-def test_l2_blocked_for_sensitive_utterance(hub):
-    h, bus, _ = hub
-    bridge = FakeBridge(reply="不应被调用")
-    h._bridge = bridge
-    h._sensitive_filter = FakeSensitive(True)
-    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "我的密码是123456", "duration_s": 1.0, "ts": 0.0})
-    assert bridge.calls == []
-    assert _reply_text(bus)  # 本地 L1 兜底，仍然有回应
-
 def test_l2_intent_routes_to_bridge(hub):
     h, bus, _ = hub
     h._bridge = FakeBridge(reply="云端深度回答")
@@ -186,18 +164,6 @@ def test_l2_intent_without_bridge_notifies_offline(hub):
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
     text = _reply_text(bus)
     assert "云端暂时不可用" in text  # §8.2：未配置云端也要明确告知降级
-
-
-def test_sensitive_l2_block_is_audited(hub):
-    h, bus, _ = hub
-    records = []
-    h._audit_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
-    h._bridge = FakeBridge(reply="不应被调用")
-    h._sensitive_filter = FakeSensitive(True)
-    h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "讲个笑话", "duration_s": 1.0, "ts": 0.0})
-    assert records and records[0]["action"] == "block_l2_route"
-    assert records[0]["categories"] == ["test_rule"]
-    assert "ts" in records[0]  # §9.3：审计含时间/规则编号/命中类别，不存原文
 
 
 def test_l1_intent_never_calls_bridge(hub):
@@ -260,7 +226,7 @@ def test_hub_notifies_tuner_on_proactive_open(hub, monkeypatch):
     tuner = FakeTuner()
     h._tuner = tuner
     monkeypatch.setattr("time.time", lambda: 0.0)
-    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 0.0})
     assert tuner.opens == 1
 
 
@@ -268,7 +234,7 @@ def test_hub_does_not_notify_tuner_on_silent_situation(hub):
     h, bus, _ = hub
     tuner = FakeTuner()
     h._tuner = tuner
-    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "x", "sensitive": True, "ts": 0.0})
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "", "ts": 0.0})
     assert tuner.opens == 0
 
 
@@ -312,7 +278,7 @@ class FakeProjector:
 def test_hub_writes_context_and_uses_projection(hub):
     h, bus, _ = hub
     ctx = FakeContext()
-    ctx.set_snapshot(ContextSnapshot(situation={"topic": "量子计算", "sensitive": False}))
+    ctx.set_snapshot(ContextSnapshot(situation={"topic": "量子计算"}))
     proj = FakeProjector()
     h._context_wrapper = ctx
     h._projector = proj
@@ -347,19 +313,19 @@ def test_hub_context_situation_used_for_situation_update(hub):
     ctx.set_snapshot(ContextSnapshot())
     h._context_wrapper = ctx
     h._projector = FakeProjector()
-    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "sensitive": False, "ts": 0.0})
-    assert ctx.situations == [{"topic": "量子计算", "sensitive": False, "ts": 0.0}]
+    h.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 0.0})
+    assert ctx.situations == [{"topic": "量子计算", "ts": 0.0}]
 
 
 def test_hub_prefers_deep_situation_for_same_source(hub):
     h, bus, _ = hub
     h.on_situation_update(
         Topics.SITUATION_UPDATE,
-        {"layer": "fast", "source_id": "article-1", "topic": "fast", "sensitive": False},
+        {"layer": "fast", "source_id": "article-1", "topic": "fast"},
     )
     h.on_situation_update(
         Topics.SITUATION_UPDATE,
-        {"layer": "deep", "source_id": "article-1", "topic": "deep", "sensitive": False},
+        {"layer": "deep", "source_id": "article-1", "topic": "deep"},
     )
     assert h._context["topic"] == "deep"
 
@@ -368,7 +334,7 @@ def test_hub_falls_back_to_fast_when_deep_degraded(hub):
     h, bus, _ = hub
     h.on_situation_update(
         Topics.SITUATION_UPDATE,
-        {"layer": "fast", "source_id": "article-1", "topic": "fast", "sensitive": False},
+        {"layer": "fast", "source_id": "article-1", "topic": "fast"},
     )
     h.on_situation_update(
         Topics.SITUATION_UPDATE,
@@ -376,7 +342,6 @@ def test_hub_falls_back_to_fast_when_deep_degraded(hub):
             "layer": "deep",
             "source_id": "article-1",
             "topic": "",
-            "sensitive": False,
             "degraded": True,
         },
     )
@@ -407,6 +372,6 @@ def test_hub_feeds_engagement_topic(hub):
     h, bus, _ = hub
     sed = FakeSedimenter()
     h._sedimenter = sed
-    h._context = {"topic": "量子计算", "sensitive": False}
+    h._context = {"topic": "量子计算"}
     h.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "duration_s": 1.0, "ts": 0.0})
     assert "量子计算" in sed.topics

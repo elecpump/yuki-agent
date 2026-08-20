@@ -3,7 +3,6 @@ from typing import Callable
 from yuki.cognition.brain.classifier import Intent
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.tuner import FeedbackTuner, detect_polarity
-from yuki.cognition.sensitive import SensitiveFilter
 from yuki.memory.manager import MemoryManager
 
 LABEL_FREQUENCY_LOW = "yuki.rhythm.frequency.low"
@@ -29,13 +28,11 @@ class PreferenceSedimenter:
                  topic_engagement_threshold: int = 3,
                  frequency_floor_s: float = 120.0,
                  on_sedimented: Callable[..., None] | None = None,
-                 soul: SoulStore | None = None,
-                 sensitive_filter: SensitiveFilter | None = None) -> None:
+                 soul: SoulStore | None = None) -> None:
         self._memory = memory
         self._tuner = tuner
         self._on_sedimented = on_sedimented
         self._soul = soul
-        self._sensitive_filter = sensitive_filter or SensitiveFilter()
         self._min_signals = min_signals
         self._confidence_threshold = confidence_threshold
         self._topic_threshold = topic_engagement_threshold
@@ -105,13 +102,12 @@ class PreferenceSedimenter:
             self._written_conf.pop(label, None)
 
     def _write_explicit(self, text: str) -> None:
-        sensitivity = 2 if self._sensitive_filter.is_sensitive(text) else 0
         self._write_preference(
             text,
             "yuki.explicit",
             source="user",
             confidence=1.0,
-            sensitivity=sensitivity,
+            sensitivity=0,
         )
 
     def _apply_correction(self, text: str) -> None:

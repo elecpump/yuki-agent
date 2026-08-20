@@ -139,7 +139,6 @@ class StableContentObservation:
             "frame_ts": frame.get("ts", 0.0),
             "frame_width": frame.get("width", 0),
             "frame_height": frame.get("height", 0),
-            "sensitive": bool(frame.get("sensitive", False)),
         })
         if "hwnd" in frame:
             payload["hwnd"] = frame["hwnd"]

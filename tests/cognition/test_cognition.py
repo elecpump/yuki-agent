@@ -352,40 +352,6 @@ def test_persona_refresh_includes_safe_explicit_sedimented_preference(tmp_path, 
         agent.teardown()
 
 
-def test_persona_refresh_excludes_high_sensitive_explicit_sedimented_preference(
-    tmp_path, monkeypatch
-):
-    class FakeCloudClient:
-        def __init__(self, **kwargs):
-            self.calls = []
-
-        def chat(self, messages, tools=None, timeout_s=None):
-            self.calls.append(messages)
-            return {"choices": [{"message": {"content": messages[-1]["content"]}}]}
-
-    fake = FakeCloudClient()
-    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
-
-    agent = CognitionAgent(
-        Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
-                        "enable_llm_refine": True},
-               context={"snapshot_path": str(tmp_path / "ctx.json")},
-               cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
-        bus=FakeBus(),
-        pipeline=FakePipeline(),
-        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
-    )
-    agent.setup()
-    try:
-        agent._hub._sedimenter.on_user_utterance(
-            "我希望你记住我的银行卡号是 6222021234567890", Intent.SYSTEM
-        )
-        refine_prompt = fake.calls[-1][-1]["content"]
-        assert "6222021234567890" not in refine_prompt
-    finally:
-        agent.teardown()
-
-
 def test_persona_loop_sedimentation_creates_version(tmp_path):
     config = Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
                              "enable_llm_refine": False},
