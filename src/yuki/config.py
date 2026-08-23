@@ -106,6 +106,17 @@ class PerceptionConfig(BaseModel):
     dwell_s: float = Field(2.0, ge=0.0)
 
 
+class WakeWordConfig(BaseModel):
+    enabled: bool = False
+    model_path: str = ""
+    threshold: float = Field(0.5, ge=0.0, le=1.0)
+    refractory_s: float = Field(2.0, ge=0.0)
+    chunk_ms: int = Field(80, ge=20)
+    pre_roll_s: float = Field(1.2, ge=0.0)
+    listen_timeout_s: float = Field(10.0, ge=0.0)
+    listen_window_s: float = Field(5.0, ge=0.0)
+
+
 class ContextConfig(BaseModel):
     max_turns: int = Field(20, ge=1)
     max_tokens: int = Field(1500, ge=100)
@@ -147,6 +158,7 @@ class Config(BaseModel):
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
+    wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     sedimenter: SedimenterConfig = Field(default_factory=SedimenterConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -176,6 +188,7 @@ class Config(BaseModel):
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
             ("perception", PerceptionConfig),
+            ("wake_word", WakeWordConfig),
             ("context", ContextConfig),
             ("sedimenter", SedimenterConfig),
             ("persona", PersonaConfig),

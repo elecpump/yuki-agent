@@ -78,6 +78,7 @@ def _make_pipeline(
     frame_client=None,
     speech_buffer=None,
     text_client=None,
+    **kwargs,
 ):
     return build_pipeline(
         bus or FakeBus(),
@@ -86,6 +87,7 @@ def _make_pipeline(
         frame_client=frame_client or FakeFrameClient(),
         speech_buffer=speech_buffer,
         text_client=text_client,
+        **kwargs,
     )
 
 
@@ -331,6 +333,31 @@ def test_pipeline_mic_before_awake_is_blocked():
     assert bus.published == []
 
 
+def test_pipeline_mic_before_awake_is_kept_as_pre_roll():
+    sb = FakeSpeechBuffer()
+    bus = FakeBus()
+    pipeline = build_pipeline(
+        bus,
+        vlm=FakeVLM(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        speech_buffer=sb,
+        pre_roll_s=0.04,
+    )
+    first = np.ones(320, dtype=np.float32)
+    second = np.ones(320, dtype=np.float32) * 2
+    for samples in (first, second):
+        pcm = base64.b64encode(samples.tobytes()).decode("ascii")
+        bus.subscriptions[Topics.MIC][0]("audio/mic", {"pcm": pcm, "sample_rate": 16000})
+
+    bus.subscriptions[Topics.AWAKE][0]("event/awake", {"source": "hotkey", "ts": 0.0})
+
+    assert len(sb.frames) == 2
+    np.testing.assert_array_equal(sb.frames[0], first)
+    np.testing.assert_array_equal(sb.frames[1], second)
+    pipeline.close()
+
+
 def test_pipeline_awake_resets_speech_buffer():
     sb = FakeSpeechBuffer()
     bus = FakeBus()
@@ -339,6 +366,79 @@ def test_pipeline_awake_resets_speech_buffer():
     bus.subscriptions[Topics.AWAKE][0]("event/awake", {"source": "hotkey", "ts": 0.0})
     assert sb.reset_calls == 1
     assert sb.frames == []
+
+
+def test_pipeline_awake_timeout_returns_to_idle():
+    now = [10.0]
+    sb = FakeSpeechBuffer()
+    pipeline = PerceptionPipeline(
+        vlm=FakeVLM(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        bus=FakeBus(),
+        speech_buffer=sb,
+        listen_timeout_s=1.0,
+        clock=lambda: now[0],
+        start_deep_timer=False,
+        start_asr_watchdog=False,
+    )
+
+    pipeline.on_awake("event/awake", {"source": "hotkey"})
+    now[0] += 0.9
+    assert pipeline.check_asr_due() is False
+    now[0] += 0.2
+    assert pipeline.check_asr_due() is True
+    assert pipeline._asr_state == "idle"
+    assert sb.reset_calls == 2
+
+
+def test_pipeline_listen_window_timeout_after_empty_stt():
+    now = [10.0]
+
+    class EmptySTT(FakeSTT):
+        def recognize(self, samples, sample_rate=16000):
+            return ""
+
+    pipeline = PerceptionPipeline(
+        vlm=FakeVLM(),
+        stt=EmptySTT(),
+        frame_client=FakeFrameClient(),
+        bus=FakeBus(),
+        speech_buffer=FakeSpeechBuffer(),
+        listen_window_s=0.5,
+        clock=lambda: now[0],
+        start_deep_timer=False,
+        start_asr_watchdog=False,
+    )
+
+    pipeline.on_awake("event/awake", {"source": "hotkey"})
+    session_id = pipeline._session_id
+    pipeline._recognize_utterance(np.zeros(320, dtype=np.float32), session_id)
+    assert pipeline._asr_state == "listening"
+    now[0] += 0.6
+    assert pipeline.check_asr_due() is True
+    assert pipeline._asr_state == "idle"
+
+
+def test_pipeline_discards_stale_stt_result():
+    bus = FakeBus()
+    pipeline = PerceptionPipeline(
+        vlm=FakeVLM(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        bus=bus,
+        speech_buffer=FakeSpeechBuffer(),
+        start_deep_timer=False,
+        start_asr_watchdog=False,
+    )
+
+    pipeline.on_awake("event/awake", {"source": "hotkey"})
+    stale_session = pipeline._session_id
+    with pipeline._asr_lock:
+        pipeline._return_to_idle_locked()
+    pipeline._recognize_utterance(np.zeros(320, dtype=np.float32), stale_session)
+
+    assert not any(t == Topics.USER_UTTERANCE for t, _ in bus.published)
 
 
 def test_pipeline_focus_passes_decoded_pil_image_to_vlm():
@@ -619,6 +719,7 @@ def test_pipeline_utterance_callback_does_not_block_on_slow_stt():
         stt=stt,
         frame_client=FakeFrameClient(),
     )
+    bus.subscriptions[Topics.AWAKE][0]("event/awake", {"source": "hotkey", "ts": 0.0})
 
     started = time.monotonic()
     pipeline._on_utterance(np.zeros(320, dtype=np.float32))

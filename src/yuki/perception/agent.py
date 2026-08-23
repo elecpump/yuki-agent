@@ -6,6 +6,7 @@ from yuki.perception.capture import FrameStrategy, WgcCapture, make_frame_servic
 from yuki.perception.scroll import ScrollHook, ScrollIdleDetector
 from yuki.perception.system_monitor import ForegroundProbe, SystemMonitor
 from yuki.perception.text import build_text_services
+from yuki.perception.wake_word import WakeWordDetector
 from yuki.process import ProcessAgent
 from yuki.topics import Topics
 
@@ -15,7 +16,8 @@ class PerceptionAgent(ProcessAgent):
 
     def __init__(self, config: Config, *, bus=None, shutdown=None,
                  capture=None, monitor=None, audio=None, scroll_hook=None,
-                 strategy=None, foreground_hwnd: int | None = None) -> None:
+                 strategy=None, foreground_hwnd: int | None = None,
+                 wake_word=None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
         self._capture = capture
         self._monitor = monitor
@@ -23,6 +25,7 @@ class PerceptionAgent(ProcessAgent):
         self._scroll_hook = scroll_hook
         self._strategy = strategy
         self._foreground_hwnd = foreground_hwnd
+        self._wake_word = wake_word
         self._components: dict = {}
 
     def setup(self) -> None:
@@ -60,6 +63,9 @@ class PerceptionAgent(ProcessAgent):
             on_change=on_focus_changed,
         )
         audio = self._audio or AudioCapture(self.bus)
+        wake_word = self._wake_word
+        if wake_word is None and self.config.wake_word.enabled:
+            wake_word = WakeWordDetector(self.bus, self.config.wake_word)
 
         def on_scroll() -> None:
             idle.on_scroll_activity()
@@ -89,14 +95,17 @@ class PerceptionAgent(ProcessAgent):
             "scroll_hook": scroll_hook,
             "observation": observation,
             "text": text_chain,
+            "wake_word": wake_word,
         }
         monitor.start()
+        if wake_word is not None:
+            wake_word.start()
         audio.start()
         capture.start()
         scroll_hook.start()
 
     def teardown(self) -> None:
-        for key in ("scroll_hook", "capture", "monitor", "audio", "observation"):
+        for key in ("scroll_hook", "capture", "monitor", "audio", "wake_word", "observation"):
             comp = self._components.get(key)
             if comp is not None:
                 try:
@@ -113,6 +122,7 @@ class PerceptionAgent(ProcessAgent):
             "monitor": self._health_monitor,
             "scroll_hook": self._health_scroll,
             "text": self._health_text,
+            "wake_word": self._health_wake_word,
         }
 
     def _health_audio(self) -> HealthStatus:
@@ -139,3 +149,11 @@ class PerceptionAgent(ProcessAgent):
         if chain is None:
             return HealthStatus(True, {"enabled": False})
         return HealthStatus(True, {"enabled": True, **chain.health()})
+
+    def _health_wake_word(self) -> HealthStatus:
+        detector = self._components.get("wake_word")
+        if detector is None:
+            return HealthStatus(True, {"enabled": False})
+        health = detector.health() if hasattr(detector, "health") else {}
+        failed = bool(health.get("failed"))
+        return HealthStatus(not failed, {"enabled": True, **health})

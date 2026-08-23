@@ -65,6 +65,26 @@ class FakeScrollHook:
             self.log.append("scroll_hook")
 
 
+class FakeWakeWord:
+    def __init__(self, log=None):
+        self.log = log
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+        if self.log is not None:
+            self.log.append("wake_word_start")
+
+    def stop(self):
+        self.stopped = True
+        if self.log is not None:
+            self.log.append("wake_word")
+
+    def health(self):
+        return {"started": self.started}
+
+
 class TrackingCapture(FakeCapture):
     def __init__(self, log=None):
         super().__init__(log)
@@ -147,6 +167,29 @@ def test_perception_agent_default_constructs():
     agent.setup()
     assert "frame" in bus.services
     agent.teardown()
+
+
+def test_perception_agent_wires_wake_word_component():
+    bus = FakeBus()
+    log = []
+    wake_word = FakeWakeWord(log)
+    agent = PerceptionAgent(
+        Config(wake_word={"enabled": True}),
+        bus=bus,
+        capture=FakeCapture(log),
+        monitor=FakeMonitor(log),
+        audio=FakeAudio(log),
+        scroll_hook=FakeScrollHook(log),
+        wake_word=wake_word,
+    )
+
+    agent.setup()
+    assert wake_word.started
+    assert agent._health_wake_word().detail["started"] is True
+    agent.teardown()
+
+    assert wake_word.stopped
+    assert "wake_word" in log
 
 
 def test_perception_agent_default_strategy_gates_on_scroll():

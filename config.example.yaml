@@ -63,6 +63,15 @@ soul:
   tuner_state_path: data/tuner_state.json
 perception:
   dwell_s: 2.0
+wake_word:
+  enabled: false
+  model_path: ""
+  threshold: 0.5
+  refractory_s: 2.0
+  chunk_ms: 80
+  pre_roll_s: 1.2
+  listen_timeout_s: 10.0
+  listen_window_s: 5.0
 context:
   max_turns: 20
   max_tokens: 1500

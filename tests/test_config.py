@@ -197,6 +197,38 @@ def test_perception_env_override(monkeypatch):
     assert config.perception.dwell_s == 1.5
 
 
+def test_wake_word_defaults():
+    config = Config()
+    assert config.wake_word.enabled is False
+    assert config.wake_word.model_path == ""
+    assert config.wake_word.threshold == 0.5
+    assert config.wake_word.refractory_s == 2.0
+    assert config.wake_word.chunk_ms == 80
+    assert config.wake_word.pre_roll_s == 1.2
+    assert config.wake_word.listen_timeout_s == 10.0
+    assert config.wake_word.listen_window_s == 5.0
+
+
+def test_wake_word_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_WAKE_WORD_ENABLED", "true")
+    monkeypatch.setenv("YUKI_WAKE_WORD_MODEL_PATH", "models/yuki.onnx")
+    monkeypatch.setenv("YUKI_WAKE_WORD_THRESHOLD", "0.7")
+    monkeypatch.setenv("YUKI_WAKE_WORD_REFRACTORY_S", "3.0")
+    monkeypatch.setenv("YUKI_WAKE_WORD_CHUNK_MS", "160")
+    monkeypatch.setenv("YUKI_WAKE_WORD_PRE_ROLL_S", "1.5")
+    monkeypatch.setenv("YUKI_WAKE_WORD_LISTEN_TIMEOUT_S", "8.0")
+    monkeypatch.setenv("YUKI_WAKE_WORD_LISTEN_WINDOW_S", "4.0")
+    config = Config.load(None)
+    assert config.wake_word.enabled is True
+    assert config.wake_word.model_path == "models/yuki.onnx"
+    assert config.wake_word.threshold == 0.7
+    assert config.wake_word.refractory_s == 3.0
+    assert config.wake_word.chunk_ms == 160
+    assert config.wake_word.pre_roll_s == 1.5
+    assert config.wake_word.listen_timeout_s == 8.0
+    assert config.wake_word.listen_window_s == 4.0
+
+
 def test_context_defaults():
     config = Config()
     assert config.context.max_turns == 20

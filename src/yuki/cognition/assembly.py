@@ -98,6 +98,9 @@ class CognitionAssembler:
             text_key_point_chars=self.config.text.key_point_chars,
             deep_interval_s=self.config.vlm.deep_interval_s,
             user_bypass_rate_limit=self.config.vlm.user_bypass_rate_limit,
+            listen_timeout_s=self.config.wake_word.listen_timeout_s,
+            listen_window_s=self.config.wake_word.listen_window_s,
+            pre_roll_s=self.config.wake_word.pre_roll_s,
         )
         pipeline.warmup_vlm()
 
