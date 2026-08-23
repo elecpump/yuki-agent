@@ -72,6 +72,17 @@ wake_word:
   pre_roll_s: 1.2
   listen_timeout_s: 10.0
   listen_window_s: 5.0
+gateway:
+  enabled: false
+  host: 127.0.0.1
+  port: 8765
+  cors_origins:
+    - tauri://localhost
+  cors_origin_regex: "^http://localhost:\\d+$"
+  ws_heartbeat_timeout_s: 45.0
+  cleanup_interval_s: 30.0
+  chat_task_timeout_s: 60.0
+  history_dir: data/recordings
 context:
   max_turns: 20
   max_tokens: 1500

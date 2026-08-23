@@ -117,6 +117,18 @@ class WakeWordConfig(BaseModel):
     listen_window_s: float = Field(5.0, ge=0.0)
 
 
+class GatewayConfig(BaseModel):
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = Field(8765, ge=1, le=65535)
+    cors_origins: list[str] = Field(default_factory=lambda: ["tauri://localhost"])
+    cors_origin_regex: str = r"^http://localhost:\d+$"
+    ws_heartbeat_timeout_s: float = Field(45.0, ge=1.0)
+    cleanup_interval_s: float = Field(30.0, ge=1.0)
+    chat_task_timeout_s: float = Field(60.0, ge=0.1)
+    history_dir: str = "data/recordings"
+
+
 class ContextConfig(BaseModel):
     max_turns: int = Field(20, ge=1)
     max_tokens: int = Field(1500, ge=100)
@@ -159,6 +171,7 @@ class Config(BaseModel):
     soul: SoulConfig = Field(default_factory=SoulConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
+    gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     sedimenter: SedimenterConfig = Field(default_factory=SedimenterConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
@@ -189,6 +202,7 @@ class Config(BaseModel):
             ("soul", SoulConfig),
             ("perception", PerceptionConfig),
             ("wake_word", WakeWordConfig),
+            ("gateway", GatewayConfig),
             ("context", ContextConfig),
             ("sedimenter", SedimenterConfig),
             ("persona", PersonaConfig),

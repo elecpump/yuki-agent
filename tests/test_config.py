@@ -229,6 +229,39 @@ def test_wake_word_env_override(monkeypatch):
     assert config.wake_word.listen_window_s == 4.0
 
 
+def test_gateway_defaults():
+    config = Config()
+    assert config.gateway.enabled is False
+    assert config.gateway.host == "127.0.0.1"
+    assert config.gateway.port == 8765
+    assert config.gateway.cors_origins == ["tauri://localhost"]
+    assert config.gateway.cors_origin_regex == r"^http://localhost:\d+$"
+    assert config.gateway.ws_heartbeat_timeout_s == 45.0
+    assert config.gateway.cleanup_interval_s == 30.0
+    assert config.gateway.chat_task_timeout_s == 60.0
+    assert config.gateway.history_dir == "data/recordings"
+
+
+def test_gateway_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_GATEWAY_ENABLED", "true")
+    monkeypatch.setenv("YUKI_GATEWAY_HOST", "127.0.0.2")
+    monkeypatch.setenv("YUKI_GATEWAY_PORT", "8766")
+    monkeypatch.setenv("YUKI_GATEWAY_CORS_ORIGIN_REGEX", "^http://localhost:3000$")
+    monkeypatch.setenv("YUKI_GATEWAY_WS_HEARTBEAT_TIMEOUT_S", "50.0")
+    monkeypatch.setenv("YUKI_GATEWAY_CLEANUP_INTERVAL_S", "35.0")
+    monkeypatch.setenv("YUKI_GATEWAY_CHAT_TASK_TIMEOUT_S", "12.0")
+    monkeypatch.setenv("YUKI_GATEWAY_HISTORY_DIR", "tmp/history")
+    config = Config.load(None)
+    assert config.gateway.enabled is True
+    assert config.gateway.host == "127.0.0.2"
+    assert config.gateway.port == 8766
+    assert config.gateway.cors_origin_regex == "^http://localhost:3000$"
+    assert config.gateway.ws_heartbeat_timeout_s == 50.0
+    assert config.gateway.cleanup_interval_s == 35.0
+    assert config.gateway.chat_task_timeout_s == 12.0
+    assert config.gateway.history_dir == "tmp/history"
+
+
 def test_context_defaults():
     config = Config()
     assert config.context.max_turns == 20

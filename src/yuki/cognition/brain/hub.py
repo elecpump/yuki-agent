@@ -16,6 +16,8 @@ CRISIS_FALLBACK_REPLY = (
     "或拨打当地紧急电话/危机热线。先不要一个人扛着，我们把眼前这一刻撑过去。"
 )
 COGNITION_AWAKE_SERVICE = "cognition.awake"
+COGNITION_CHAT_SERVICE = "cognition.chat"
+SOUL_GET_SERVICE = "soul.get"
 
 
 def situation_provenance(situation: dict | None) -> dict:
@@ -125,6 +127,13 @@ class DecisionHub:
 
     def handle_awake_request(self, payload: dict) -> dict:
         return self._handle(TriggerKind.AWAKE, "", publish_reply=False)
+
+    def handle_chat_request(self, payload: dict) -> dict:
+        return self._handle(
+            TriggerKind.UTTERANCE,
+            str((payload or {}).get("text", "")),
+            publish_reply=False,
+        )
 
     def on_user_utterance(self, topic: str, payload: dict) -> None:
         text = payload.get("text", "")

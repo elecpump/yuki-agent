@@ -1,5 +1,9 @@
 from yuki.cognition.agent import CognitionAgent
-from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
+from yuki.cognition.brain.hub import (
+    COGNITION_AWAKE_SERVICE,
+    COGNITION_CHAT_SERVICE,
+    SOUL_GET_SERVICE,
+)
 from yuki.cognition.brain.classifier import Intent
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
@@ -49,6 +53,8 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
         FUNCTIONS_CALL_SERVICE, {"name": "system.ping", "arguments": "{}"}
     )["ok"] is True
     assert COGNITION_AWAKE_SERVICE in bus.services
+    assert COGNITION_CHAT_SERVICE in bus.services
+    assert SOUL_GET_SERVICE in bus.services
     agent.teardown()
 
 
@@ -70,6 +76,48 @@ def test_cognition_agent_awake_service_coordinates_pipeline_and_brain(tmp_path):
             (Topics.AWAKE, {"source": "hotkey", "ts": 0.0})
         ]
         assert not any(topic == Topics.REPLY for topic, _ in bus.published)
+    finally:
+        agent.teardown()
+
+
+def test_cognition_agent_chat_service_returns_without_publishing_reply(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        result = bus.request(
+            COGNITION_CHAT_SERVICE,
+            {"text": "你好", "session_id": "ui", "task_id": "t1"},
+        )
+        assert "text" in result
+        assert "spoke" in result
+        assert not any(topic == Topics.REPLY for topic, _ in bus.published)
+    finally:
+        agent.teardown()
+
+
+def test_cognition_agent_soul_get_service_returns_soul(tmp_path):
+    bus = FakeBus()
+    soul_path = tmp_path / "soul.json"
+    agent = CognitionAgent(
+        Config(
+            soul={"path": str(soul_path), "tuner_state_path": str(tmp_path / "tuner.json")},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        result = bus.request(SOUL_GET_SERVICE, {})
+        assert result["soul"]["persona_name"] == "yuki"
+        assert "core_values" in result["soul"]
     finally:
         agent.teardown()
 

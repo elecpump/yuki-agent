@@ -3,7 +3,13 @@ import time
 from dataclasses import dataclass
 from typing import Callable
 
-from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE, DecisionHub, build_brain
+from yuki.cognition.brain.hub import (
+    COGNITION_AWAKE_SERVICE,
+    COGNITION_CHAT_SERVICE,
+    DecisionHub,
+    SOUL_GET_SERVICE,
+    build_brain,
+)
 from yuki.cognition.brain.local import (
     LocalChatModel,
     LocalComposer,
@@ -49,6 +55,7 @@ class CognitionRuntime:
     bridge: CloudBridge | None
     hub: DecisionHub
     context: WorkingContext
+    soul_store: SoulStore
     persona_store: PersonaStore
     persona_refresh: Callable[..., None]
 
@@ -59,6 +66,15 @@ class CognitionRuntime:
         if hasattr(self.pipeline, "on_awake"):
             self.pipeline.on_awake(Topics.AWAKE, payload)
         return self.hub.handle_awake_request(payload)
+
+    def handle_chat_request(self, payload: dict) -> dict:
+        payload = dict(payload or {})
+        payload.setdefault("session_id", "default")
+        payload.setdefault("task_id", "")
+        return self.hub.handle_chat_request(payload)
+
+    def handle_soul_get(self, payload: dict) -> dict:
+        return {"soul": self.soul_store.load_or_default()}
 
 
 class CognitionAssembler:
@@ -192,10 +208,13 @@ class CognitionAssembler:
             bridge=bridge,
             hub=hub,
             context=context,
+            soul_store=soul_store,
             persona_store=persona_store,
             persona_refresh=persona_refresh,
         )
         self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
+        self.bus.respond(COGNITION_CHAT_SERVICE, runtime.handle_chat_request)
+        self.bus.respond(SOUL_GET_SERVICE, runtime.handle_soul_get)
         return runtime
 
     def _build_memory(self) -> MemoryManager:

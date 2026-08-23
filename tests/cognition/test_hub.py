@@ -96,6 +96,19 @@ def test_local_disabled_utterance_goes_cloud_notice(tmp_path):
     memory.close()
 
 
+def test_chat_request_does_not_publish_reply(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    hub = DecisionHub(bus, memory=memory, local_enabled=False)
+
+    result = hub.handle_chat_request({"text": "你好", "session_id": "ui"})
+
+    assert result["text"] == L2_UNAVAILABLE_NOTICE
+    assert result["spoke"] is True
+    assert _reply_text(bus) is None
+    memory.close()
+
+
 def test_local_disabled_utterance_uses_cloud_when_available(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
