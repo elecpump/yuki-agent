@@ -138,6 +138,21 @@ def test_brain_env_override(monkeypatch):
     assert config.brain.proactive_enabled is False
 
 
+def test_local_brain_defaults():
+    config = Config()
+    assert config.local_brain.model_id == "Qwen/Qwen3-1.7B-FP8"
+    assert config.local_brain.fp8_dequantize is True
+    assert config.local_brain.local_files_only is False
+
+
+def test_local_brain_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_LOCAL_BRAIN_FP8_DEQUANTIZE", "true")
+    monkeypatch.setenv("YUKI_LOCAL_BRAIN_LOCAL_FILES_ONLY", "true")
+    config = Config.load(None)
+    assert config.local_brain.fp8_dequantize is True
+    assert config.local_brain.local_files_only is True
+
+
 def test_cloud_defaults():
     config = Config()
     assert config.cloud.enabled is False

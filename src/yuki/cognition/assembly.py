@@ -278,6 +278,8 @@ class CognitionAssembler:
             cache_dir=local_cfg.cache_dir,
             device=local_cfg.device,
             enabled=local_cfg.enabled,
+            fp8_dequantize=local_cfg.fp8_dequantize,
+            local_files_only=local_cfg.local_files_only,
         )
         router = LocalRouter(
             model,

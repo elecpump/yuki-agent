@@ -45,6 +45,13 @@ text:
 brain:
   proactive_cooldown_s: 120.0
   proactive_enabled: true
+local_brain:
+  enabled: false
+  model_id: Qwen/Qwen3-1.7B-FP8
+  cache_dir: ""
+  device: auto
+  fp8_dequantize: true
+  local_files_only: false
 vlm:
   enabled: true
   model: Qwen/Qwen3-VL-8B-Instruct

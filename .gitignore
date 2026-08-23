@@ -9,3 +9,5 @@ logs/
 data/
 .codegraph/
 config.yaml
+.model
+test.py

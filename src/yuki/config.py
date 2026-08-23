@@ -77,6 +77,8 @@ class LocalBrainConfig(BaseModel):
     local_reply_timeout_ms: int = Field(700, ge=1)
     vision_timeout_ms: int = Field(1200, ge=1)
     retry: int = Field(1, ge=0)
+    fp8_dequantize: bool = True
+    local_files_only: bool = False
     local_tool_allowlist: list[str] = Field(default_factory=list)
 
 

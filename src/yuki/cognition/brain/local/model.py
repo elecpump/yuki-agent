@@ -18,12 +18,16 @@ class LocalChatModel:
         cache_dir: str = "",
         device: str = "auto",
         enabled: bool = True,
+        fp8_dequantize: bool = False,
+        local_files_only: bool = False,
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
         self._model_id = model_id
         self._cache_dir = cache_dir
         self._device = device
+        self._fp8_dequantize = fp8_dequantize
+        self._local_files_only = local_files_only
         self._loaded = model is not None and tokenizer is not None
         self._load_failed = not enabled
         self._load_lock = threading.Lock()
@@ -56,15 +60,24 @@ class LocalChatModel:
                     "cache_dir": self._cache_dir or None,
                     "torch_dtype": "auto",
                     "trust_remote_code": True,
+                    "local_files_only": self._local_files_only,
                 }
                 if self._device == "auto":
                     kwargs["device_map"] = "auto"
+                if self._fp8_dequantize:
+                    from transformers import FineGrainedFP8Config
+
+                    kwargs["quantization_config"] = FineGrainedFP8Config(dequantize=True)
                 self._model = AutoModelForCausalLM.from_pretrained(self._model_id, **kwargs)
                 self._tokenizer = AutoTokenizer.from_pretrained(
                     self._model_id,
                     cache_dir=self._cache_dir or None,
                     trust_remote_code=True,
+                    local_files_only=self._local_files_only,
                 )
+                generation_config = getattr(self._model, "generation_config", None)
+                if generation_config is not None and hasattr(generation_config, "enable_thinking"):
+                    generation_config.enable_thinking = False
                 if self._device != "auto" and hasattr(self._model, "to"):
                     self._model.to(self._device)
                 self._loaded = True
@@ -103,6 +116,7 @@ class LocalChatModel:
                 list(messages),
                 tokenize=False,
                 add_generation_prompt=True,
+                enable_thinking=False,
             )
         parts = []
         for message in messages:
