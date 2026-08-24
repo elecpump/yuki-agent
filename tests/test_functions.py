@@ -105,3 +105,35 @@ def test_builtin_system_ping_dispatchable():
 
 def test_package_exports_errors():
     assert issubclass(FunctionError, Exception)
+
+
+def test_tool_call_writes_audit(monkeypatch):
+    calls = []
+
+    class FakeAudit:
+        def info(self, event, **fields):
+            calls.append((event, fields))
+
+    monkeypatch.setattr("yuki.functions.tool_manager.get_audit_logger", lambda: FakeAudit())
+    monkeypatch.setattr("yuki.functions.tool_manager.get_toolcall_logger", lambda: FakeAudit())
+    manager = FunctionRegistry()
+    manager.tool("echo", description="echo", params=None)(lambda p: "pong")
+    manager.call("echo", {})
+    assert ("tool.call", {"name": "echo"}) in calls
+    assert ("tool.call_ok", {"name": "echo"}) in calls
+
+
+def test_tool_call_writes_toolcall_trace(monkeypatch):
+    calls = []
+
+    class FakeTrace:
+        def info(self, event, **fields):
+            calls.append((event, fields))
+
+    monkeypatch.setattr("yuki.functions.tool_manager.get_audit_logger", lambda: FakeTrace())
+    monkeypatch.setattr("yuki.functions.tool_manager.get_toolcall_logger", lambda: FakeTrace())
+    manager = FunctionRegistry()
+    manager.tool("echo", description="echo", params=None)(lambda p: "pong")
+    manager.call("echo", {})
+    assert ("tool_call", {"name": "echo"}) in calls
+    assert ("tool_call_ok", {"name": "echo"}) in calls

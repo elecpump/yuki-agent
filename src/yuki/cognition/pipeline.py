@@ -4,12 +4,12 @@ import io
 import re
 import threading
 import time
-from collections import deque
 from collections.abc import Callable
 from typing import Any
 
 from PIL import Image
 
+from yuki.cognition.asr_session import AsrSession
 from yuki.cognition.frame_client import FrameClient
 from yuki.cognition.situation import (
     build_situation_update,
@@ -23,7 +23,7 @@ from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
 from yuki.cognition.text_client import TextClient
 from yuki.cognition.vlm import VisualUnderstander
-from yuki.logger import get_logger
+from yuki.logger import get_logger, get_situation_logger
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.pipeline")
@@ -145,24 +145,22 @@ class PerceptionPipeline:
         self._deep_results: dict[str, dict] = {}
         self._deep_timer_stop = threading.Event()
         self._deep_timer_thread: threading.Thread | None = None
-        self._asr_lock = threading.RLock()
-        self._asr_state = "idle"
-        self._listening = False
-        self._asr_generation = 0
-        self._session_id: int | None = None
-        self._last_activity_monotonic = self._clock()
-        self._current_listen_timeout_s = max(0.0, float(listen_timeout_s))
+        self._asr = AsrSession(
+            listen_timeout_s=listen_timeout_s,
+            listen_window_s=listen_window_s,
+            pre_roll_s=pre_roll_s,
+            audio_frame_ms=audio_frame_ms,
+            clock=clock,
+            speech_buffer=speech_buffer,
+            on_utterance=self._on_utterance,
+        )
         self._listen_timeout_s = max(0.0, float(listen_timeout_s))
         self._listen_window_s = max(0.0, float(listen_window_s))
+        self._asr_lock = threading.RLock()  # 兼容旧测试访问
         self._asr_watchdog_stop = threading.Event()
         self._asr_watchdog_thread: threading.Thread | None = None
         self._audio_sample_rate = int(audio_sample_rate)
         self._audio_frame_ms = int(audio_frame_ms)
-        pre_roll_frames = int(max(0.0, float(pre_roll_s)) * 1000 / max(1, self._audio_frame_ms))
-        self._pre_roll: deque[Any] = deque(maxlen=pre_roll_frames)
-        self._speech_buffer = speech_buffer or SpeechBuffer(
-            on_utterance=self._on_utterance
-        )
         self._fast_worker = _LatestJobWorker("yuki-cognition-fast_worker")
         self._deep_worker = _LatestJobWorker("yuki-cognition-deep_worker")
         self._stt_worker = _LatestJobWorker("yuki-cognition-stt")
@@ -191,12 +189,9 @@ class PerceptionPipeline:
             return None
 
     def _on_utterance(self, samples) -> None:
-        with self._asr_lock:
-            if not self._listening or self._session_id is None:
-                return
-            session_id = self._session_id
-            self._asr_state = "processing"
-            self._last_activity_monotonic = self._clock()
+        session_id = self._asr.session_id
+        if not self._asr.consume_utterance(session_id):
+            return
         self._stt_worker.submit(self._recognize_utterance, samples, session_id)
 
     def _recognize_utterance(self, samples, session_id: int | None = None) -> None:
@@ -206,7 +201,7 @@ class PerceptionPipeline:
         except Exception:
             logger.exception("stt recognition failed")
         finally:
-            should_publish = bool(text) and self._session_is_current(session_id)
+            should_publish = bool(text) and self._asr.is_current(session_id)
             try:
                 if should_publish:
                     self._bus.publish(Topics.USER_UTTERANCE, {
@@ -215,7 +210,7 @@ class PerceptionPipeline:
                         "ts": time.time(),
                     })
             finally:
-                self._finish_stt_session(session_id)
+                self._asr.finish(session_id)
 
     def _process_content_ready_fast(self, topic: str, payload: dict) -> None:
         frame = self._frame_for_payload(payload)
@@ -382,22 +377,19 @@ class PerceptionPipeline:
         data.setdefault("confidence", 0.0)
         data.setdefault("ts", time.time())
         self._bus.publish(Topics.SITUATION_UPDATE, data)
+        get_situation_logger().info(
+            "situation",
+            **{
+                key: data[key]
+                for key in ("source_id", "topic", "summary", "layer", "degraded")
+                if key in data
+            },
+        )
 
     def on_awake(self, topic: str, payload: dict) -> None:
-        pre_roll = []
-        with self._asr_lock:
-            if self._asr_state != "idle":
-                return
-            self._asr_generation += 1
-            self._session_id = self._asr_generation
-            self._asr_state = "listening"
-            self._listening = True
-            self._last_activity_monotonic = self._clock()
-            self._current_listen_timeout_s = self._listen_timeout_s
-            pre_roll = list(self._pre_roll)
-            self._speech_buffer.reset()
+        pre_roll = self._asr.begin()
         for samples in pre_roll:
-            self._add_frame_to_speech_buffer(samples)
+            self._asr.add_frame(samples)
 
     def on_mic(self, topic: str, payload: dict) -> None:
         pcm_b64 = payload.get("pcm", "")
@@ -410,65 +402,10 @@ class PerceptionPipeline:
             logger.warning("mic frame decode failed")
             return
         samples = np.frombuffer(raw, dtype=np.float32)
-        with self._asr_lock:
-            self._pre_roll.append(samples)
-            if not self._listening:
-                return
-        self._add_frame_to_speech_buffer(samples)
-
-    def _add_frame_to_speech_buffer(self, samples) -> None:
-        self._speech_buffer.add_frame(samples)
-        with self._asr_lock:
-            if not self._listening:
-                return
-            if self._speech_buffer_has_speech():
-                self._asr_state = "speaking"
-                self._last_activity_monotonic = self._clock()
-
-    def _speech_buffer_has_speech(self) -> bool:
-        speech = getattr(self._speech_buffer, "_speech", None)
-        if speech is None:
-            return False
-        return bool(speech)
-
-    def _session_is_current(self, session_id: int | None) -> bool:
-        with self._asr_lock:
-            if session_id is None:
-                return False
-            return self._listening and self._session_id == session_id
-
-    def _finish_stt_session(self, session_id: int | None) -> None:
-        with self._asr_lock:
-            if session_id is not None and self._session_id != session_id:
-                return
-            if not self._listening:
-                return
-            if self._speech_buffer_has_speech():
-                self._asr_state = "speaking"
-                return
-            self._asr_state = "listening"
-            self._last_activity_monotonic = self._clock()
-            self._current_listen_timeout_s = self._listen_window_s
-
-    def _return_to_idle_locked(self) -> None:
-        self._asr_generation += 1
-        self._session_id = None
-        self._asr_state = "idle"
-        self._listening = False
-        self._current_listen_timeout_s = self._listen_timeout_s
-        self._speech_buffer.reset()
+        self._asr.feed(samples)
 
     def check_asr_due(self) -> bool:
-        with self._asr_lock:
-            if self._asr_state != "listening":
-                return False
-            timeout_s = self._current_listen_timeout_s
-            if timeout_s <= 0:
-                return False
-            if self._clock() - self._last_activity_monotonic < timeout_s:
-                return False
-            self._return_to_idle_locked()
-            return True
+        return self._asr.check_due()
 
     def understand_screen(self) -> dict:
         frame = self._frame_client.get_latest()
@@ -486,6 +423,14 @@ class PerceptionPipeline:
 
     def latest_frame(self) -> dict:
         return self._frame_client.get_latest()
+
+    @property
+    def frame_client(self) -> FrameClient:
+        return self._frame_client
+
+    @property
+    def vlm(self) -> VisualUnderstander:
+        return self._vlm
 
     def current_text(self) -> dict:
         frame = self.latest_frame()

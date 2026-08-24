@@ -8,6 +8,7 @@ TestClient = fastapi_testclient.TestClient
 
 from yuki.bus import BUS_HEALTH_SERVICE
 from yuki.bus_server.agent import BusServerAgent
+from yuki.bus_server.ws_channels import WsChannelSpec
 from yuki.bus_server.gateway import (
     COGNITION_CHAT_SERVICE,
     SOUL_GET_SERVICE,
@@ -113,6 +114,19 @@ def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():
     assert message["text"] == "pong"
     assert message["done"] is True
     assert message["status"] == "completed"
+
+
+def test_gateway_mounts_injected_custom_channel():
+    spec = WsChannelSpec(
+        route="/ws/custom",
+        channel_name="custom",
+        initial_message=lambda runtime: {"type": "custom", "data": "hello"},
+    )
+    runtime = GatewayRuntime(Config(), FakeBus())
+
+    with TestClient(create_gateway_app(runtime, channels=[spec])) as client:
+        with client.websocket_connect("/ws/custom") as ws:
+            assert ws.receive_json() == {"type": "custom", "data": "hello"}
 
 
 def test_gateway_ws_status_pushes_heartbeat_updates():

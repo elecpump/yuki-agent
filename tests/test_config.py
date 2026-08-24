@@ -60,6 +60,20 @@ def test_validation_rejects_unknown_section():
         Config(unknown_section={"x": 1})
 
 
+def test_plugins_container_accepts_arbitrary_plugin_config():
+    config = Config(plugins={"weather": {"api_key": "x", "units": "metric"}})
+    assert config.plugins["weather"]["units"] == "metric"
+
+
+def test_plugins_default_empty():
+    assert Config().plugins == {}
+
+
+def test_unknown_top_level_key_still_rejected():
+    with pytest.raises(ValidationError):
+        Config(typo_section={"x": 1})
+
+
 def test_load_autodiscovers_config_yaml_in_cwd(tmp_path, monkeypatch):
     (tmp_path / "config.yaml").write_text(
         "bus:\n  base_port: 8000\n  hwm: 200\n", encoding="utf-8"
@@ -67,6 +81,49 @@ def test_load_autodiscovers_config_yaml_in_cwd(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("YUKI_BUS_HWM", "300")
     config = Config.load(None)
+    assert config.bus.base_port == 8000
+    assert config.bus.hwm == 300
+
+
+def test_load_merges_local_override(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text(
+        "bus:\n  base_port: 8000\n  hwm: 200\nplugins:\n  weather:\n    units: metric\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "config.local.yaml").write_text(
+        "bus:\n  base_port: 9000\nplugins:\n  weather:\n    units: imperial\n  maps:\n    zoom: 3\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    config = Config.load(None)
+    assert config.bus.base_port == 9000
+    assert config.bus.hwm == 200
+    assert config.plugins["weather"]["units"] == "imperial"
+    assert config.plugins["maps"]["zoom"] == 3
+
+
+def test_load_env_overrides_local(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text("bus:\n  base_port: 8000\n", encoding="utf-8")
+    (tmp_path / "config.local.yaml").write_text("bus:\n  base_port: 9000\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("YUKI_BUS_BASE_PORT", "7000")
+    config = Config.load(None)
+    assert config.bus.base_port == 7000
+
+
+def test_load_without_local_file_unchanged(tmp_path, monkeypatch):
+    (tmp_path / "config.yaml").write_text("bus:\n  base_port: 8000\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    config = Config.load(None)
+    assert config.bus.base_port == 8000
+
+
+def test_load_explicit_file_merges_sibling_local(tmp_path):
+    main = tmp_path / "main.yaml"
+    local = tmp_path / "main.local.yaml"
+    main.write_text("bus:\n  base_port: 8000\n", encoding="utf-8")
+    local.write_text("bus:\n  hwm: 300\n", encoding="utf-8")
+    config = Config.load(main)
     assert config.bus.base_port == 8000
     assert config.bus.hwm == 300
 

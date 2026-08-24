@@ -440,6 +440,41 @@ def test_build_brain_subscribes_and_configures(tmp_path):
     memory.close()
 
 
+def test_hub_can_register_custom_route(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+
+    class CustomDispatcher:
+        def can_handle(self, decision):
+            return decision.route == "custom"
+
+        def dispatch(self, text, snapshot, decision):
+            return {
+                "rendered": "custom-reply",
+                "spoke": True,
+                "reason": "custom",
+                "route": "custom",
+                "intent": Intent.UNKNOWN,
+                "emotion": Emotion.NEUTRAL,
+                "actions": [],
+                "trusted_metadata": False,
+            }
+
+    decision = RouterDecision("custom", 0.9, reason="custom")
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        local_router=FakeRouter(decision),
+        local_composer=FakeComposer(),
+        local_enabled=True,
+    )
+    hub.register_route(CustomDispatcher())
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "custom route"})
+    assert _reply_text(bus) == "custom-reply"
+    memory.close()
+
+
 def test_cloud_failure_returns_notice(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))

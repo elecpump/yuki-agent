@@ -118,3 +118,17 @@ def test_load_wrong_schema_tolerated(tmp_path):
     store = PersonaStore(path)
     assert store.active() is None
     assert store.list_versions() == []
+
+
+def test_persist_is_atomic_under_crash(tmp_path, monkeypatch):
+    store = make(tmp_path)
+    store.save("v1", {})
+    before = (tmp_path / "snapshots.json").read_text(encoding="utf-8")
+
+    def boom_replace(*args, **kwargs):
+        raise OSError("crash before rename")
+
+    monkeypatch.setattr("yuki.persistence.os.replace", boom_replace)
+    store.save("v2", {})
+
+    assert (tmp_path / "snapshots.json").read_text(encoding="utf-8") == before

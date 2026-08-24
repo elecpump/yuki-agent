@@ -112,9 +112,51 @@ def test_load_failure_is_remembered(monkeypatch):
 
 def test_disabled_vlm_never_loads():
     vlm = VisualUnderstander(enabled=False)
-    assert vlm._load_failed is True
+    assert vlm._gate.disabled() is True
+    assert vlm._gate.can_load() is False
     vlm.warmup()
     assert vlm._loaded is False
+
+
+def test_understand_recovers_after_retry_window(monkeypatch):
+    import sys
+
+    now = [0.0]
+    calls = []
+
+    class FakeAutoModel:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.append(1)
+            raise RuntimeError("missing model")
+
+    fake_transformers = types.SimpleNamespace(
+        AutoModelForImageTextToText=FakeAutoModel,
+        AutoProcessor=object,
+        BitsAndBytesConfig=lambda **kw: {"cfg": kw},
+    )
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    vlm = VisualUnderstander(retry_window_s=10.0, clock=lambda: now[0])
+    first = vlm.understand(None)
+    second = vlm.understand(None)
+    assert first["degraded"] is True
+    assert second["reason"] == "model load previously failed"
+    assert len(calls) == 1
+    now[0] = 10.0
+    assert vlm._gate.can_load() is True
+
+
+def test_understand_does_not_cache_degraded_result():
+    vlm = VisualUnderstander(model=object(), processor=object())
+
+    def boom(image):
+        raise RuntimeError("oom")
+
+    vlm._infer = boom
+    first = vlm.understand(None, cache_key="k1")
+    assert first["degraded"] is True
+    assert vlm._cache.get("k1") is None
 
 
 def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):

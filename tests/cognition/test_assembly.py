@@ -105,4 +105,5 @@ def test_cognition_assembler_vlm_disabled_skips_load(tmp_path):
         bus,
     )
     vlm = assembler._build_vlm()
-    assert vlm._load_failed is True
+    assert vlm._gate.disabled() is True
+    assert vlm._gate.can_load() is False

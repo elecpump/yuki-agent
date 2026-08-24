@@ -4,12 +4,15 @@ import structlog
 
 from yuki import logger as logger_mod
 from yuki.logger import (
+    audit_log,
     bind_trace_id,
     configure_logging,
     get_audit_logger,
     get_decision_logger,
     get_file_logger,
     get_logger,
+    get_situation_logger,
+    get_toolcall_logger,
     unbind_trace_id,
 )
 
@@ -54,8 +57,11 @@ def test_trace_id_binding():
 
 
 def test_logger_module_exports():
+    assert hasattr(logger_mod, "audit_log")
     assert hasattr(logger_mod, "get_audit_logger")
     assert hasattr(logger_mod, "get_decision_logger")
+    assert hasattr(logger_mod, "get_situation_logger")
+    assert hasattr(logger_mod, "get_toolcall_logger")
     assert hasattr(logger_mod, "get_logger")
     assert hasattr(logger_mod, "get_file_logger")
     assert hasattr(logger_mod, "configure_logging")
@@ -67,3 +73,19 @@ def test_module_singletons_write_under_logs_dir():
     # audit/decision logger 惰性创建，可调用（写 logs/ 目录，测试不校验内容）
     assert callable(get_audit_logger().info)
     assert callable(get_decision_logger().info)
+    assert callable(get_situation_logger().info)
+    assert callable(get_toolcall_logger().info)
+
+
+def test_audit_log_writes_via_audit_logger(monkeypatch):
+    class FakeAudit:
+        def __init__(self):
+            self.calls = []
+
+        def info(self, event, **fields):
+            self.calls.append((event, fields))
+
+    fake = FakeAudit()
+    monkeypatch.setattr("yuki.logger.get_audit_logger", lambda: fake)
+    audit_log("memory.create", memory_id=1, memory_type="personal")
+    assert fake.calls == [("memory.create", {"memory_id": 1, "memory_type": "personal"})]

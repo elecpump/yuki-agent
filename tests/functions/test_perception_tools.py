@@ -1,5 +1,6 @@
 from yuki.functions.perception_tools import register_perception_tools
 from yuki.functions.registry import FunctionRegistry
+from yuki.functions.screen import ScreenQueryPort
 
 
 class FakePipeline:
@@ -38,6 +39,12 @@ def test_register_perception_tools_dispatches_to_pipeline_and_probe() -> None:
     assert registry.dispatch({"name": "text.extract"})["result"]["text"] == "hello"
     assert registry.dispatch({"name": "vision.understand"})["result"]["topic"] == "screen"
     assert pipeline.deep_bypass_values == [True]
+
+
+def test_screen_query_port_protocol_exists():
+    assert hasattr(ScreenQueryPort, "latest_frame")
+    assert hasattr(ScreenQueryPort, "current_text")
+    assert hasattr(ScreenQueryPort, "understand_screen_deep")
 
 
 def test_window_info_degrades_when_probe_has_no_foreground_window() -> None:

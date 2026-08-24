@@ -160,6 +160,7 @@ class PersonaConfig(BaseModel):
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
     persona_name: str = "yuki"
+    plugins: dict[str, dict] = Field(default_factory=dict)
     bus: BusConfig = Field(default_factory=BusConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
@@ -189,6 +190,11 @@ class Config(BaseModel):
         if path is not None and path.exists():
             with open(path, "r", encoding="utf-8") as fh:
                 data.update(yaml.safe_load(fh) or {})
+        if path is not None:
+            local = path.with_name(path.stem + ".local.yaml")
+            if local.exists():
+                with open(local, "r", encoding="utf-8") as fh:
+                    data = _deep_merge(data, yaml.safe_load(fh) or {})
         cls._apply_env("persona_name", "PERSONA_NAME", data)
         for section_name, section_cls in (
             ("bus", BusConfig),
@@ -235,3 +241,14 @@ class Config(BaseModel):
     @classmethod
     def from_env(cls) -> "Config":
         return cls.load(None)
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge dictionaries recursively, returning a new dict."""
+    result = dict(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result

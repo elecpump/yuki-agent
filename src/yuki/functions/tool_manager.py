@@ -9,6 +9,8 @@ from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ValidationError
 
+from yuki.logger import get_audit_logger, get_toolcall_logger
+
 Cost = Literal["light", "heavy"]
 
 
@@ -139,12 +141,19 @@ class ToolManager:
             raise ToolNotFoundError(f"unknown tool: {name!r}")
         validated = self._validate(tool, args)
         self._check_rate_limit(tool)
+        get_audit_logger().info("tool.call", name=name)
+        get_toolcall_logger().info("tool_call", name=name)
         try:
-            return tool.handler(validated)
+            result = tool.handler(validated)
         except FunctionError:
             raise
         except Exception as exc:
+            get_audit_logger().info("tool.call_failed", name=name, error=str(exc))
+            get_toolcall_logger().info("tool_call_failed", name=name, error=str(exc))
             raise ToolExecutionError(f"{name} failed: {exc}") from exc
+        get_audit_logger().info("tool.call_ok", name=name)
+        get_toolcall_logger().info("tool_call_ok", name=name)
+        return result
 
     def dispatch(self, tool_call: dict) -> dict:
         name = tool_call.get("name")

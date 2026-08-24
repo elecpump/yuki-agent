@@ -104,3 +104,7 @@ persona:
   max_versions: 50
   enable_llm_refine: false
   snapshots_path: data/persona_snapshots.json
+plugins:
+  example_plugin:
+    enabled: false
+    options: {}

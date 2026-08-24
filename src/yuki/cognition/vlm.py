@@ -1,7 +1,10 @@
 import json
 import threading
+import time
+from collections.abc import Callable
 
 from yuki.cognition.context_cache import ContextCache
+from yuki.cognition.load_gate import LoadGate
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.vlm")
@@ -32,12 +35,18 @@ class VisualUnderstander:
         model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
         cache_dir: str = "",
         enabled: bool = True,
+        retry_window_s: float = 60.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._model = model
         self._processor = processor
         self._cache = cache or ContextCache()
         self._loaded = model is not None and processor is not None
-        self._load_failed = not enabled
+        self._gate = LoadGate(
+            enabled=enabled,
+            retry_window_s=retry_window_s,
+            clock=clock or time.monotonic,
+        )
         self._load_lock = threading.Lock()
         self._model_id = model_id
         self._cache_dir = cache_dir
@@ -48,8 +57,9 @@ class VisualUnderstander:
         with self._load_lock:
             if self._loaded:
                 return
-            if self._load_failed:
-                raise RuntimeError("vlm load previously failed")
+            error = self._gate.error_message()
+            if error:
+                raise RuntimeError(error)
             try:
                 from transformers import (
                     AutoProcessor,
@@ -72,12 +82,13 @@ class VisualUnderstander:
                     self._model_id, cache_dir=self._cache_dir or None
                 )
                 self._loaded = True
+                self._gate.mark_success()
             except Exception:
-                self._load_failed = True
+                self._gate.mark_failure()
                 raise
 
     def warmup(self) -> None:
-        if self._loaded or self._load_failed:
+        if self._loaded or not self._gate.can_load():
             return
         def _load_thread():
             try:
@@ -141,6 +152,11 @@ class VisualUnderstander:
             hit = self._cache.get(cache_key)
             if hit is not None:
                 return hit
+        if not self._loaded:
+            error = self._gate.error_message()
+            if error is not None:
+                return {"topic": "", "summary": "", "content_type": "unknown",
+                        "key_points": [], "degraded": True, "reason": error}
         try:
             result = self._infer(image)
         except Exception:
@@ -149,7 +165,7 @@ class VisualUnderstander:
                       "key_points": [], "degraded": True, "reason": "inference_failed"}
         if not isinstance(result, dict):
             result = self._parse(result if isinstance(result, str) else "")
-        if cache_key:
+        if cache_key and not result.get("degraded"):
             self._cache.put(cache_key, result)
         return result
 
@@ -158,6 +174,12 @@ class VisualUnderstander:
             hit = self._cache.get(cache_key)
             if hit is not None:
                 return hit
+        if not self._loaded:
+            error = self._gate.error_message()
+            if error is not None:
+                return {"topic": "", "summary": "", "content_type": "unknown",
+                        "key_points": [], "can_answer": False,
+                        "degraded": True, "reason": error}
         try:
             result = self._infer_for_question(image, question)
         except Exception:
@@ -174,9 +196,12 @@ class VisualUnderstander:
         if not isinstance(result, dict):
             result = self._parse(result if isinstance(result, str) else "", include_can_answer=True)
         result["can_answer"] = bool(result.get("can_answer", False))
-        if cache_key:
+        if cache_key and not result.get("degraded"):
             self._cache.put(cache_key, result)
         return result
 
     def clear_cache(self) -> None:
         self._cache = ContextCache()
+
+    def health(self) -> dict:
+        return {"loaded": self._loaded, **self._gate.health()}

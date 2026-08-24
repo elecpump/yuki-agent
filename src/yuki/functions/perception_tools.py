@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from yuki.cognition.pipeline import PerceptionPipeline
 from yuki.functions.registry import FunctionRegistry, RateLimit
+from yuki.functions.screen import ScreenQueryPort
 from yuki.perception.system_monitor import ForegroundProbe
 
 VISION_UNDERSTAND_LIMIT = RateLimit(max_calls=3, window_seconds=60.0)
@@ -9,7 +9,7 @@ VISION_UNDERSTAND_LIMIT = RateLimit(max_calls=3, window_seconds=60.0)
 
 def register_perception_tools(
     registry: FunctionRegistry,
-    pipeline: PerceptionPipeline,
+    screen: ScreenQueryPort,
     *,
     foreground_probe: ForegroundProbe | None = None,
 ) -> None:
@@ -45,7 +45,7 @@ def register_perception_tools(
             cost="light",
         )
         def _screen_capture(params=None):
-            return pipeline.latest_frame()
+            return screen.latest_frame()
 
     if "text.extract" not in registry.names():
 
@@ -56,7 +56,7 @@ def register_perception_tools(
             cost="light",
         )
         def _text_extract(params=None):
-            return pipeline.current_text()
+            return screen.current_text()
 
     if "vision.understand" not in registry.names():
 
@@ -68,4 +68,4 @@ def register_perception_tools(
             rate_limit=VISION_UNDERSTAND_LIMIT,
         )
         def _vision_understand(params=None):
-            return pipeline.understand_screen_deep(bypass_rate_limit=True)
+            return screen.understand_screen_deep(bypass_rate_limit=True)

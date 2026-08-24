@@ -92,6 +92,11 @@ class CognitionAgent(ProcessAgent):
         vlm = getattr(self._pipeline, "_vlm", None) if self._pipeline else None
         if vlm is None:
             return HealthStatus(True, {"loaded": False, "degraded": True, "reason": "no_vlm"})
+        health_fn = getattr(vlm, "health", None)
+        if callable(health_fn):
+            detail = health_fn()
+            detail["degraded"] = bool(detail.get("degraded", False))
+            return HealthStatus(True, detail)
         loaded = bool(getattr(vlm, "_loaded", False))
         detail = {"loaded": loaded, "degraded": not loaded}
         if not loaded:
@@ -100,7 +105,12 @@ class CognitionAgent(ProcessAgent):
 
     def _health_stt(self) -> HealthStatus:
         stt = getattr(self._pipeline, "_stt", None) if self._pipeline else None
-        return HealthStatus(stt is not None, {"installed": stt is not None})
+        if stt is None:
+            return HealthStatus(True, {"installed": False, "degraded": True, "reason": "no_stt"})
+        health_fn = getattr(stt, "health", None)
+        if callable(health_fn):
+            return HealthStatus(True, {"installed": True, **health_fn()})
+        return HealthStatus(True, {"installed": True})
 
     def _health_brain(self) -> HealthStatus:
         return HealthStatus(self._hub is not None, {"installed": self._hub is not None})

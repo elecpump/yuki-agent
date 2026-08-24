@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from yuki.logger import get_logger
+from yuki.persistence import atomic_write_json
 
 logger = get_logger("yuki.cognition.brain.snapshots")
 
@@ -51,13 +52,12 @@ class PersonaStore:
 
     def _persist(self) -> None:
         try:
-            self._path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "persona_name": self._persona_name,
                 "active": self._active,
                 "versions": [self._versions[k] for k in sorted(self._versions)],
             }
-            self._path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_json(self._path, payload)
         except OSError as exc:
             logger.warning("persona store save failed", error=str(exc))
 

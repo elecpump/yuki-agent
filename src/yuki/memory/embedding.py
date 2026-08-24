@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import math
 import time
-from typing import Protocol
+from typing import Callable, Protocol
 
 import numpy as np
 
@@ -19,6 +19,22 @@ class EmbeddingProvider(Protocol):
     dimension: int
 
     def embed(self, texts: list[str]) -> list[list[float]]: ...
+
+
+class EmbeddingProviderRegistry:
+    """Build embedding providers by name."""
+
+    def __init__(self) -> None:
+        self._factories: dict[str, Callable[..., EmbeddingProvider]] = {}
+
+    def register(self, name: str, factory: Callable[..., EmbeddingProvider]) -> None:
+        self._factories[name] = factory
+
+    def build(self, name: str, **kwargs) -> EmbeddingProvider:
+        factory = self._factories.get(name)
+        if factory is None:
+            raise ValueError(f"unknown embedding provider: {name}")
+        return factory(**kwargs)
 
 
 class HashingEmbeddingProvider:
@@ -54,6 +70,13 @@ class HashingEmbeddingProvider:
         features.extend("".join(chars[i : i + 2]) for i in range(max(0, len(chars) - 1)))
         features.extend("".join(chars[i : i + 3]) for i in range(max(0, len(chars) - 2)))
         return features
+
+
+default_embedding_registry = EmbeddingProviderRegistry()
+default_embedding_registry.register(
+    "hashing",
+    lambda **kwargs: HashingEmbeddingProvider(**kwargs),
+)
 
 
 def content_hash(content: str) -> str:
@@ -154,10 +177,10 @@ def build_embedding_indexer(
     provider_name: str = "hashing",
     model: str = "hashing-v1",
     dimension: int = 384,
+    registry: EmbeddingProviderRegistry | None = None,
 ) -> MemoryEmbeddingIndexer:
-    if provider_name != "hashing":
-        raise ValueError(f"unknown embedding provider: {provider_name}")
+    reg = registry or default_embedding_registry
     return MemoryEmbeddingIndexer(
         store,
-        HashingEmbeddingProvider(dimension=dimension, model=model),
+        reg.build(provider_name, dimension=dimension, model=model),
     )

@@ -1,7 +1,7 @@
 import pytest
 
 from yuki.memory.embedding import encode_vector
-from yuki.memory.store import MemoryError, MemoryStore
+from yuki.memory.store import MemoryError, MemoryStore, StorageBackend
 
 
 @pytest.fixture()
@@ -272,3 +272,35 @@ def test_create_rejects_out_of_range_confidence(store):
         store.create("preference", "x", confidence=1.5)
     with pytest.raises(MemoryError):
         store.create("preference", "x", confidence=-0.1)
+
+
+def test_memory_store_satisfies_storage_backend_protocol(tmp_path):
+    store = MemoryStore(tmp_path / "m.db")
+    try:
+        assert isinstance(store, StorageBackend)
+    finally:
+        store.close()
+
+
+def test_storage_backend_protocol_has_minimal_surface():
+    assert hasattr(StorageBackend, "persist")
+    assert hasattr(StorageBackend, "query")
+    assert hasattr(StorageBackend, "vacuum")
+
+
+def test_memory_create_writes_audit(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeAudit:
+        def info(self, event, **fields):
+            calls.append((event, fields))
+
+    monkeypatch.setattr("yuki.memory.store.get_audit_logger", lambda: FakeAudit())
+    store = MemoryStore(tmp_path / "m.db")
+    try:
+        memory_id = store.create("personal", "content", source="cli")
+        assert calls[0][0] == "memory.create"
+        assert calls[0][1]["memory_id"] == memory_id
+        assert calls[0][1]["memory_type"] == "personal"
+    finally:
+        store.close()

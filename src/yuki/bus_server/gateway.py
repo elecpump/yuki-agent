@@ -13,6 +13,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from yuki.bus import BUS_HEALTH_SERVICE, BusNode
+from yuki.bus_server.ws_channels import (
+    WsChannelSpec,
+    create_ws_handler,
+    register_ws_channel,
+    ws_channels,
+)
 from yuki.cognition.brain.hub import COGNITION_CHAT_SERVICE, SOUL_GET_SERVICE
 from yuki.config import Config
 from yuki.topics import Topics
@@ -370,27 +376,64 @@ def _error_response(code: str, message: str, status_code: int, details: dict | N
     )
 
 
-async def _wait_for_ws_message_or_queue(websocket: WebSocket, updates: asyncio.Queue) -> dict | None:
-    queue_task = asyncio.create_task(updates.get())
-    receive_task = asyncio.create_task(websocket.receive_text())
-    done, pending = await asyncio.wait(
-        {queue_task, receive_task},
-        return_when=asyncio.FIRST_COMPLETED,
-    )
-    for task in pending:
-        task.cancel()
-    for task in pending:
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-    if receive_task in done:
-        receive_task.result()
-        return None
-    return queue_task.result()
+async def _chat_message_handler(runtime: GatewayRuntime, message: dict) -> dict | None:
+    if message.get("type") == "interrupt":
+        task = runtime.tasks.cancel_requested(str(message.get("task_id", "")))
+        runtime.bus.publish("chat/interrupt", {"task_id": message.get("task_id")})
+        return {"type": "interrupt_ack", "task": task}
+    text = str(message.get("text") or message.get("user_input") or "")
+    session_id = str(message.get("session_id") or "default")
+    try:
+        task = await asyncio.to_thread(runtime.run_chat, text, session_id)
+    except Exception as exc:
+        return {
+            "type": "assistant_chunk",
+            "task_id": "",
+            "text": "",
+            "done": True,
+            "status": "failed",
+            "error": str(exc),
+        }
+    result = task.get("result") or {}
+    return {
+        "type": "assistant_chunk",
+        "task_id": task["task_id"],
+        "text": result.get("text", ""),
+        "done": True,
+        "status": task["status"],
+        "error": task.get("error", ""),
+    }
 
 
-def create_gateway_app(runtime: GatewayRuntime) -> FastAPI:
+def _register_default_ws_channels() -> None:
+    register_ws_channel(WsChannelSpec(
+        route="/ws/status",
+        channel_name="status",
+        initial_message=lambda runtime: {"type": "health", "data": runtime.health_snapshot()},
+        queue_factory=lambda runtime: runtime.register_status_queue(),
+        unregister_queue=lambda runtime, q: runtime.unregister_status_queue(q),
+    ))
+    register_ws_channel(WsChannelSpec(
+        route="/ws/chat",
+        channel_name="chat",
+        message_handler=_chat_message_handler,
+    ))
+    register_ws_channel(WsChannelSpec(
+        route="/ws/perception",
+        channel_name="perception",
+        initial_message=lambda runtime: {"type": "snapshot", "data": runtime.perception_snapshot()},
+        queue_factory=lambda runtime: runtime.register_perception_queue(),
+        unregister_queue=lambda runtime, q: runtime.unregister_perception_queue(q),
+    ))
+
+
+_register_default_ws_channels()
+
+
+def create_gateway_app(
+    runtime: GatewayRuntime,
+    channels: list[WsChannelSpec] | None = None,
+) -> FastAPI:
     connections = ConnectionManager(
         cleanup_interval_s=runtime.config.gateway.cleanup_interval_s,
         heartbeat_timeout_s=runtime.config.gateway.ws_heartbeat_timeout_s,
@@ -475,82 +518,8 @@ def create_gateway_app(runtime: GatewayRuntime) -> FastAPI:
     def perception_status() -> dict:
         return runtime.perception_status()
 
-    @app.websocket("/ws/status")
-    async def ws_status(websocket: WebSocket) -> None:
-        await websocket.accept()
-        connection_id = await connections.register(websocket, "status")
-        await websocket.send_json({"type": "health", "data": runtime.health_snapshot()})
-        updates = runtime.register_status_queue()
-        try:
-            while True:
-                message = await _wait_for_ws_message_or_queue(websocket, updates)
-                await connections.touch(connection_id)
-                if message is not None:
-                    await websocket.send_json(message)
-        except WebSocketDisconnect:
-            return
-        finally:
-            await connections.unregister(connection_id)
-            runtime.unregister_status_queue(updates)
-
-    @app.websocket("/ws/chat")
-    async def ws_chat(websocket: WebSocket) -> None:
-        await websocket.accept()
-        connection_id = await connections.register(websocket, "chat")
-        try:
-            while True:
-                message = await websocket.receive_json()
-                await connections.touch(connection_id)
-                if message.get("type") == "interrupt":
-                    task = runtime.tasks.cancel_requested(str(message.get("task_id", "")))
-                    runtime.bus.publish("chat/interrupt", {"task_id": message.get("task_id")})
-                    await websocket.send_json({"type": "interrupt_ack", "task": task})
-                    continue
-                text = str(message.get("text") or message.get("user_input") or "")
-                session_id = str(message.get("session_id") or "default")
-                try:
-                    task = await asyncio.to_thread(runtime.run_chat, text, session_id)
-                except Exception as exc:
-                    await websocket.send_json({
-                        "type": "assistant_chunk",
-                        "task_id": "",
-                        "text": "",
-                        "done": True,
-                        "status": "failed",
-                        "error": str(exc),
-                    })
-                    continue
-                result = task.get("result") or {}
-                await websocket.send_json({
-                    "type": "assistant_chunk",
-                    "task_id": task["task_id"],
-                    "text": result.get("text", ""),
-                    "done": True,
-                    "status": task["status"],
-                    "error": task.get("error", ""),
-                })
-        except WebSocketDisconnect:
-            return
-        finally:
-            await connections.unregister(connection_id)
-
-    @app.websocket("/ws/perception")
-    async def ws_perception(websocket: WebSocket) -> None:
-        await websocket.accept()
-        connection_id = await connections.register(websocket, "perception")
-        await websocket.send_json({"type": "snapshot", "data": runtime.perception_snapshot()})
-        updates = runtime.register_perception_queue()
-        try:
-            while True:
-                message = await _wait_for_ws_message_or_queue(websocket, updates)
-                await connections.touch(connection_id)
-                if message is not None:
-                    await websocket.send_json(message)
-        except WebSocketDisconnect:
-            return
-        finally:
-            await connections.unregister(connection_id)
-            runtime.unregister_perception_queue(updates)
+    for spec in (channels if channels is not None else ws_channels()):
+        app.router.add_websocket_route(spec.route, create_ws_handler(spec, connections, runtime))
 
     return app
 

@@ -4,6 +4,8 @@ import time
 from yuki.cognition.brain.classifier import Emotion, Intent
 from yuki.cognition.brain.local.router import LocalRoute, RouterDecision, is_crisis
 from yuki.cognition.brain.policy import DecisionPolicy, SituationAction, TriggerKind
+from yuki.cognition.brain.route import DecisionRouter, RouteDispatcher
+from yuki.cognition.brain.sink import DecisionSink, SedimenterSink, TunerSink
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.logger import get_decision_logger, get_logger
 from yuki.topics import Topics
@@ -18,6 +20,29 @@ CRISIS_FALLBACK_REPLY = (
 COGNITION_AWAKE_SERVICE = "cognition.awake"
 COGNITION_CHAT_SERVICE = "cognition.chat"
 SOUL_GET_SERVICE = "soul.get"
+
+
+class _HubRouteDispatcher:
+    def __init__(self, route: LocalRoute, handler) -> None:
+        self._route = route
+        self._handler = handler
+
+    def can_handle(self, decision: RouterDecision) -> bool:
+        return decision.route == self._route
+
+    def dispatch(self, text, snapshot, decision) -> dict:
+        return self._handler(text, snapshot, decision)
+
+
+class _HubCloudFallback:
+    def __init__(self, hub: "DecisionHub") -> None:
+        self._hub = hub
+
+    def can_handle(self, decision: RouterDecision) -> bool:
+        return True
+
+    def dispatch(self, text, snapshot, decision) -> dict:
+        return self._hub._cloud_or_notice(text, snapshot, decision=decision, reason="cloud")
 
 
 def situation_provenance(situation: dict | None) -> dict:
@@ -104,6 +129,11 @@ class DecisionHub:
         self._trace_logger = trace_logger or get_decision_logger()
         self._bridge = bridge
         self._tuner = tuner
+        self._sinks: list[DecisionSink] = []
+        if tuner is not None:
+            self._sinks.append(TunerSink(tuner))
+        if sedimenter is not None:
+            self._sinks.append(SedimenterSink(sedimenter))
         self._local_router = local_router
         self._local_composer = local_composer
         self._vision_screen = vision_screen
@@ -117,6 +147,23 @@ class DecisionHub:
         self._context_wrapper = context
         self._projector = projector
         self._sedimenter = sedimenter
+        self._route_registry = DecisionRouter()
+        self._route_registry.register(_HubRouteDispatcher(
+            LocalRoute.CHAT_LOCAL, self._dispatch_chat_local,
+        ))
+        self._route_registry.register(_HubRouteDispatcher(
+            LocalRoute.TOOL_LOCAL, self._dispatch_tool_local,
+        ))
+        self._route_registry.register(_HubRouteDispatcher(
+            LocalRoute.VISION, self._dispatch_vision,
+        ))
+        self._route_fallback = _HubCloudFallback(self)
+
+    def register_route(self, dispatcher: RouteDispatcher) -> None:
+        self._route_registry.register(dispatcher)
+
+    def register_sink(self, sink: DecisionSink) -> None:
+        self._sinks.append(sink)
 
     def on_situation_update(self, topic: str, payload: dict) -> None:
         selected = self._select_situation(payload)
@@ -199,24 +246,27 @@ class DecisionHub:
             if spoke:
                 self._context_wrapper.add_agent(rendered)
 
-        if self._tuner is not None:
-            if trigger == TriggerKind.SITUATION and spoke:
-                self._tuner.on_proactive_open()
-            if trigger == TriggerKind.UTTERANCE:
-                self._tuner.on_user_utterance(text)
+        if trigger == TriggerKind.SITUATION and spoke:
+            for sink in self._sinks:
+                sink.on_proactive_open()
+        if trigger == TriggerKind.UTTERANCE:
+            for sink in self._sinks:
+                if not bool(getattr(sink, "trusted_only", False)):
+                    sink.on_user_utterance(text)
 
         intent = result["intent"]
         if (
-            self._sedimenter is not None
-            and trigger == TriggerKind.UTTERANCE
+            trigger == TriggerKind.UTTERANCE
             and result.get("trusted_metadata")
             and intent != Intent.UNKNOWN
             and result.get("reason") != "crisis"
         ):
-            self._sedimenter.on_user_utterance(text, intent)
             topic = (effective_situation or {}).get("topic")
-            if topic:
-                self._sedimenter.on_engagement(topic)
+            for sink in self._sinks:
+                if bool(getattr(sink, "trusted_only", False)):
+                    sink.on_user_utterance(text, intent)
+                    if topic:
+                        sink.on_engagement(topic)
 
         self._trace_logger.info(
             "decision",
@@ -258,13 +308,12 @@ class DecisionHub:
             return self._cloud_or_notice(text, snapshot, reason="cloud")
 
         decision = self._local_router.route(text, snapshot=snapshot, situation=situation)
-        if decision.route == LocalRoute.CHAT_LOCAL:
-            return self._dispatch_chat_local(text, snapshot, decision)
-        if decision.route == LocalRoute.TOOL_LOCAL:
-            return self._dispatch_tool_local(text, snapshot, decision)
-        if decision.route == LocalRoute.VISION:
-            return self._dispatch_vision(text, snapshot, decision)
-        return self._cloud_or_notice(text, snapshot, decision=decision, reason="cloud")
+        return self._route_registry.dispatch(
+            text,
+            snapshot,
+            decision,
+            fallback=self._route_fallback,
+        )
 
     def _handle_situation(self, trigger: TriggerKind, situation: dict | None) -> dict:
         actions = self._policy.decide(

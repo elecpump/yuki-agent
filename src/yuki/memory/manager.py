@@ -6,7 +6,7 @@ from collections import deque
 
 from yuki.logger import get_logger
 from yuki.memory.embedding import MemoryEmbeddingIndexer
-from yuki.memory.store import MemoryStore
+from yuki.memory.store import StorageBackend
 
 logger = get_logger("yuki.memory.manager")
 
@@ -49,7 +49,7 @@ class MemoryManager:
 
     def __init__(
         self,
-        store: MemoryStore,
+        store: StorageBackend,
         *,
         decay_base: float = 1.0,
         decay_lambda: float = 0.1,
@@ -166,12 +166,12 @@ class MemoryManager:
         touch: bool,
     ) -> list[dict]:
         now = time.time()
-        hits = self._store.search(
+        hits = self._store.query(
             text, memory_type=memory_type, top_k=top_k * 3, min_sensitivity=min_sensitivity,
         )
         scored: list[dict] = []
-        for mem, rank in hits:
-            mem["score"] = rank * self.decay_weight(mem, now)
+        for mem in hits:
+            mem["score"] = self.decay_weight(mem, now)
             scored.append(mem)
         scored.sort(key=lambda m: m["score"], reverse=True)
         returned = scored[:top_k]
@@ -191,7 +191,7 @@ class MemoryManager:
     ) -> list[dict]:
         now = time.time()
         candidate_k = max(int(self._vector_candidates), int(top_k) * 3)
-        lexical_hits = self._store.search(
+        lexical_hits = self._store.query(
             text, memory_type=memory_type, top_k=candidate_k, min_sensitivity=min_sensitivity,
         )
         vector_hits = self._embedding_indexer.search(
@@ -200,9 +200,9 @@ class MemoryManager:
         by_id: dict[int, dict] = {}
         lexical_scores: dict[int, float] = {}
         vector_scores: dict[int, float] = {}
-        for mem, score in lexical_hits:
+        for mem in lexical_hits:
             by_id[mem["id"]] = mem
-            lexical_scores[mem["id"]] = max(0.0, min(float(score), 1.0))
+            lexical_scores[mem["id"]] = 1.0
         for mem, score in vector_hits:
             by_id.setdefault(mem["id"], mem)
             vector_scores[mem["id"]] = max(0.0, min(float(score), 1.0))

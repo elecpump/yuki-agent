@@ -297,8 +297,8 @@ class CognitionAssembler:
             reply_max_tokens=local_cfg.reply_max_tokens,
             timeout_ms=local_cfg.local_reply_timeout_ms,
         )
-        frame_client = getattr(pipeline, "_frame_client", None)
-        vlm = getattr(pipeline, "_vlm", None)
+        frame_client = pipeline.frame_client
+        vlm = pipeline.vlm
         screen = (
             VisionScreenAdapter(frame_client, vlm, timeout_ms=local_cfg.vision_timeout_ms)
             if frame_client is not None and vlm is not None

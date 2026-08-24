@@ -5,12 +5,31 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from typing import Protocol, runtime_checkable
 
-from yuki.logger import get_logger
+from yuki.logger import get_audit_logger, get_logger
 
 logger = get_logger("yuki.memory.store")
 
 MEMORY_TYPES = ("preference", "personal", "scenario", "reflection")
+
+
+@runtime_checkable
+class StorageBackend(Protocol):
+    """Minimal storage port for persisted memory lookup and maintenance."""
+
+    def persist(self) -> None: ...
+
+    def query(
+        self,
+        text: str,
+        *,
+        memory_type: str | None = None,
+        top_k: int = 5,
+        min_sensitivity: int = 0,
+    ) -> list[dict]: ...
+
+    def vacuum(self) -> None: ...
 
 
 class MemoryError(Exception):
@@ -82,7 +101,7 @@ def _fts_phrase(text: str) -> str:
     return '"' + text.replace('"', '""') + '"'
 
 
-class MemoryStore:
+class MemoryStore(StorageBackend):
     """SQLite 持久化 + FTS5 trigram 检索 + <3 字符 LIKE 兜底。单连接 + 锁。"""
 
     def __init__(self, db_path: str | Path) -> None:
@@ -145,7 +164,9 @@ class MemoryStore:
                 (memory_type, content, float(confidence), int(sensitivity), source, meta, now, now),
             )
             self._conn.commit()
-            return int(cur.lastrowid)
+            memory_id = int(cur.lastrowid)
+        get_audit_logger().info("memory.create", memory_id=memory_id, memory_type=memory_type)
+        return memory_id
 
     def get(self, memory_id: int) -> dict | None:
         with self._lock:
@@ -335,6 +356,32 @@ class MemoryStore:
         with self._lock:
             rows = self._conn.execute(sql, params).fetchall()
         return [(self._row(r), 1.0) for r in rows]
+
+    def persist(self) -> None:
+        with self._lock:
+            self._conn.commit()
+
+    def query(
+        self,
+        text: str,
+        *,
+        memory_type: str | None = None,
+        top_k: int = 5,
+        min_sensitivity: int = 0,
+    ) -> list[dict]:
+        return [
+            memory
+            for memory, _ in self.search(
+                text,
+                memory_type=memory_type,
+                top_k=top_k,
+                min_sensitivity=min_sensitivity,
+            )
+        ]
+
+    def vacuum(self) -> None:
+        with self._lock:
+            self._conn.execute("VACUUM")
 
     def wipe(self) -> int:
         with self._lock:

@@ -58,3 +58,43 @@ def test_load_failure_is_remembered(monkeypatch):
     assert stt.recognize(samples) == ""
     assert stt.recognize(samples) == ""
     assert len(calls) == 1
+
+
+def test_recognize_recovers_after_retry_window(monkeypatch):
+    import sys
+
+    now = [0.0]
+    calls = []
+
+    class FakeAutoModel:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError("missing model")
+
+    fake_funasr = types.SimpleNamespace(AutoModel=FakeAutoModel)
+    monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
+
+    stt = SpeechRecognizer(retry_window_s=10.0, clock=lambda: now[0])
+    samples = np.zeros(320, dtype=np.float32)
+    assert stt.recognize(samples) == ""
+    assert stt.recognize(samples) == ""
+    assert len(calls) == 1
+    now[0] = 10.0
+    assert stt._gate.can_load() is True
+
+
+def test_health_reports_degraded_when_failed(monkeypatch):
+    import sys
+
+    class FakeAutoModel:
+        def __init__(self, **kwargs):
+            raise RuntimeError("missing model")
+
+    fake_funasr = types.SimpleNamespace(AutoModel=FakeAutoModel)
+    monkeypatch.setitem(sys.modules, "funasr", fake_funasr)
+
+    stt = SpeechRecognizer()
+    stt.recognize(np.zeros(320, dtype=np.float32))
+    health = stt.health()
+    assert health["degraded"] is True
+    assert health["loaded"] is False

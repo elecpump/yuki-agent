@@ -5,6 +5,7 @@ from yuki.cognition.brain.hub import (
     SOUL_GET_SERVICE,
 )
 from yuki.cognition.brain.classifier import Intent
+from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
 from yuki.memory.manager import MemoryManager
@@ -333,6 +334,24 @@ def test_cognition_agent_vlm_health_degrades_when_unavailable(tmp_path):
 
     assert status.ok is True
     assert status.detail == {"loaded": False, "degraded": True, "reason": "no_vlm"}
+
+
+def test_cognition_agent_vlm_health_degraded_via_gate(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = VisualUnderstander(enabled=False)
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=pipeline,
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+
+    status = agent.health_components()["vlm"]()
+
+    assert status.ok is True
+    assert status.detail["degraded"] is True
+    assert status.detail["enabled"] is False
 
 
 def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, monkeypatch):

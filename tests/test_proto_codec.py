@@ -1,7 +1,9 @@
 import pytest
 from google.protobuf.message import DecodeError
 
+from yuki.proto import yuki_pb2
 from yuki.proto.codec import (
+    MAX_SUPPORTED_VERSION,
     VERSION,
     build_event,
     build_request,
@@ -11,6 +13,7 @@ from yuki.proto.codec import (
     parse_envelope,
     request_payload,
     response_result,
+    version_supported,
 )
 
 
@@ -131,3 +134,17 @@ def test_response_and_event_carry_trace_id():
     event = build_event("event/awake", {"source": "hotkey"}, trace_id="trace-event")
     parsed = parse_envelope(event.SerializeToString())
     assert parsed.trace_id == "trace-event"
+
+
+def test_max_supported_version_matches_version():
+    assert MAX_SUPPORTED_VERSION >= VERSION
+
+
+def test_version_supported_accepts_current():
+    env = yuki_pb2.Envelope(version=VERSION)
+    assert version_supported(env) is True
+
+
+def test_version_supported_rejects_future_version():
+    env = yuki_pb2.Envelope(version=MAX_SUPPORTED_VERSION + 1)
+    assert version_supported(env) is False

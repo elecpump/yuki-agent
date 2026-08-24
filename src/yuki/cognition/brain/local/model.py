@@ -1,6 +1,8 @@
 import threading
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 
+from yuki.cognition.load_gate import LoadGate
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.brain.local.model")
@@ -20,6 +22,8 @@ class LocalChatModel:
         enabled: bool = True,
         fp8_dequantize: bool = False,
         local_files_only: bool = False,
+        retry_window_s: float = 60.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         self._model = model
         self._tokenizer = tokenizer
@@ -29,12 +33,16 @@ class LocalChatModel:
         self._fp8_dequantize = fp8_dequantize
         self._local_files_only = local_files_only
         self._loaded = model is not None and tokenizer is not None
-        self._load_failed = not enabled
+        self._gate = LoadGate(
+            enabled=enabled,
+            retry_window_s=retry_window_s,
+            clock=clock or time.monotonic,
+        )
         self._load_lock = threading.Lock()
         self._infer_lock = threading.Lock()
 
     def warmup(self) -> None:
-        if self._loaded or self._load_failed:
+        if self._loaded or not self._gate.can_load():
             return
 
         def _load_thread() -> None:
@@ -51,8 +59,9 @@ class LocalChatModel:
         with self._load_lock:
             if self._loaded:
                 return
-            if self._load_failed:
-                raise RuntimeError("local model load previously failed")
+            error = self._gate.error_message()
+            if error:
+                raise RuntimeError(error)
             try:
                 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -81,8 +90,9 @@ class LocalChatModel:
                 if self._device != "auto" and hasattr(self._model, "to"):
                     self._model.to(self._device)
                 self._loaded = True
+                self._gate.mark_success()
             except Exception:
-                self._load_failed = True
+                self._gate.mark_failure()
                 raise
 
     def generate(
@@ -125,3 +135,6 @@ class LocalChatModel:
             parts.append(f"{role}: {content}")
         parts.append("assistant:")
         return "\n".join(parts)
+
+    def health(self) -> dict:
+        return {"loaded": self._loaded, **self._gate.health()}

@@ -2,7 +2,12 @@ import time
 
 import pytest
 
-from yuki.memory.embedding import HashingEmbeddingProvider, MemoryEmbeddingIndexer
+from yuki.memory.embedding import (
+    EmbeddingProviderRegistry,
+    HashingEmbeddingProvider,
+    MemoryEmbeddingIndexer,
+    build_embedding_indexer,
+)
 from yuki.memory.manager import MemoryManager, Reflector, ShortTermMemory
 from yuki.memory.store import MemoryStore
 
@@ -244,3 +249,64 @@ def test_short_term_add_with_at_and_clear():
     assert items[1]["ts"] == t0
     manager.short_term_clear()
     assert manager.short_term_items() == []
+
+
+def test_embedding_registry_builds_hashing_by_default():
+    registry = EmbeddingProviderRegistry()
+    registry.register("hashing", lambda **kw: HashingEmbeddingProvider(**kw))
+    provider = registry.build("hashing", dimension=64, model="m")
+    assert provider.name == "hashing"
+    assert provider.dimension == 64
+
+
+def test_embedding_registry_raises_on_unknown():
+    registry = EmbeddingProviderRegistry()
+    with pytest.raises(ValueError, match="unknown embedding provider"):
+        registry.build("nope")
+
+
+def test_build_embedding_indexer_uses_registry(tmp_path):
+    store = MemoryStore(tmp_path / "m.db")
+    seen = {}
+
+    def fake_factory(**kwargs):
+        seen.update(kwargs)
+        return HashingEmbeddingProvider(**kwargs)
+
+    registry = EmbeddingProviderRegistry()
+    registry.register("fake", fake_factory)
+    indexer = build_embedding_indexer(
+        store,
+        provider_name="fake",
+        dimension=48,
+        model="fake-v1",
+        registry=registry,
+    )
+    try:
+        assert indexer.provider.dimension == 48
+        assert seen["model"] == "fake-v1"
+    finally:
+        store.close()
+
+
+def test_memory_manager_accepts_any_storage_backend():
+    from yuki.memory.store import StorageBackend
+
+    class FakeBackend(StorageBackend):
+        def __init__(self):
+            self.calls = []
+
+        def persist(self):
+            self.calls.append("persist")
+
+        def query(self, text, *, memory_type=None, top_k=5, min_sensitivity=0):
+            self.calls.append(("query", text, memory_type, top_k, min_sensitivity))
+            return []
+
+        def vacuum(self):
+            self.calls.append("vacuum")
+
+    backend = FakeBackend()
+    manager = MemoryManager(backend)
+    assert manager.query("hi", top_k=3) == []
+    assert ("query", "hi", None, 9, 0) in backend.calls

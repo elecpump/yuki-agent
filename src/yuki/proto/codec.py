@@ -12,6 +12,12 @@ from google.protobuf.struct_pb2 import Struct
 from yuki.proto import yuki_pb2
 
 VERSION = 1
+MAX_SUPPORTED_VERSION = 1
+
+
+def version_supported(env: yuki_pb2.Envelope) -> bool:
+    """Return whether this process can interpret the parsed envelope."""
+    return int(env.version) <= MAX_SUPPORTED_VERSION
 
 
 def _to_struct(payload: dict) -> Struct:

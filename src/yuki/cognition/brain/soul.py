@@ -1,10 +1,10 @@
 import copy
 import json
-import os
 import time
 from pathlib import Path
 
-from yuki.logger import get_logger
+from yuki.logger import get_audit_logger, get_logger
+from yuki.persistence import atomic_write_json
 
 logger = get_logger("yuki.cognition.brain.soul")
 
@@ -79,13 +79,6 @@ def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _atomic_write_json(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
-
-
 def _clamp_unit(value: float) -> float:
     return min(max(value, 0.0), 1.0)
 
@@ -120,7 +113,7 @@ class TunerStateStore:
             "updated_at": _now_iso(),
         }
         try:
-            _atomic_write_json(self._path, payload)
+            atomic_write_json(self._path, payload)
         except OSError as exc:
             logger.warning("tuner state write failed", error=str(exc))
 
@@ -206,9 +199,11 @@ class SoulStore:
             normalized = self.default_soul()
         normalized["updated_at"] = _now_iso()
         try:
-            _atomic_write_json(self._path, normalized)
+            atomic_write_json(self._path, normalized)
         except OSError as exc:
             logger.warning("soul write failed", error=str(exc))
+        else:
+            get_audit_logger().info("soul.save", persona=self._persona_name)
 
     def reset(self) -> None:
         self.save(self.default_soul())

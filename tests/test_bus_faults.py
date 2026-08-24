@@ -6,6 +6,7 @@ import zmq
 
 from yuki.bus import BusError, BusTimeoutError, BusHub, BusNode
 from yuki.proto import yuki_pb2
+from yuki.proto.codec import MAX_SUPPORTED_VERSION
 
 
 @pytest.fixture()
@@ -174,6 +175,98 @@ def test_services_reregister_after_hub_restart():
         node.close()
 
 
+def test_subscriber_sees_trace_id_in_context(make_bus):
+    import structlog
+
+    seen = {}
+
+    def on_event(topic, payload):
+        seen["trace_id"] = structlog.contextvars.get_contextvars().get("trace_id")
+
+    bus = make_bus(6186)
+    bus.subscribe("event/", on_event)
+    time.sleep(0.1)
+    bus.publish("event/t", {"x": 1}, trace_id="trace-abc")
+
+    deadline = time.time() + 2.0
+    while "trace_id" not in seen and time.time() < deadline:
+        time.sleep(0.05)
+    assert seen["trace_id"] == "trace-abc"
+
+
+def test_hub_drops_future_version_envelope(make_bus):
+    bus = make_bus(6181)
+    time.sleep(0.1)
+
+    ctx = zmq.Context.instance()
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.connect("tcp://127.0.0.1:6183")
+    try:
+        env = yuki_pb2.Envelope(version=MAX_SUPPORTED_VERSION + 1)
+        env.request.service = "ghost"
+        env.request.request_id = "future-req"
+        env.request.payload.update({"x": 1})
+        dealer.send_multipart([b"ghost", env.SerializeToString()])
+
+        assert dealer.poll(500) == 0
+    finally:
+        dealer.close(linger=0)
+
+
+def test_hub_rejects_register_with_future_version():
+    port = 6182
+    hub = BusHub(base_port=port, hwm=10)
+    node = BusNode(base_port=port, hwm=10)
+    ctx = zmq.Context.instance()
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.connect(f"tcp://127.0.0.1:{port + 2}")
+    try:
+        time.sleep(0.1)
+        dealer.send_multipart([b"REGISTER", b"incompat_svc", b"99"])
+        time.sleep(0.2)
+        assert "incompat_svc" not in hub._service_map
+    finally:
+        dealer.close(linger=0)
+        node.close()
+        hub.close()
+
+
+def test_hub_accepts_register_without_version_frame():
+    port = 6183
+    hub = BusHub(base_port=port, hwm=10)
+    node = BusNode(base_port=port, hwm=10)
+    ctx = zmq.Context.instance()
+    dealer = ctx.socket(zmq.DEALER)
+    dealer.connect(f"tcp://127.0.0.1:{port + 2}")
+    try:
+        time.sleep(0.1)
+        dealer.send_multipart([b"REGISTER", b"legacy_svc"])
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            if "legacy_svc" in hub._service_map:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("legacy REGISTER without version frame was not accepted")
+    finally:
+        dealer.close(linger=0)
+        node.close()
+        hub.close()
+
+
+def test_node_registers_with_version_frame(make_bus):
+    bus = make_bus(6184)
+    bus.respond("svc", lambda p: {"echo": p.get("msg")})
+    deadline = time.time() + 5.0
+    while time.time() < deadline:
+        try:
+            assert bus.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
+            return
+        except (BusError, BusTimeoutError):
+            time.sleep(0.1)
+    pytest.fail("versioned REGISTER was not accepted by hub")
+
+
 def test_many_bus_create_close_cycles():
     # 回归：单进程内反复创建/关闭多个 MessageBus，曾触发 libzmq 4.3.5
     # Windows signaler 断言（signaler.cpp:345）。修复后应稳定通过。
@@ -297,3 +390,33 @@ def test_auth_token_events_roundtrip_and_foreign_events_ignored():
         bad.close()
         node.close()
         hub.close()
+
+
+def test_bus_hub_health_reflects_forwarding():
+    import yuki.bus as bus_mod
+
+    port = 6913
+    hub = bus_mod.BusHub(base_port=port, hwm=10)
+    node = bus_mod.BusNode(base_port=port, hwm=10)
+    try:
+        old_stale = bus_mod.PROXY_STALE_S
+        bus_mod.PROXY_STALE_S = 0.05
+        received = threading.Event()
+        node.subscribe("event/", lambda t, p: received.set())
+        time.sleep(0.1)
+        health_before = hub._collect_health()
+        assert health_before["healthy"] is False  # 无真实转发 → 不健康
+        assert "last_forwarded_s" in health_before["components"]["proxy"]
+        node.publish("event/x", {"x": 1})
+        assert received.wait(timeout=2.0)
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if hub._collect_health()["healthy"]:
+                break
+            time.sleep(0.02)
+        assert hub._collect_health()["healthy"] is True
+        bus_mod.PROXY_STALE_S = old_stale
+    finally:
+        node.close()
+        hub.close()
+

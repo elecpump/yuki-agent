@@ -32,6 +32,19 @@ def test_save_then_load_roundtrip_kernel(tmp_path):
     assert loaded["prefs_since_regen"] == 2
 
 
+def test_soul_save_writes_audit(tmp_path, monkeypatch):
+    calls = []
+
+    class FakeAudit:
+        def info(self, event, **fields):
+            calls.append((event, fields))
+
+    monkeypatch.setattr("yuki.cognition.brain.soul.get_audit_logger", lambda: FakeAudit())
+    store = SoulStore(tmp_path / "soul.json", "yuki")
+    store.save(store.default_soul())
+    assert calls[0] == ("soul.save", {"persona": "yuki"})
+
+
 def test_load_missing_returns_none(tmp_path):
     assert SoulStore(tmp_path / "nope.json", "yuki").load() is None
 

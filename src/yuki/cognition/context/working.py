@@ -4,6 +4,7 @@ from pathlib import Path
 
 from yuki.cognition.context.store import TurnStore
 from yuki.logger import get_logger
+from yuki.persistence import atomic_write_json
 
 logger = get_logger("yuki.cognition.context.working")
 
@@ -51,15 +52,13 @@ class WorkingContext:
         if self._snapshot_path is None:
             return
         try:
-            self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
             payload = {
                 "turns": [{"content": t["content"], "kind": t["kind"], "ts": t["ts"]}
                           for t in reversed(self._store.items())],
                 "situation": self._situation,
                 "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }
-            self._snapshot_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            atomic_write_json(self._snapshot_path, payload)
         except OSError as exc:
             logger.warning("context snapshot failed", error=str(exc))
 

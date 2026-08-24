@@ -91,6 +91,50 @@ def _make_pipeline(
     )
 
 
+def test_publish_situation_writes_rollout_trace(monkeypatch):
+    calls = []
+
+    class FakeTrace:
+        def info(self, event, **fields):
+            calls.append((event, fields))
+
+    monkeypatch.setattr("yuki.cognition.pipeline.get_situation_logger", lambda: FakeTrace())
+    pipeline = PerceptionPipeline(
+        vlm=FakeVLM(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        bus=FakeBus(),
+        start_deep_timer=False,
+        start_asr_watchdog=False,
+    )
+    try:
+        pipeline._publish_situation({"topic": "quantum"})
+        assert calls[0][0] == "situation"
+        assert calls[0][1]["topic"] == "quantum"
+        assert calls[0][1]["layer"] == "fast"
+    finally:
+        pipeline.close()
+
+
+def test_pipeline_exposes_public_frame_client_and_vlm():
+    bus = FakeBus()
+    vlm = FakeVLM()
+    frame_client = FakeFrameClient()
+    pipeline = PerceptionPipeline(
+        vlm=vlm,
+        stt=FakeSTT(),
+        frame_client=frame_client,
+        bus=bus,
+        start_deep_timer=False,
+        start_asr_watchdog=False,
+    )
+    try:
+        assert pipeline.frame_client is frame_client
+        assert pipeline.vlm is vlm
+    finally:
+        pipeline.close()
+
+
 def _wait_for_topic(bus, topic, timeout=1.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -388,7 +432,7 @@ def test_pipeline_awake_timeout_returns_to_idle():
     assert pipeline.check_asr_due() is False
     now[0] += 0.2
     assert pipeline.check_asr_due() is True
-    assert pipeline._asr_state == "idle"
+    assert pipeline._asr.state == "idle"
     assert sb.reset_calls == 2
 
 
@@ -412,12 +456,12 @@ def test_pipeline_listen_window_timeout_after_empty_stt():
     )
 
     pipeline.on_awake("event/awake", {"source": "hotkey"})
-    session_id = pipeline._session_id
+    session_id = pipeline._asr.session_id
     pipeline._recognize_utterance(np.zeros(320, dtype=np.float32), session_id)
-    assert pipeline._asr_state == "listening"
+    assert pipeline._asr.state == "listening"
     now[0] += 0.6
     assert pipeline.check_asr_due() is True
-    assert pipeline._asr_state == "idle"
+    assert pipeline._asr.state == "idle"
 
 
 def test_pipeline_discards_stale_stt_result():
@@ -433,9 +477,8 @@ def test_pipeline_discards_stale_stt_result():
     )
 
     pipeline.on_awake("event/awake", {"source": "hotkey"})
-    stale_session = pipeline._session_id
-    with pipeline._asr_lock:
-        pipeline._return_to_idle_locked()
+    stale_session = pipeline._asr.session_id
+    pipeline._asr.return_to_idle()
     pipeline._recognize_utterance(np.zeros(320, dtype=np.float32), stale_session)
 
     assert not any(t == Topics.USER_UTTERANCE for t, _ in bus.published)

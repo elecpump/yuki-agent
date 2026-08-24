@@ -89,3 +89,22 @@ def test_snapshot_write_failure_warns(tmp_path):
     ctx.add_user("x")
     ctx.close()
     assert path.exists()
+
+
+def test_snapshot_is_atomic_under_crash(tmp_path, monkeypatch):
+    manager = make_store(tmp_path)
+    path = tmp_path / "snap.json"
+    ctx = WorkingContext(manager, snapshot_path=path)
+    ctx.add_user("first turn")
+    ctx.close()
+    before = path.read_text(encoding="utf-8")
+
+    def boom_replace(*args, **kwargs):
+        raise OSError("crash before rename")
+
+    monkeypatch.setattr("yuki.persistence.os.replace", boom_replace)
+    ctx2 = WorkingContext(manager, snapshot_path=path)
+    ctx2.add_user("second turn")
+    ctx2.close()
+
+    assert path.read_text(encoding="utf-8") == before

@@ -81,6 +81,8 @@ def get_file_logger(name: str, filename: str, log_dir: Path = Path("logs")):
 
 _audit_logger = None
 _decision_logger = None
+_situation_logger = None
+_toolcall_logger = None
 
 
 def get_audit_logger():
@@ -95,6 +97,24 @@ def get_decision_logger():
     if _decision_logger is None:
         _decision_logger = get_file_logger("yuki.decision", "decision.jsonl")
     return _decision_logger
+
+
+def get_situation_logger():
+    global _situation_logger
+    if _situation_logger is None:
+        _situation_logger = get_file_logger("yuki.situation", "situations.jsonl")
+    return _situation_logger
+
+
+def get_toolcall_logger():
+    global _toolcall_logger
+    if _toolcall_logger is None:
+        _toolcall_logger = get_file_logger("yuki.toolcall", "tool_calls.jsonl")
+    return _toolcall_logger
+
+
+def audit_log(event: str, **fields: object) -> None:
+    get_audit_logger().info(event, **fields)
 
 
 def bind_trace_id(trace_id: str) -> None:

@@ -12,6 +12,8 @@ from google.protobuf.message import DecodeError
 
 from yuki.logger import bind_trace_id, get_logger, unbind_trace_id
 from yuki.proto.codec import (
+    MAX_SUPPORTED_VERSION,
+    VERSION,
     build_event,
     build_request,
     build_response_error,
@@ -20,6 +22,7 @@ from yuki.proto.codec import (
     parse_envelope,
     request_payload,
     response_result,
+    version_supported,
 )
 
 logger = get_logger("yuki.bus")
@@ -117,6 +120,7 @@ class BusHub(_Base):
         self._max_msg_size = max_msg_size
 
         self._last_proxy_activity = time.monotonic()
+        self._last_proxy_forwarded = time.monotonic()
         self._started_at = time.time()
         self._xsub = self._ctx.socket(zmq.XSUB)
         self._xsub.setsockopt(zmq.MAXMSGSIZE, self._max_msg_size)
@@ -140,6 +144,7 @@ class BusHub(_Base):
             poller.register(self._xpub, zmq.POLLIN)
             events = dict(poller.poll(100))
             try:
+                forwarded = False
                 if self._xsub in events:
                     frames = self._xsub.recv_multipart()
                     if self._auth_token and (
@@ -148,9 +153,13 @@ class BusHub(_Base):
                         logger.warning("dropping unauthorized publish")
                         continue
                     self._xpub.send_multipart(frames)
+                    forwarded = True
                 if self._xpub in events:
                     frames = self._xpub.recv_multipart()
                     self._xsub.send_multipart(frames)
+                    forwarded = True
+                if forwarded:
+                    self._last_proxy_forwarded = time.monotonic()
             except zmq.ZMQError:
                 return
         self._close_socket(self._xsub)
@@ -168,7 +177,7 @@ class BusHub(_Base):
             logger.warning("service route expired", service=service)
 
     def _collect_health(self) -> dict:
-        proxy_age = time.monotonic() - self._last_proxy_activity
+        proxy_age = time.monotonic() - self._last_proxy_forwarded
         proxy_alive = proxy_age < PROXY_STALE_S
         return {
             "process": "bus_server",
@@ -177,7 +186,7 @@ class BusHub(_Base):
             "error_count": 0,
             "healthy": proxy_alive,
             "components": {
-                "proxy": {"ok": proxy_alive, "last_activity_s": round(proxy_age, 3)},
+                "proxy": {"ok": proxy_alive, "last_forwarded_s": round(proxy_age, 3)},
                 "router": {"ok": True},
             },
         }
@@ -195,13 +204,31 @@ class BusHub(_Base):
             sender = frames[0]
 
             if b"REGISTER" == frames[1]:  # auth-aware registration
+                version = 1
                 if self._auth_token:
-                    if len(frames) != 4 or not _token_ok(self._auth_token, frames[2]):
+                    if len(frames) not in (4, 5) or not _token_ok(self._auth_token, frames[2]):
                         logger.warning("dropping unauthorized REGISTER")
                         continue
                     service_frame = frames[3]
+                    version_frame = frames[4] if len(frames) == 5 else None
                 else:
+                    if len(frames) not in (3, 4):
+                        logger.warning("dropping malformed REGISTER frame count")
+                        continue
                     service_frame = frames[2]
+                    version_frame = frames[3] if len(frames) == 4 else None
+                if version_frame is not None:
+                    try:
+                        version = int(version_frame.decode("utf-8"))
+                    except (UnicodeDecodeError, ValueError):
+                        logger.warning("dropping REGISTER with malformed version frame")
+                        continue
+                if version > MAX_SUPPORTED_VERSION:
+                    logger.warning(
+                        "rejecting REGISTER from incompatible version",
+                        version=version,
+                    )
+                    continue
                 try:
                     service = service_frame.decode("utf-8")
                 except UnicodeDecodeError:
@@ -218,6 +245,9 @@ class BusHub(_Base):
                 envelope = parse_envelope(raw)
             except DecodeError:
                 logger.warning("dropping malformed envelope from %s", sender)
+                continue
+            if not version_supported(envelope):
+                logger.warning("dropping unsupported envelope version", version=envelope.version)
                 continue
             kind = envelope.WhichOneof("body")
             if kind == "request":
@@ -251,6 +281,8 @@ class BusHub(_Base):
                     self._router.send_multipart([provider, sender, raw])
             elif kind == "response":
                 self._router.send_multipart([f1, raw])
+            else:
+                logger.warning("unknown oneof kind in router", kind=kind)
         self._close_socket(self._router)
 
 
@@ -369,9 +401,12 @@ class BusNode(_Base):
         if self._auth_token:
             frames.append(self._auth_token.encode("utf-8"))
         frames.append(service.encode())
+        frames.append(str(VERSION).encode("utf-8"))
         return frames
 
     def publish(self, topic: str, payload: dict, *, trace_id: str | None = None) -> None:
+        if trace_id is None:
+            trace_id = uuid.uuid4().hex
         envelope = build_event(topic, payload, trace_id=trace_id)
         frames = [topic.encode()]
         if self._auth_token:
@@ -462,12 +497,17 @@ class BusNode(_Base):
             item = worker_queue.get()
             if item is None:
                 return
-            topic, payload = item
+            topic, payload, trace_id = item
+            if trace_id:
+                bind_trace_id(trace_id)
             try:
                 handler(topic, payload)
             except Exception:
                 logger.error("subscriber handler failed", topic=topic, exc_info=True)
                 self._bump_error()
+            finally:
+                if trace_id:
+                    unbind_trace_id()
 
     def _pub_loop(self) -> None:
         self._loop_heartbeats["pub"] = time.monotonic()
@@ -509,42 +549,52 @@ class BusNode(_Base):
                     envelope = parse_envelope(raw)
                 except DecodeError:
                     continue
+                if not version_supported(envelope):
+                    logger.warning("dropping unsupported request version", version=envelope.version)
+                    continue
                 if envelope.trace_id:
                     bind_trace_id(envelope.trace_id)
-                if envelope.WhichOneof("body") != "request":
+                try:
+                    kind = envelope.WhichOneof("body")
+                    if kind != "request":
+                        logger.warning("unknown oneof kind in dealer request path", kind=kind)
+                        continue
+                    with self._services_lock:
+                        handler = self._services.get(envelope.request.service)
+                    if handler is None:
+                        reply = build_response_error(
+                            envelope.request.request_id, "service not found",
+                            trace_id=envelope.trace_id,
+                        )
+                    else:
+                        try:
+                            result = handler(request_payload(envelope))
+                            reply = build_response_result(
+                                envelope.request.request_id, result,
+                                trace_id=envelope.trace_id,
+                            )
+                        except Exception:
+                            logger.error("responder handler failed", service=envelope.request.service)
+                            self._bump_error()
+                            reply = build_response_error(
+                                envelope.request.request_id, "handler error",
+                                trace_id=envelope.trace_id,
+                            )
+                    self._dealer.send_multipart([client_id, reply.SerializeToString()])
+                finally:
                     if envelope.trace_id:
                         unbind_trace_id()
-                    continue
-                with self._services_lock:
-                    handler = self._services.get(envelope.request.service)
-                if handler is None:
-                    reply = build_response_error(
-                        envelope.request.request_id, "service not found",
-                        trace_id=envelope.trace_id,
-                    )
-                else:
-                    try:
-                        result = handler(request_payload(envelope))
-                        reply = build_response_result(
-                            envelope.request.request_id, result,
-                            trace_id=envelope.trace_id,
-                        )
-                    except Exception:
-                        logger.error("responder handler failed", service=envelope.request.service)
-                        self._bump_error()
-                        reply = build_response_error(
-                            envelope.request.request_id, "handler error",
-                            trace_id=envelope.trace_id,
-                        )
-                self._dealer.send_multipart([client_id, reply.SerializeToString()])
-                if envelope.trace_id:
-                    unbind_trace_id()
             elif len(frames) == 1:
                 try:
                     envelope = parse_envelope(frames[0])
                 except DecodeError:
                     continue
-                if envelope.WhichOneof("body") != "response":
+                if not version_supported(envelope):
+                    logger.warning("dropping unsupported response version", version=envelope.version)
+                    continue
+                kind = envelope.WhichOneof("body")
+                if kind != "response":
+                    logger.warning("unknown oneof kind in dealer response path", kind=kind)
                     continue
                 rid = envelope.response.request_id
                 with self._lock:
@@ -619,10 +669,19 @@ class BusNode(_Base):
             except DecodeError:
                 logger.warning("dropping malformed message", topic=topic)
                 continue
-            if envelope.WhichOneof("body") != "event":
-                logger.warning("dropping non-event envelope", topic=topic)
+            if not version_supported(envelope):
+                logger.warning(
+                    "dropping unsupported event version",
+                    topic=topic,
+                    version=envelope.version,
+                )
+                continue
+            kind = envelope.WhichOneof("body")
+            if kind != "event":
+                logger.warning("unknown oneof kind in sub path", topic=topic, kind=kind)
                 continue
             payload = event_payload(envelope)
+            trace_id = envelope.trace_id or ""
             with self._lock:
                 matching = [
                     h
@@ -636,7 +695,7 @@ class BusNode(_Base):
                     if worker_queue is None:
                         continue
                     try:
-                        worker_queue.put_nowait((topic, payload))
+                        worker_queue.put_nowait((topic, payload, trace_id))
                     except queue.Full:
                         self._bump_dropped()
                         logger.warning(
