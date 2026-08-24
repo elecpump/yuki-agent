@@ -58,6 +58,20 @@ vlm:
   cache_dir: ""
   deep_interval_s: 300.0
   user_bypass_rate_limit: true
+stt:
+  enabled: true
+  model: iic/SenseVoiceSmall
+  model_dir: ""
+  device: auto
+  language: auto
+  use_itn: true
+  warmup: true
+  retry_window_s: 60.0
+  vad:
+    model: fsmn-vad
+    vad_interval_ms: 400
+    end_silence_ms: 800
+    max_utterance_s: 10.0
 cloud:
   enabled: false
   base_url: https://api.deepseek.com/v1

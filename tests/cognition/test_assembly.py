@@ -13,9 +13,13 @@ from tests.fakes import FakeBus
 class FakePipeline:
     def __init__(self):
         self.warmups = 0
+        self.stt_warmups = 0
 
     def warmup_vlm(self):
         self.warmups += 1
+
+    def warmup_stt(self):
+        self.stt_warmups += 1
 
 
 def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
@@ -38,6 +42,7 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert runtime.persona_store is not None
         assert runtime.persona_refresh is not None
         assert pipeline.warmups == 1
+        assert pipeline.stt_warmups == 1
         assert all(service in bus.services for service in MEMORY_SERVICES)
         assert FUNCTIONS_CALL_SERVICE in bus.services
         assert COGNITION_AWAKE_SERVICE in bus.services
@@ -107,3 +112,60 @@ def test_cognition_assembler_vlm_disabled_skips_load(tmp_path):
     vlm = assembler._build_vlm()
     assert vlm._gate.disabled() is True
     assert vlm._gate.can_load() is False
+
+
+def test_cognition_assembler_builds_stt_from_config(tmp_path):
+    bus = FakeBus()
+    assembler = CognitionAssembler(
+        Config(
+            stt={
+                "enabled": False,
+                "model": "hub/sense",
+                "model_dir": "D:/models/sense",
+                "device": "cuda:0",
+                "language": "zn",
+                "use_itn": False,
+                "retry_window_s": 12.0,
+            },
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+    )
+
+    stt = assembler._build_stt()
+
+    assert stt._model_id == "hub/sense"
+    assert stt._model_dir == "D:/models/sense"
+    assert stt._device == "cuda:0"
+    assert stt._language == "zn"
+    assert stt._use_itn is False
+    assert stt._gate.disabled() is True
+
+
+def test_cognition_assembler_builds_speech_buffer_from_config(tmp_path):
+    bus = FakeBus()
+    assembler = CognitionAssembler(
+        Config(
+            stt={
+                "enabled": False,
+                "device": "cuda:0",
+                "vad": {
+                    "model": "fsmn-local",
+                    "vad_interval_ms": 200,
+                    "end_silence_ms": 600,
+                    "max_utterance_s": 3.0,
+                },
+            },
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+    )
+
+    speech_buffer = assembler._build_speech_buffer()
+
+    assert speech_buffer._vad._model_id == "fsmn-local"
+    assert speech_buffer._vad._device == "cuda:0"
+    assert speech_buffer._vad._gate.disabled() is True
+    assert speech_buffer._vad_interval_samples == 3200
+    assert speech_buffer._end_silence_ms == 600
+    assert speech_buffer._max_samples == 48000

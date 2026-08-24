@@ -32,6 +32,9 @@ from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
+from yuki.cognition.speech_buffer import SpeechBuffer
+from yuki.cognition.stt import SpeechRecognizer
+from yuki.cognition.vad import FsmnVadBackend
 from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.memory_tools import register_memory_functions
@@ -107,9 +110,9 @@ class CognitionAssembler:
         pipeline = self.pipeline or build_pipeline(
             self.bus,
             vlm=self.vlm or self._build_vlm(),
-            stt=self.stt,
+            stt=self.stt or self._build_stt(),
             frame_client=self.frame_client,
-            speech_buffer=self.speech_buffer,
+            speech_buffer=self.speech_buffer or self._build_speech_buffer(),
             text_summary_chars=self.config.text.summary_chars,
             text_key_point_chars=self.config.text.key_point_chars,
             deep_interval_s=self.config.vlm.deep_interval_s,
@@ -119,6 +122,8 @@ class CognitionAssembler:
             pre_roll_s=self.config.wake_word.pre_roll_s,
         )
         pipeline.warmup_vlm()
+        if self.config.stt.warmup and hasattr(pipeline, "warmup_stt"):
+            pipeline.warmup_stt()
 
         memory = self.memory or self._build_memory()
         register_memory_services(self.bus, memory)
@@ -248,6 +253,28 @@ class CognitionAssembler:
             model_id=vlm_cfg.model,
             cache_dir=vlm_cfg.cache_dir,
             enabled=vlm_cfg.enabled,
+        )
+
+    def _build_stt(self) -> SpeechRecognizer:
+        stt_cfg = self.config.stt
+        return SpeechRecognizer(
+            enabled=stt_cfg.enabled,
+            model_id=stt_cfg.model,
+            model_dir=stt_cfg.model_dir,
+            device=stt_cfg.device,
+            language=stt_cfg.language,
+            use_itn=stt_cfg.use_itn,
+            retry_window_s=stt_cfg.retry_window_s,
+        )
+
+    def _build_speech_buffer(self) -> SpeechBuffer:
+        stt_cfg = self.config.stt
+        vad_cfg = stt_cfg.vad
+        return SpeechBuffer(
+            vad=FsmnVadBackend(model=vad_cfg.model, device=stt_cfg.device, enabled=stt_cfg.enabled),
+            vad_interval_ms=vad_cfg.vad_interval_ms,
+            end_silence_ms=vad_cfg.end_silence_ms,
+            max_utterance_s=vad_cfg.max_utterance_s,
         )
 
     def _build_bridge(self, registry: FunctionRegistry) -> CloudBridge | None:

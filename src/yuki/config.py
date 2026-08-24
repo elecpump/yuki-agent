@@ -90,6 +90,25 @@ class VlmConfig(BaseModel):
     user_bypass_rate_limit: bool = True
 
 
+class SttVadConfig(BaseModel):
+    model: str = "fsmn-vad"
+    vad_interval_ms: int = Field(400, ge=50, le=5000)
+    end_silence_ms: int = Field(800, ge=100, le=10000)
+    max_utterance_s: float = Field(10.0, ge=1.0, le=60.0)
+
+
+class SttConfig(BaseModel):
+    enabled: bool = True
+    model: str = "iic/SenseVoiceSmall"
+    model_dir: str = ""
+    device: str = "auto"
+    language: str = "auto"
+    use_itn: bool = True
+    warmup: bool = True
+    retry_window_s: float = Field(60.0, ge=0.0)
+    vad: SttVadConfig = Field(default_factory=SttVadConfig)
+
+
 class CloudConfig(BaseModel):
     enabled: bool = False
     base_url: str = "https://api.openai.com/v1"
@@ -170,6 +189,7 @@ class Config(BaseModel):
     brain: BrainConfig = Field(default_factory=BrainConfig)
     local_brain: LocalBrainConfig = Field(default_factory=LocalBrainConfig)
     vlm: VlmConfig = Field(default_factory=VlmConfig)
+    stt: SttConfig = Field(default_factory=SttConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
@@ -206,6 +226,7 @@ class Config(BaseModel):
             ("brain", BrainConfig),
             ("local_brain", LocalBrainConfig),
             ("vlm", VlmConfig),
+            ("stt", SttConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
             ("perception", PerceptionConfig),
@@ -216,9 +237,18 @@ class Config(BaseModel):
             ("persona", PersonaConfig),
         ):
             section = data.setdefault(section_name, {})
-            for field_name in section_cls.model_fields:
-                cls._apply_env(field_name, f"{section_name.upper()}_{field_name.upper()}", section, section_cls)
+            cls._apply_model_env(section_name.upper(), section, section_cls)
         return cls(**data)
+
+    @classmethod
+    def _apply_model_env(cls, env_prefix: str, target: dict, model_cls: type[BaseModel]) -> None:
+        for field_name, field in model_cls.model_fields.items():
+            annotation = field.annotation
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                nested = target.setdefault(field_name, {})
+                cls._apply_model_env(f"{env_prefix}_{field_name.upper()}", nested, annotation)
+                continue
+            cls._apply_env(field_name, f"{env_prefix}_{field_name.upper()}", target, model_cls)
 
     @classmethod
     def _apply_env(cls, field_name: str, env_suffix: str, target: dict, model_cls=None) -> None:

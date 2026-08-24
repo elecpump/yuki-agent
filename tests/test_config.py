@@ -244,6 +244,50 @@ def test_vlm_deep_env_override(monkeypatch):
     assert config.vlm.user_bypass_rate_limit is False
 
 
+def test_stt_defaults():
+    config = Config()
+    assert config.stt.enabled is True
+    assert config.stt.model == "iic/SenseVoiceSmall"
+    assert config.stt.model_dir == ""
+    assert config.stt.device == "auto"
+    assert config.stt.language == "auto"
+    assert config.stt.use_itn is True
+    assert config.stt.warmup is True
+    assert config.stt.retry_window_s == 60.0
+    assert config.stt.vad.model == "fsmn-vad"
+    assert config.stt.vad.vad_interval_ms == 400
+    assert config.stt.vad.end_silence_ms == 800
+    assert config.stt.vad.max_utterance_s == 10.0
+
+
+def test_stt_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_STT_ENABLED", "false")
+    monkeypatch.setenv("YUKI_STT_MODEL", "hub/sense")
+    monkeypatch.setenv("YUKI_STT_MODEL_DIR", "D:/models/sense")
+    monkeypatch.setenv("YUKI_STT_DEVICE", "cuda:0")
+    monkeypatch.setenv("YUKI_STT_LANGUAGE", "zn")
+    monkeypatch.setenv("YUKI_STT_USE_ITN", "false")
+    monkeypatch.setenv("YUKI_STT_WARMUP", "false")
+    monkeypatch.setenv("YUKI_STT_RETRY_WINDOW_S", "12.5")
+    monkeypatch.setenv("YUKI_STT_VAD_MODEL", "fsmn-local")
+    monkeypatch.setenv("YUKI_STT_VAD_VAD_INTERVAL_MS", "200")
+    monkeypatch.setenv("YUKI_STT_VAD_END_SILENCE_MS", "600")
+    monkeypatch.setenv("YUKI_STT_VAD_MAX_UTTERANCE_S", "3.0")
+    config = Config.load(None)
+    assert config.stt.enabled is False
+    assert config.stt.model == "hub/sense"
+    assert config.stt.model_dir == "D:/models/sense"
+    assert config.stt.device == "cuda:0"
+    assert config.stt.language == "zn"
+    assert config.stt.use_itn is False
+    assert config.stt.warmup is False
+    assert config.stt.retry_window_s == 12.5
+    assert config.stt.vad.model == "fsmn-local"
+    assert config.stt.vad.vad_interval_ms == 200
+    assert config.stt.vad.end_silence_ms == 600
+    assert config.stt.vad.max_utterance_s == 3.0
+
+
 def test_soul_defaults():
     config = Config()
     assert config.soul.path == "data/soul.json"

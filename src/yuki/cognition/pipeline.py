@@ -470,6 +470,11 @@ class PerceptionPipeline:
     def warmup_vlm(self) -> None:
         self._vlm.warmup()
 
+    def warmup_stt(self) -> None:
+        warmup = getattr(self._stt, "warmup", None)
+        if callable(warmup):
+            warmup()
+
     def close(self) -> None:
         self._asr_watchdog_stop.set()
         if self._asr_watchdog_thread is not None and self._asr_watchdog_thread.is_alive():

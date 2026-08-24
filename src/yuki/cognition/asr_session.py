@@ -4,6 +4,9 @@ from collections import deque
 from collections.abc import Callable
 
 from yuki.cognition.speech_buffer import SpeechBuffer
+from yuki.logger import get_logger
+
+logger = get_logger("yuki.cognition.asr_session")
 
 
 class AsrSession:
@@ -28,6 +31,11 @@ class AsrSession:
         self._clock = clock
         self._lock = threading.RLock()
         self._speech_buffer = speech_buffer or SpeechBuffer(on_utterance=on_utterance)
+        if speech_buffer is not None and on_utterance is not None:
+            try:
+                self._speech_buffer.on_utterance = on_utterance
+            except Exception:
+                logger.warning("speech buffer utterance rewire failed", exc_info=True)
         pre_roll_frames = int(max(0.0, float(pre_roll_s)) * 1000 / max(1, int(audio_frame_ms)))
         self._pre_roll: deque = deque(maxlen=pre_roll_frames)
         self._state = "idle"
@@ -83,6 +91,9 @@ class AsrSession:
                 self._last_activity = self._clock()
 
     def has_speech(self) -> bool:
+        has_speech = getattr(self._speech_buffer, "has_speech", None)
+        if callable(has_speech):
+            return bool(has_speech())
         speech = getattr(self._speech_buffer, "_speech", None)
         return bool(speech)
 

@@ -1,4 +1,3 @@
-import base64
 import threading
 import time
 from collections.abc import Callable
@@ -8,35 +7,29 @@ import numpy as np
 from yuki.cognition.load_gate import LoadGate
 from yuki.logger import get_logger
 
-logger = get_logger("yuki.cognition.stt")
+logger = get_logger("yuki.cognition.vad")
 
 
-class SpeechRecognizer:
-    """SenseVoice-Small 语音识别：中英混合，带情感/事件标注。"""
+class FsmnVadBackend:
+    """funasr fsmn-vad backend using non-streaming segmentation."""
 
     def __init__(
         self,
-        model=None,
-        sample_rate: int = 16000,
+        model_instance=None,
         *,
-        enabled: bool = True,
-        model_id: str = "iic/SenseVoiceSmall",
-        model_dir: str = "",
+        model: str = "fsmn-vad",
         device: str = "auto",
-        language: str = "auto",
-        use_itn: bool = True,
+        sample_rate: int = 16000,
+        enabled: bool = True,
         retry_window_s: float = 60.0,
         clock: Callable[[], float] | None = None,
     ) -> None:
-        self._model = model
-        self._sample_rate = sample_rate
-        self._model_id = model_id
-        self._model_dir = model_dir
+        self._model = model_instance
+        self._model_id = model
         self._device = device
         self._resolved_device: str | None = None
-        self._language = language
-        self._use_itn = use_itn
-        self._loaded = model is not None
+        self._sample_rate = sample_rate
+        self._loaded = model_instance is not None
         self._gate = LoadGate(
             enabled=enabled,
             retry_window_s=retry_window_s,
@@ -52,9 +45,9 @@ class SpeechRecognizer:
             try:
                 self._load()
             except Exception:
-                logger.warning("stt warmup failed", exc_info=True)
+                logger.warning("vad warmup failed", exc_info=True)
 
-        threading.Thread(target=_load_thread, daemon=True, name="yuki-stt-warmup").start()
+        threading.Thread(target=_load_thread, daemon=True, name="yuki-vad-warmup").start()
 
     def _resolve_device(self) -> str:
         if self._resolved_device is not None:
@@ -83,7 +76,7 @@ class SpeechRecognizer:
                 from funasr import AutoModel
 
                 self._model = AutoModel(
-                    model=self._model_dir or self._model_id,
+                    model=self._model_id,
                     device=self._resolve_device(),
                     disable_update=True,
                     trust_remote_code=True,
@@ -94,50 +87,40 @@ class SpeechRecognizer:
                 self._gate.mark_failure()
                 raise
 
-    def _infer(self, samples: np.ndarray, sample_rate: int) -> str:
-        self._load()
-        try:
-            from funasr.utils.postprocess_utils import rich_transcription_postprocess
-        except Exception:
-            rich_transcription_postprocess = str
-        result = self._model.generate(
-            input=samples.astype(np.float32),
-            fs=sample_rate,
-            cache={},
-            language=self._language,
-            use_itn=self._use_itn,
-        )
-        if isinstance(result, list) and result:
-            return rich_transcription_postprocess(str(result[0].get("text", "")))
-        return ""
-
-    def recognize(self, samples: np.ndarray, sample_rate: int = 16000) -> str:
+    def segments(self, samples: np.ndarray) -> list[list[int]]:
         if samples is None or len(samples) == 0:
-            return ""
-        if not self._loaded and self._gate.error_message() is not None:
-            return ""
+            return []
         try:
-            return self._infer(samples, sample_rate)
+            self._load()
+            result = self._model.generate(input=np.asarray(samples, dtype=np.float32))
+            value = result[0].get("value", []) if isinstance(result, list) and result else []
+            return self._normalize_segments(value, len(samples))
         except Exception:
-            logger.exception("stt inference failed")
-            return ""
+            logger.warning("vad segmentation failed", exc_info=True)
+            return []
 
-    def recognize_base64(self, pcm_b64: str, sample_rate: int = 16000) -> str:
-        if not pcm_b64:
-            return ""
-        try:
-            raw = base64.b64decode(pcm_b64)
-            samples = np.frombuffer(raw, dtype=np.float32)
-        except (ValueError, base64.binascii.Error):
-            logger.warning("invalid pcm base64")
-            return ""
-        return self.recognize(samples, sample_rate)
+    def _normalize_segments(self, value, sample_count: int) -> list[list[int]]:
+        duration_ms = int(round(sample_count / max(1, self._sample_rate) * 1000))
+        segments: list[list[int]] = []
+        if not isinstance(value, list):
+            return segments
+        for item in value:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            try:
+                start_ms = int(item[0])
+                end_ms = int(item[1])
+            except (TypeError, ValueError):
+                continue
+            if start_ms < 0 or end_ms <= start_ms:
+                continue
+            segments.append([start_ms, min(end_ms, duration_ms)])
+        return segments
 
     def health(self) -> dict:
         return {
             "loaded": self._loaded,
             "device": self._resolved_device or self._device,
             "model": self._model_id,
-            "model_dir": self._model_dir,
             **self._gate.health(),
         }

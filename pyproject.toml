@@ -22,7 +22,7 @@ windows = [
 dev = ["pytest>=8", "grpcio-tools>=1.66"]
 ml = ["transformers", "torch", "torchvision", "qwen-vl-utils", "funasr", "paddleocr",
       "accelerate", "bitsandbytes"]
-asr = ["openwakeword", "onnxruntime"]
+asr = ["openwakeword", "onnxruntime", "funasr"]
 desktop = ["fastapi", "uvicorn[standard]", "websockets"]
 
 [tool.setuptools.packages.find]
