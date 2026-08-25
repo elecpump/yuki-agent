@@ -46,3 +46,21 @@ def test_model_services_reload_and_relieve_memory_pressure():
     result = bus.request("models/relieve_memory_pressure", {})
     assert result["action"] == "none"
     assert result["reason"] == "memory_ok"
+
+
+def test_model_services_expose_preflight():
+    bus = FakeBus()
+    registry = ModelRegistry()
+    registry.register(
+        ModelSpec(
+            name="vlm",
+            loader=lambda: object(),
+            preflight_check=lambda: {"name": "cache", "ok": True},
+        )
+    )
+    register_model_services(bus, registry)
+
+    result = bus.request("models/preflight", {"model": "vlm"})
+
+    assert result["ok"] is True
+    assert result["models"]["vlm"]["checks"][-1]["name"] == "cache"

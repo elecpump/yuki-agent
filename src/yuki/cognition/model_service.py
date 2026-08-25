@@ -5,6 +5,7 @@ MODEL_SERVICES = (
     "models/health",
     "models/unload",
     "models/reload",
+    "models/preflight",
     "models/relieve_memory_pressure",
 )
 
@@ -26,8 +27,12 @@ def register_model_services(bus, registry: ModelRegistry) -> None:
         registry.reload(payload["model"])
         return {"ok": True}
 
+    def on_preflight(payload: dict) -> dict:
+        return registry.preflight((payload or {}).get("model"))
+
     bus.respond("models/list", lambda payload: {"models": registry.get_loaded_models()})
     bus.respond("models/health", on_health)
     bus.respond("models/unload", on_unload)
     bus.respond("models/reload", on_reload)
+    bus.respond("models/preflight", on_preflight)
     bus.respond("models/relieve_memory_pressure", lambda payload: registry.relieve_memory_pressure())

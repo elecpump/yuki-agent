@@ -27,6 +27,7 @@ class ModelSpec:
     loader: Callable[[], Any]
     unloader: Callable[[Any], None] | None = None
     health_check: Callable[[], dict] | None = None
+    preflight_check: Callable[[], dict] | None = None
     priority: int = 100
     dependencies: list[str] = field(default_factory=list)
     vram_estimate_gb: float = 0.0
@@ -89,6 +90,23 @@ class ModelRegistry:
         with self._lock:
             self._unload_locked(model_id, visiting=set())
             self._load_locked(model_id, visiting=set())
+
+    def preflight(self, model_id: str | None = None) -> dict:
+        with self._lock:
+            names = [model_id] if model_id is not None else list(self._entries)
+            models = {name: self._preflight_model(name) for name in names}
+            if any(not result["ok"] for result in models.values()):
+                status = "failed"
+            elif any(result["status"] == "warning" for result in models.values()):
+                status = "warning"
+            else:
+                status = "ok"
+            return {
+                "ok": status != "failed",
+                "status": status,
+                "models": models,
+                "gpu": self.gpu_health(),
+            }
 
     @contextmanager
     def track_call(self, model_id: str) -> Iterator[None]:
@@ -333,6 +351,68 @@ class ModelRegistry:
             ),
             reverse=True,
         )[0]
+
+    def _preflight_model(self, model_id: str) -> dict:
+        entry = self._entry(model_id)
+        checks = [
+            {
+                "name": "dependencies_registered",
+                "ok": all(dep in self._entries for dep in entry.spec.dependencies),
+                "severity": "error",
+                "detail": {"dependencies": list(entry.spec.dependencies)},
+            }
+        ]
+        checks.append(self._preflight_vram(entry))
+        if entry.spec.preflight_check is not None:
+            checks.append(self._run_custom_preflight(entry))
+        failed = any(not check["ok"] and check.get("severity") == "error" for check in checks)
+        warned = any(not check["ok"] and check.get("severity") == "warning" for check in checks)
+        return {
+            "ok": not failed,
+            "status": "failed" if failed else "warning" if warned else "ok",
+            "checks": checks,
+        }
+
+    def _preflight_vram(self, entry: _ModelEntry) -> dict:
+        estimate = float(entry.spec.vram_estimate_gb)
+        if estimate <= 0:
+            return {
+                "name": "vram_estimate",
+                "ok": True,
+                "severity": "warning",
+                "detail": {"vram_estimate_gb": estimate},
+            }
+        gpu = self.gpu_health()
+        if not gpu.get("available", False):
+            return {
+                "name": "vram_estimate",
+                "ok": False,
+                "severity": "warning",
+                "reason": gpu.get("reason", "gpu_unavailable"),
+                "detail": {"vram_estimate_gb": estimate},
+            }
+        free_gb = float(gpu.get("free_gb", 0.0))
+        return {
+            "name": "vram_estimate",
+            "ok": free_gb >= estimate,
+            "severity": "error",
+            "detail": {"vram_estimate_gb": estimate, "free_gb": free_gb},
+        }
+
+    def _run_custom_preflight(self, entry: _ModelEntry) -> dict:
+        try:
+            result = dict(entry.spec.preflight_check())
+        except Exception as exc:
+            return {
+                "name": "custom",
+                "ok": False,
+                "severity": "error",
+                "reason": str(exc),
+            }
+        result.setdefault("name", "custom")
+        result.setdefault("ok", True)
+        result.setdefault("severity", "error")
+        return result
 
 
 def _percentile(values: list[float], percentile: float) -> float:

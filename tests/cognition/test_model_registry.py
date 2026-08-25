@@ -4,12 +4,18 @@ from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 
 
 class FakeGpuMonitor:
-    def __init__(self, *, low_memory=True):
+    def __init__(self, *, low_memory=True, free_gb=8.0):
         self.low_memory = low_memory
+        self.free_gb = free_gb
         self.cache_cleared = 0
 
     def snapshot(self):
-        return {"available": True, "low_memory": self.low_memory, "reason": ""}
+        return {
+            "available": True,
+            "low_memory": self.low_memory,
+            "free_gb": self.free_gb,
+            "reason": "",
+        }
 
     def empty_cache(self):
         self.cache_cleared += 1
@@ -71,6 +77,57 @@ def test_model_registry_loaded_models_reflects_external_health():
     )
 
     assert registry.get_loaded_models() == ["stt"]
+
+
+def test_model_registry_preflight_runs_builtin_and_custom_checks():
+    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(free_gb=4.0))
+    registry.register(
+        ModelSpec(
+            name="vlm",
+            loader=lambda: object(),
+            preflight_check=lambda: {"name": "files", "ok": True},
+            vram_estimate_gb=2.0,
+        )
+    )
+
+    result = registry.preflight()
+
+    assert result["ok"] is True
+    assert result["status"] == "ok"
+    checks = result["models"]["vlm"]["checks"]
+    assert [check["name"] for check in checks] == [
+        "dependencies_registered",
+        "vram_estimate",
+        "files",
+    ]
+
+
+def test_model_registry_preflight_reports_custom_failure():
+    registry = ModelRegistry()
+    registry.register(
+        ModelSpec(
+            name="stt",
+            loader=lambda: object(),
+            preflight_check=lambda: {"name": "cache", "ok": False, "reason": "missing"},
+        )
+    )
+
+    result = registry.preflight("stt")
+
+    assert result["ok"] is False
+    assert result["status"] == "failed"
+    assert result["models"]["stt"]["checks"][-1]["reason"] == "missing"
+
+
+def test_model_registry_preflight_reports_insufficient_vram():
+    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(free_gb=1.0))
+    registry.register(ModelSpec(name="vlm", loader=lambda: object(), vram_estimate_gb=2.0))
+
+    result = registry.preflight("vlm")
+
+    assert result["ok"] is False
+    assert result["models"]["vlm"]["checks"][1]["name"] == "vram_estimate"
+    assert result["models"]["vlm"]["checks"][1]["detail"]["free_gb"] == 1.0
 
 
 def test_model_registry_shutdown_unloads_in_lowest_priority_first_order():
