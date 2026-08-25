@@ -22,6 +22,22 @@ class FakePipeline:
         self.stt_warmups += 1
 
 
+class FakeModelAdapter:
+    def __init__(self):
+        self.loaded = False
+        self.unloaded = 0
+
+    def load(self):
+        self.loaded = True
+
+    def unload(self):
+        self.loaded = False
+        self.unloaded += 1
+
+    def health(self):
+        return {"loaded": self.loaded, "degraded": False}
+
+
 def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
     bus = FakeBus()
     pipeline = FakePipeline()
@@ -37,6 +53,7 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
     try:
         assert runtime.pipeline is pipeline
         assert runtime.memory is memory
+        assert runtime.model_registry is not None
         assert runtime.hub is not None
         assert runtime.context is not None
         assert runtime.persona_store is not None
@@ -54,6 +71,29 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert "text.extract" in names
         assert "vision.understand" in names
         assert "perception.deep_understand_screen" not in names
+    finally:
+        runtime.context.close()
+        memory.close()
+
+
+def test_cognition_assembler_registers_pipeline_models(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = FakeModelAdapter()
+    pipeline._stt = FakeModelAdapter()
+    memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
+
+    runtime = CognitionAssembler(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus,
+        pipeline=pipeline,
+        memory=memory,
+    ).assemble()
+
+    try:
+        health = runtime.model_registry.get_all_models_health()
+        assert set(health) == {"vlm", "stt"}
+        assert health["vlm"]["loaded"] is False
     finally:
         runtime.context.close()
         memory.close()

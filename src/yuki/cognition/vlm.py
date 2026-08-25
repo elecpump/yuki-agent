@@ -97,6 +97,22 @@ class VisualUnderstander:
                 logger.warning("vlm warmup failed, will degrade to text mode", exc_info=True)
         threading.Thread(target=_load_thread, daemon=True).start()
 
+    def load(self) -> None:
+        self._load()
+
+    def unload(self) -> None:
+        with self._load_lock:
+            self._model = None
+            self._processor = None
+            self._loaded = False
+            self._gate.reset()
+            self.clear_cache()
+        self._empty_torch_cache()
+
+    def reload(self) -> None:
+        self.unload()
+        self.load()
+
     def _infer(self, image) -> dict:
         return self._infer_with_prompt(image, _PROMPT, include_can_answer=False)
 
@@ -205,3 +221,12 @@ class VisualUnderstander:
 
     def health(self) -> dict:
         return {"loaded": self._loaded, **self._gate.health()}
+
+    def _empty_torch_cache(self) -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("torch cuda cache cleanup skipped", exc_info=True)

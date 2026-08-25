@@ -56,6 +56,21 @@ class SpeechRecognizer:
 
         threading.Thread(target=_load_thread, daemon=True, name="yuki-stt-warmup").start()
 
+    def load(self) -> None:
+        self._load()
+
+    def unload(self) -> None:
+        with self._load_lock:
+            self._model = None
+            self._loaded = False
+            self._resolved_device = None
+            self._gate.reset()
+        self._empty_torch_cache()
+
+    def reload(self) -> None:
+        self.unload()
+        self.load()
+
     def _resolve_device(self) -> str:
         if self._resolved_device is not None:
             return self._resolved_device
@@ -141,3 +156,12 @@ class SpeechRecognizer:
             "model_dir": self._model_dir,
             **self._gate.health(),
         }
+
+    def _empty_torch_cache(self) -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("torch cuda cache cleanup skipped", exc_info=True)

@@ -306,6 +306,30 @@ class MemoryStore(StorageBackend):
             results.append((memory, embedding))
         return results
 
+    def vector_index_state(
+        self,
+        *,
+        provider: str,
+        model: str,
+        dimension: int,
+        memory_type: str | None = None,
+        min_sensitivity: int = 0,
+    ) -> tuple[int, float | None]:
+        sql = (
+            "SELECT count(*) AS embedding_count, max(e.updated_at) AS last_updated "
+            "FROM memory_embeddings e "
+            "JOIN memories m ON m.id = e.memory_id "
+            "WHERE e.provider = ? AND e.model = ? AND e.dimension = ? AND m.sensitivity >= ?"
+        )
+        params: list = [provider, model, int(dimension), int(min_sensitivity)]
+        if memory_type is not None:
+            sql += " AND m.memory_type = ?"
+            params.append(memory_type)
+        with self._lock:
+            row = self._conn.execute(sql, params).fetchone()
+        last_updated = row["last_updated"]
+        return int(row["embedding_count"]), float(last_updated) if last_updated is not None else None
+
     def embeddings_count(self) -> int:
         with self._lock:
             return int(self._conn.execute("SELECT count(*) FROM memory_embeddings").fetchone()[0])

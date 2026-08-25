@@ -432,6 +432,14 @@ class PerceptionPipeline:
     def vlm(self) -> VisualUnderstander:
         return self._vlm
 
+    @property
+    def stt(self) -> SpeechRecognizer:
+        return self._stt
+
+    @property
+    def speech_buffer(self) -> SpeechBuffer:
+        return self._asr.speech_buffer
+
     def current_text(self) -> dict:
         frame = self.latest_frame()
         payload = {

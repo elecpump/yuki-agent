@@ -1,6 +1,7 @@
 import os
 
 from yuki.cognition.assembly import CognitionAssembler
+from yuki.cognition.model_registry import ModelRegistry
 from yuki.config import Config
 from yuki.functions.registry import FunctionRegistry
 from yuki.health import HealthStatus
@@ -18,7 +19,8 @@ class CognitionAgent(ProcessAgent):
                  pipeline=None, l1=None, vlm=None, stt=None,
                  frame_client=None, speech_buffer=None,
                  memory: MemoryManager | None = None,
-                 registry: FunctionRegistry | None = None) -> None:
+                 registry: FunctionRegistry | None = None,
+                 model_registry: ModelRegistry | None = None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
         self._pipeline = pipeline
         self._l1 = l1
@@ -28,6 +30,7 @@ class CognitionAgent(ProcessAgent):
         self._speech_buffer = speech_buffer
         self._memory = memory
         self._registry = registry
+        self._model_registry = model_registry
         self._hub = None
         self._bridge = None
         self._context = None
@@ -45,11 +48,13 @@ class CognitionAgent(ProcessAgent):
             speech_buffer=self._speech_buffer,
             memory=self._memory,
             registry=self._registry,
+            model_registry=self._model_registry,
         )
         assembled = runtime.assemble()
         self._pipeline = assembled.pipeline
         self._memory = assembled.memory
         self._registry = assembled.registry
+        self._model_registry = assembled.model_registry
         self._bridge = assembled.bridge
         self._hub = assembled.hub
         self._context = assembled.context
@@ -59,6 +64,9 @@ class CognitionAgent(ProcessAgent):
     def teardown(self) -> None:
         if self._pipeline is not None and hasattr(self._pipeline, "close"):
             self._pipeline.close()
+        if self._model_registry is not None:
+            self._model_registry.shutdown()
+            self._model_registry = None
         if self._context is not None:
             self._context.close()
             self._context = None
@@ -86,6 +94,7 @@ class CognitionAgent(ProcessAgent):
             "l2": self._health_l2,
             "pipeline": self._health_pipeline,
             "memory": self._health_memory,
+            "models": self._health_models,
         }
 
     def _health_vlm(self) -> HealthStatus:
@@ -138,3 +147,9 @@ class CognitionAgent(ProcessAgent):
     def _health_memory(self) -> HealthStatus:
         ok = self._memory is not None and self._memory.ping()
         return HealthStatus(ok, {"db": self.config.memory.db_path})
+
+    def _health_models(self) -> HealthStatus:
+        if self._model_registry is None:
+            return HealthStatus(True, {"status": "not_configured", "models": {}})
+        status = self._model_registry.get_overall_status()
+        return HealthStatus(status["status"] == "healthy", status)

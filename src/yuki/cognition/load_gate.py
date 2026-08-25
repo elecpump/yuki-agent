@@ -33,6 +33,9 @@ class LoadGate:
     def mark_success(self) -> None:
         self._failed_until = None
 
+    def reset(self) -> None:
+        self._failed_until = None
+
     def error_message(self) -> str | None:
         if not self._enabled:
             return "model disabled"

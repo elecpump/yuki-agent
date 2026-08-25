@@ -53,6 +53,21 @@ class LocalChatModel:
 
         threading.Thread(target=_load_thread, daemon=True, name="yuki-local-model-warmup").start()
 
+    def load(self) -> None:
+        self._load()
+
+    def unload(self) -> None:
+        with self._load_lock:
+            self._model = None
+            self._tokenizer = None
+            self._loaded = False
+            self._gate.reset()
+        self._empty_torch_cache()
+
+    def reload(self) -> None:
+        self.unload()
+        self.load()
+
     def _load(self) -> None:
         if self._loaded:
             return
@@ -138,3 +153,12 @@ class LocalChatModel:
 
     def health(self) -> dict:
         return {"loaded": self._loaded, **self._gate.health()}
+
+    def _empty_torch_cache(self) -> None:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("torch cuda cache cleanup skipped", exc_info=True)

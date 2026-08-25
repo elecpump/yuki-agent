@@ -31,6 +31,7 @@ from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
+from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
@@ -42,6 +43,7 @@ from yuki.functions.perception_tools import register_perception_tools
 from yuki.functions.registry import FunctionRegistry
 from yuki.functions.service import register_function_services
 from yuki.functions.system import register_builtin_system
+from yuki.logger import get_logger
 from yuki.memory.embedding import build_embedding_indexer
 from yuki.memory.manager import MemoryManager
 from yuki.memory.privacy import MemoryAccess, MemoryPurpose
@@ -49,12 +51,15 @@ from yuki.memory.service import register_memory_services
 from yuki.memory.store import MemoryStore
 from yuki.topics import Topics
 
+logger = get_logger("yuki.cognition.assembly")
+
 
 @dataclass
 class CognitionRuntime:
     pipeline: PerceptionPipeline
     memory: MemoryManager
     registry: FunctionRegistry
+    model_registry: ModelRegistry
     bridge: CloudBridge | None
     hub: DecisionHub
     context: WorkingContext
@@ -95,6 +100,7 @@ class CognitionAssembler:
         speech_buffer=None,
         memory: MemoryManager | None = None,
         registry: FunctionRegistry | None = None,
+        model_registry: ModelRegistry | None = None,
     ) -> None:
         self.config = config
         self.bus = bus
@@ -105,22 +111,34 @@ class CognitionAssembler:
         self.speech_buffer = speech_buffer
         self.memory = memory
         self.registry = registry
+        self.model_registry = model_registry
 
     def assemble(self) -> CognitionRuntime:
-        pipeline = self.pipeline or build_pipeline(
-            self.bus,
-            vlm=self.vlm or self._build_vlm(),
-            stt=self.stt or self._build_stt(),
-            frame_client=self.frame_client,
-            speech_buffer=self.speech_buffer or self._build_speech_buffer(),
-            text_summary_chars=self.config.text.summary_chars,
-            text_key_point_chars=self.config.text.key_point_chars,
-            deep_interval_s=self.config.vlm.deep_interval_s,
-            user_bypass_rate_limit=self.config.vlm.user_bypass_rate_limit,
-            listen_timeout_s=self.config.wake_word.listen_timeout_s,
-            listen_window_s=self.config.wake_word.listen_window_s,
-            pre_roll_s=self.config.wake_word.pre_roll_s,
-        )
+        model_registry = self.model_registry or ModelRegistry()
+        if self.pipeline is None:
+            vlm = self.vlm or self._build_vlm()
+            stt = self.stt or self._build_stt()
+            speech_buffer = self.speech_buffer or self._build_speech_buffer()
+            pipeline = build_pipeline(
+                self.bus,
+                vlm=vlm,
+                stt=stt,
+                frame_client=self.frame_client,
+                speech_buffer=speech_buffer,
+                text_summary_chars=self.config.text.summary_chars,
+                text_key_point_chars=self.config.text.key_point_chars,
+                deep_interval_s=self.config.vlm.deep_interval_s,
+                user_bypass_rate_limit=self.config.vlm.user_bypass_rate_limit,
+                listen_timeout_s=self.config.wake_word.listen_timeout_s,
+                listen_window_s=self.config.wake_word.listen_window_s,
+                pre_roll_s=self.config.wake_word.pre_roll_s,
+            )
+        else:
+            pipeline = self.pipeline
+            vlm = getattr(pipeline, "vlm", getattr(pipeline, "_vlm", None))
+            stt = getattr(pipeline, "stt", getattr(pipeline, "_stt", None))
+            speech_buffer = getattr(pipeline, "speech_buffer", self.speech_buffer)
+        self._register_runtime_models(model_registry, vlm, stt, speech_buffer)
         pipeline.warmup_vlm()
         if self.config.stt.warmup and hasattr(pipeline, "warmup_stt"):
             pipeline.warmup_stt()
@@ -179,6 +197,7 @@ class CognitionAssembler:
         local_router, local_composer, vision_screen = self._build_local_brain(
             registry,
             pipeline,
+            model_registry,
         )
         hub = build_brain(
             self.bus,
@@ -210,6 +229,7 @@ class CognitionAssembler:
             pipeline=pipeline,
             memory=memory,
             registry=registry,
+            model_registry=model_registry,
             bridge=bridge,
             hub=hub,
             context=context,
@@ -296,6 +316,7 @@ class CognitionAssembler:
         self,
         registry: FunctionRegistry,
         pipeline: PerceptionPipeline,
+        model_registry: ModelRegistry,
     ) -> tuple[LocalRouter | None, LocalComposer | None, VisionScreenAdapter | None]:
         local_cfg = self.config.local_brain
         if not local_cfg.enabled:
@@ -307,6 +328,13 @@ class CognitionAssembler:
             enabled=local_cfg.enabled,
             fp8_dequantize=local_cfg.fp8_dequantize,
             local_files_only=local_cfg.local_files_only,
+        )
+        self._register_model_object(
+            model_registry,
+            "local_chat",
+            model,
+            priority=1,
+            critical=False,
         )
         router = LocalRouter(
             model,
@@ -333,6 +361,51 @@ class CognitionAssembler:
         )
         router.warmup()
         return router, composer, screen
+
+    def _register_runtime_models(
+        self,
+        model_registry: ModelRegistry,
+        vlm,
+        stt,
+        speech_buffer,
+    ) -> None:
+        if vlm is not None:
+            self._register_model_object(model_registry, "vlm", vlm, priority=2, critical=False)
+        if stt is not None:
+            self._register_model_object(model_registry, "stt", stt, priority=1, critical=False)
+        vad = getattr(speech_buffer, "_vad", None)
+        if vad is not None:
+            self._register_model_object(model_registry, "vad", vad, priority=1, critical=False)
+
+    def _register_model_object(
+        self,
+        model_registry: ModelRegistry,
+        name: str,
+        model,
+        *,
+        priority: int,
+        critical: bool,
+    ) -> None:
+        load = getattr(model, "load", None)
+        unload = getattr(model, "unload", None)
+        health = getattr(model, "health", None)
+        if not callable(load) or not callable(health):
+            return
+        try:
+            model_registry.register(
+                ModelSpec(
+                    name=name,
+                    loader=lambda model=model: (model.load(), model)[1],
+                    unloader=(lambda handle, model=model: model.unload())
+                    if callable(unload)
+                    else None,
+                    health_check=health,
+                    priority=priority,
+                    critical=critical,
+                )
+            )
+        except ValueError:
+            logger.debug("model already registered", model=name)
 
     def _active_persona_prompt(self, active, soul_store: SoulStore) -> str:
         return (

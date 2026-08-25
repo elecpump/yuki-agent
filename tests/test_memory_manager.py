@@ -1,8 +1,10 @@
 import time
 
+import numpy as np
 import pytest
 
 from yuki.memory.embedding import (
+    decode_vector,
     EmbeddingProviderRegistry,
     HashingEmbeddingProvider,
     MemoryEmbeddingIndexer,
@@ -94,6 +96,71 @@ def test_vector_query_can_return_non_lexical_hit(tmp_path):
         assert results[0]["vector_score"] > 0.0
     finally:
         m.close()
+
+
+def test_embedding_upsert_stores_normalized_vector(tmp_path):
+    class FixedProvider:
+        name = "fixed"
+        model = "fixed-v1"
+        dimension = 2
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            return [[3.0, 4.0] for _ in texts]
+
+    store = MemoryStore(tmp_path / "mem.db")
+    indexer = MemoryEmbeddingIndexer(store, FixedProvider())
+    try:
+        mem_id = store.create("preference", "fixed vector")
+        assert indexer.upsert(store.get(mem_id)) is True
+
+        rows = store.vector_rows(provider="fixed", model="fixed-v1", dimension=2)
+        vector = decode_vector(rows[0][1])
+        assert np.allclose(vector, [0.6, 0.8])
+    finally:
+        store.close()
+
+
+def test_vector_search_reuses_cached_matrix_and_reads_fresh_memory(tmp_path):
+    class CountingStore(MemoryStore):
+        def __init__(self, db_path):
+            super().__init__(db_path)
+            self.vector_rows_calls = 0
+
+        def vector_rows(self, **kwargs):
+            self.vector_rows_calls += 1
+            return super().vector_rows(**kwargs)
+
+    store = CountingStore(tmp_path / "mem.db")
+    indexer = MemoryEmbeddingIndexer(store, HashingEmbeddingProvider(dimension=32))
+    try:
+        mem_id = store.create("preference", "alpha memory")
+        indexer.upsert(store.get(mem_id))
+
+        assert indexer.search("alpha", top_k=1)[0][0]["access_count"] == 0
+        store.touch(mem_id, at=123456.0)
+        assert indexer.search("alpha", top_k=1)[0][0]["access_count"] == 1
+        assert store.vector_rows_calls == 1
+    finally:
+        store.close()
+
+
+def test_vector_cache_refreshes_after_delete(tmp_path):
+    store = MemoryStore(tmp_path / "mem.db")
+    indexer = MemoryEmbeddingIndexer(store, HashingEmbeddingProvider(dimension=32))
+    try:
+        first = store.create("preference", "alpha first")
+        second = store.create("preference", "alpha second")
+        indexer.upsert(store.get(first))
+        indexer.upsert(store.get(second))
+
+        assert indexer.search("alpha", top_k=2)
+        assert store.delete(first) is True
+
+        ids = [memory["id"] for memory, _ in indexer.search("alpha", top_k=2)]
+        assert first not in ids
+        assert second in ids
+    finally:
+        store.close()
 
 
 def test_vector_candidates_scale_with_top_k(tmp_path):

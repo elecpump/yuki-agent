@@ -37,6 +37,23 @@ class FakeVlm:
         self._loaded = loaded
 
 
+class FakeManagedModel:
+    def __init__(self, *, degraded=False):
+        self.loaded = True
+        self.degraded = degraded
+        self.unloaded = 0
+
+    def load(self):
+        self.loaded = True
+
+    def unload(self):
+        self.loaded = False
+        self.unloaded += 1
+
+    def health(self):
+        return {"loaded": self.loaded, "degraded": self.degraded}
+
+
 def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
@@ -189,6 +206,44 @@ def test_cognition_agent_registers_memory_functions_and_l2_health(tmp_path):
         assert components["l2"]().detail["installed"] is False
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_health_includes_model_registry(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = FakeManagedModel()
+    pipeline._stt = FakeManagedModel(degraded=True)
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=pipeline,
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        status = agent.health_components()["models"]()
+        assert status.ok is False
+        assert status.detail["status"] == "degraded"
+        assert set(status.detail["models"]) == {"vlm", "stt"}
+    finally:
+        agent.teardown()
+
+
+def test_cognition_agent_teardown_shuts_down_model_registry(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = FakeManagedModel()
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=pipeline,
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+
+    agent.teardown()
+
+    assert pipeline._vlm.unloaded == 1
 
 
 def test_cognition_agent_builds_tuner(tmp_path):

@@ -51,3 +51,15 @@ def test_health_reports_disabled_as_degraded():
     assert health["loaded"] is False
     assert health["enabled"] is False
     assert health["degraded"] is True
+
+
+def test_unload_clears_loaded_model_and_allows_retry():
+    model = LocalChatModel(model=object(), tokenizer=object())
+    model._gate.mark_failure()
+
+    model.unload()
+
+    assert model._loaded is False
+    assert model._model is None
+    assert model._tokenizer is None
+    assert model._gate.can_load() is True
