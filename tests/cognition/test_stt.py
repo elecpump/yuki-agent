@@ -5,6 +5,7 @@ import types
 
 import numpy as np
 
+from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.cognition.stt import SpeechRecognizer
 
 
@@ -53,6 +54,41 @@ def test_recognize_handles_empty_text_result():
     stt = SpeechRecognizer(model=FakeModel())
     pcm = np.zeros(320, dtype=np.float32).tobytes()
     assert stt.recognize_base64(base64.b64encode(pcm).decode("ascii")) == ""
+
+
+def test_recognize_records_model_registry_metrics():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="stt", loader=lambda: object()))
+
+    class FakeModel:
+        def generate(self, **kwargs):
+            return [{"text": "ok"}]
+
+    stt = SpeechRecognizer(model=FakeModel(), model_registry=registry)
+
+    assert stt.recognize(np.zeros(320, dtype=np.float32)) == "ok"
+
+    health = registry.get_model_health("stt")
+    assert health["success_count"] == 1
+    assert health["failure_count"] == 0
+
+
+def test_recognize_records_model_registry_failures():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="stt", loader=lambda: object()))
+
+    class FakeModel:
+        def generate(self, **kwargs):
+            raise RuntimeError("timeout")
+
+    stt = SpeechRecognizer(model=FakeModel(), model_registry=registry)
+
+    assert stt.recognize(np.zeros(320, dtype=np.float32)) == ""
+
+    health = registry.get_model_health("stt")
+    assert health["success_count"] == 0
+    assert health["failure_count"] == 1
+    assert registry.get_overall_status()["recent_incidents"][0]["kind"] == "timeout"
 
 
 def test_load_uses_configured_model_and_device(monkeypatch):

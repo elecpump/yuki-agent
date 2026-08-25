@@ -1,6 +1,7 @@
 from yuki.cognition.assembly import CognitionAssembler
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.config import Config
+from yuki.cognition.model_service import MODEL_SERVICES
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
 from yuki.memory.manager import MemoryManager
 from yuki.memory.service import MEMORY_SERVICES
@@ -61,6 +62,7 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert pipeline.warmups == 1
         assert pipeline.stt_warmups == 1
         assert all(service in bus.services for service in MEMORY_SERVICES)
+        assert all(service in bus.services for service in MODEL_SERVICES)
         assert FUNCTIONS_CALL_SERVICE in bus.services
         assert COGNITION_AWAKE_SERVICE in bus.services
         assert Topics.USER_UTTERANCE in bus.subscriptions

@@ -2,9 +2,11 @@ import json
 import threading
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 
 from yuki.cognition.context_cache import ContextCache
 from yuki.cognition.load_gate import LoadGate
+from yuki.cognition.model_registry import ModelRegistry
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.vlm")
@@ -37,6 +39,8 @@ class VisualUnderstander:
         enabled: bool = True,
         retry_window_s: float = 60.0,
         clock: Callable[[], float] | None = None,
+        model_registry: ModelRegistry | None = None,
+        model_name: str = "vlm",
     ) -> None:
         self._model = model
         self._processor = processor
@@ -50,6 +54,8 @@ class VisualUnderstander:
         self._load_lock = threading.Lock()
         self._model_id = model_id
         self._cache_dir = cache_dir
+        self._model_registry = model_registry
+        self._model_name = model_name
 
     def _load(self) -> None:
         if self._loaded:
@@ -113,6 +119,10 @@ class VisualUnderstander:
         self.unload()
         self.load()
 
+    def set_model_registry(self, registry: ModelRegistry | None, model_name: str = "vlm") -> None:
+        self._model_registry = registry
+        self._model_name = model_name
+
     def _infer(self, image) -> dict:
         return self._infer_with_prompt(image, _PROMPT, include_can_answer=False)
 
@@ -174,7 +184,8 @@ class VisualUnderstander:
                 return {"topic": "", "summary": "", "content_type": "unknown",
                         "key_points": [], "degraded": True, "reason": error}
         try:
-            result = self._infer(image)
+            with self._model_call_tracker():
+                result = self._infer(image)
         except Exception:
             logger.exception("vlm inference failed, degrading")
             result = {"topic": "", "summary": "", "content_type": "unknown",
@@ -197,7 +208,8 @@ class VisualUnderstander:
                         "key_points": [], "can_answer": False,
                         "degraded": True, "reason": error}
         try:
-            result = self._infer_for_question(image, question)
+            with self._model_call_tracker():
+                result = self._infer_for_question(image, question)
         except Exception:
             logger.exception("vlm question inference failed, degrading")
             result = {
@@ -230,3 +242,8 @@ class VisualUnderstander:
                 torch.cuda.empty_cache()
         except Exception:
             logger.debug("torch cuda cache cleanup skipped", exc_info=True)
+
+    def _model_call_tracker(self):
+        if self._model_registry is None:
+            return nullcontext()
+        return self._model_registry.track_call(self._model_name)

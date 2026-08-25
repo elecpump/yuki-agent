@@ -1,10 +1,12 @@
 import threading
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 
 import numpy as np
 
 from yuki.cognition.load_gate import LoadGate
+from yuki.cognition.model_registry import ModelRegistry
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.vad")
@@ -23,6 +25,8 @@ class FsmnVadBackend:
         enabled: bool = True,
         retry_window_s: float = 60.0,
         clock: Callable[[], float] | None = None,
+        model_registry: ModelRegistry | None = None,
+        model_name: str = "vad",
     ) -> None:
         self._model = model_instance
         self._model_id = model
@@ -36,6 +40,8 @@ class FsmnVadBackend:
             clock=clock or time.monotonic,
         )
         self._load_lock = threading.Lock()
+        self._model_registry = model_registry
+        self._model_name = model_name
 
     def warmup(self) -> None:
         if self._loaded or not self._gate.can_load():
@@ -63,6 +69,10 @@ class FsmnVadBackend:
     def reload(self) -> None:
         self.unload()
         self.load()
+
+    def set_model_registry(self, registry: ModelRegistry | None, model_name: str = "vad") -> None:
+        self._model_registry = registry
+        self._model_name = model_name
 
     def _resolve_device(self) -> str:
         if self._resolved_device is not None:
@@ -106,10 +116,11 @@ class FsmnVadBackend:
         if samples is None or len(samples) == 0:
             return []
         try:
-            self._load()
-            result = self._model.generate(input=np.asarray(samples, dtype=np.float32))
-            value = result[0].get("value", []) if isinstance(result, list) and result else []
-            return self._normalize_segments(value, len(samples))
+            with self._model_call_tracker():
+                self._load()
+                result = self._model.generate(input=np.asarray(samples, dtype=np.float32))
+                value = result[0].get("value", []) if isinstance(result, list) and result else []
+                return self._normalize_segments(value, len(samples))
         except Exception:
             logger.warning("vad segmentation failed", exc_info=True)
             return []
@@ -148,3 +159,8 @@ class FsmnVadBackend:
                 torch.cuda.empty_cache()
         except Exception:
             logger.debug("torch cuda cache cleanup skipped", exc_info=True)
+
+    def _model_call_tracker(self):
+        if self._model_registry is None:
+            return nullcontext()
+        return self._model_registry.track_call(self._model_name)

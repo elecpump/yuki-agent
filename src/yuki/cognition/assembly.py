@@ -33,6 +33,7 @@ from yuki.cognition.gpu_monitor import GpuMemoryMonitor
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.model_registry import ModelRegistry, ModelSpec
+from yuki.cognition.model_service import register_model_services
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.stt import SpeechRecognizer
@@ -146,6 +147,7 @@ class CognitionAssembler:
 
         memory = self.memory or self._build_memory()
         register_memory_services(self.bus, memory)
+        register_model_services(self.bus, model_registry)
 
         registry = self.registry or FunctionRegistry()
         if self.registry is None:
@@ -394,6 +396,9 @@ class CognitionAssembler:
         health = getattr(model, "health", None)
         if not callable(load) or not callable(health):
             return
+        attach = getattr(model, "set_model_registry", None)
+        if callable(attach):
+            attach(model_registry, name)
         try:
             model_registry.register(
                 ModelSpec(

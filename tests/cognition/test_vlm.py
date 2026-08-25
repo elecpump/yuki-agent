@@ -2,6 +2,7 @@ import pytest
 import types
 
 from yuki.cognition.context_cache import ContextCache
+from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.cognition.vlm import VisualUnderstander
 
 
@@ -157,6 +158,37 @@ def test_understand_does_not_cache_degraded_result():
     first = vlm.understand(None, cache_key="k1")
     assert first["degraded"] is True
     assert vlm._cache.get("k1") is None
+
+
+def test_vlm_records_model_registry_metrics():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="vlm", loader=lambda: object()))
+    vlm = VisualUnderstander(model=object(), processor=object(), model_registry=registry)
+    vlm._infer = lambda image: {"topic": "t", "summary": "s", "content_type": "web", "key_points": []}
+
+    assert vlm.understand(None)["topic"] == "t"
+
+    health = registry.get_model_health("vlm")
+    assert health["success_count"] == 1
+    assert health["failure_count"] == 0
+
+
+def test_vlm_records_model_registry_failures():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="vlm", loader=lambda: object()))
+    vlm = VisualUnderstander(model=object(), processor=object(), model_registry=registry)
+
+    def boom(image):
+        raise RuntimeError("cuda oom")
+
+    vlm._infer = boom
+
+    assert vlm.understand(None)["degraded"] is True
+
+    health = registry.get_model_health("vlm")
+    assert health["success_count"] == 0
+    assert health["failure_count"] == 1
+    assert registry.get_overall_status()["recent_incidents"][0]["kind"] == "gpu_oom"
 
 
 def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):

@@ -2,10 +2,12 @@ import base64
 import threading
 import time
 from collections.abc import Callable
+from contextlib import nullcontext
 
 import numpy as np
 
 from yuki.cognition.load_gate import LoadGate
+from yuki.cognition.model_registry import ModelRegistry
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.stt")
@@ -27,6 +29,8 @@ class SpeechRecognizer:
         use_itn: bool = True,
         retry_window_s: float = 60.0,
         clock: Callable[[], float] | None = None,
+        model_registry: ModelRegistry | None = None,
+        model_name: str = "stt",
     ) -> None:
         self._model = model
         self._sample_rate = sample_rate
@@ -43,6 +47,8 @@ class SpeechRecognizer:
             clock=clock or time.monotonic,
         )
         self._load_lock = threading.Lock()
+        self._model_registry = model_registry
+        self._model_name = model_name
 
     def warmup(self) -> None:
         if self._loaded or not self._gate.can_load():
@@ -70,6 +76,10 @@ class SpeechRecognizer:
     def reload(self) -> None:
         self.unload()
         self.load()
+
+    def set_model_registry(self, registry: ModelRegistry | None, model_name: str = "stt") -> None:
+        self._model_registry = registry
+        self._model_name = model_name
 
     def _resolve_device(self) -> str:
         if self._resolved_device is not None:
@@ -132,7 +142,8 @@ class SpeechRecognizer:
         if not self._loaded and self._gate.error_message() is not None:
             return ""
         try:
-            return self._infer(samples, sample_rate)
+            with self._model_call_tracker():
+                return self._infer(samples, sample_rate)
         except Exception:
             logger.exception("stt inference failed")
             return ""
@@ -165,3 +176,8 @@ class SpeechRecognizer:
                 torch.cuda.empty_cache()
         except Exception:
             logger.debug("torch cuda cache cleanup skipped", exc_info=True)
+
+    def _model_call_tracker(self):
+        if self._model_registry is None:
+            return nullcontext()
+        return self._model_registry.track_call(self._model_name)
