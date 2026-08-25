@@ -3,6 +3,19 @@ import pytest
 from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 
 
+class FakeGpuMonitor:
+    def __init__(self, *, low_memory=True):
+        self.low_memory = low_memory
+        self.cache_cleared = 0
+
+    def snapshot(self):
+        return {"available": True, "low_memory": self.low_memory, "reason": ""}
+
+    def empty_cache(self):
+        self.cache_cleared += 1
+        return True
+
+
 def test_model_registry_loads_dependencies_before_model_and_unloads_dependents_first():
     calls = []
     registry = ModelRegistry()
@@ -98,3 +111,55 @@ def test_model_registry_records_load_errors():
     assert health["state"] == "error"
     assert health["degraded"] is True
     assert health["last_error"] == "boom"
+
+
+def test_model_registry_relieves_memory_pressure_by_unloading_lowest_priority_model():
+    calls = []
+    optional = {"loaded": True}
+    important = {"loaded": True}
+    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(low_memory=True))
+    registry.register(
+        ModelSpec(
+            name="important",
+            loader=lambda: important,
+            unloader=lambda handle: calls.append("important"),
+            health_check=lambda: {"loaded": important["loaded"], "degraded": False},
+            priority=1,
+        )
+    )
+    registry.register(
+        ModelSpec(
+            name="optional",
+            loader=lambda: optional,
+            unloader=lambda handle: calls.append("optional"),
+            health_check=lambda: {"loaded": optional["loaded"], "degraded": False},
+            priority=5,
+        )
+    )
+
+    result = registry.relieve_memory_pressure()
+
+    assert result["action"] == "unloaded"
+    assert result["model"] == "optional"
+    assert result["cache_cleared"] is True
+    assert calls == ["optional"]
+
+
+def test_model_registry_memory_pressure_respects_allow_unload():
+    monitor = FakeGpuMonitor(low_memory=True)
+    registry = ModelRegistry(gpu_monitor=monitor)
+    registry.register(
+        ModelSpec(
+            name="pinned",
+            loader=lambda: object(),
+            health_check=lambda: {"loaded": True, "degraded": False},
+            allow_unload=False,
+        )
+    )
+
+    result = registry.relieve_memory_pressure()
+
+    assert result["action"] == "none"
+    assert result["reason"] == "no_unload_candidate"
+    assert result["cache_cleared"] is True
+    assert monitor.cache_cleared == 1

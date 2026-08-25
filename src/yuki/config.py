@@ -2,7 +2,15 @@ import os
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+
+def _validate_model_device(value: str) -> str:
+    if value in {"auto", "cpu", "cuda"}:
+        return value
+    if value.startswith("cuda:") and value.removeprefix("cuda:").isdigit():
+        return value
+    raise ValueError(f"unsupported device: {value!r}")
 
 
 class BusConfig(BaseModel):
@@ -81,6 +89,11 @@ class LocalBrainConfig(BaseModel):
     local_files_only: bool = False
     local_tool_allowlist: list[str] = Field(default_factory=list)
 
+    @field_validator("device")
+    @classmethod
+    def validate_device(cls, value: str) -> str:
+        return _validate_model_device(value)
+
 
 class VlmConfig(BaseModel):
     enabled: bool = True
@@ -107,6 +120,11 @@ class SttConfig(BaseModel):
     warmup: bool = True
     retry_window_s: float = Field(60.0, ge=0.0)
     vad: SttVadConfig = Field(default_factory=SttVadConfig)
+
+    @field_validator("device")
+    @classmethod
+    def validate_device(cls, value: str) -> str:
+        return _validate_model_device(value)
 
 
 class CloudConfig(BaseModel):

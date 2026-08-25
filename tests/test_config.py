@@ -210,6 +210,11 @@ def test_local_brain_env_override(monkeypatch):
     assert config.local_brain.local_files_only is True
 
 
+def test_local_brain_rejects_invalid_device():
+    with pytest.raises(ValidationError):
+        Config(local_brain={"device": "gpu0"})
+
+
 def test_cloud_defaults():
     config = Config()
     assert config.cloud.enabled is False
@@ -286,6 +291,17 @@ def test_stt_env_override(monkeypatch):
     assert config.stt.vad.vad_interval_ms == 200
     assert config.stt.vad.end_silence_ms == 600
     assert config.stt.vad.max_utterance_s == 3.0
+
+
+def test_stt_rejects_invalid_device():
+    with pytest.raises(ValidationError):
+        Config(stt={"device": "gpu0"})
+
+
+def test_model_device_accepts_cuda_index():
+    config = Config(local_brain={"device": "cuda:1"}, stt={"device": "cuda:2"})
+    assert config.local_brain.device == "cuda:1"
+    assert config.stt.device == "cuda:2"
 
 
 def test_soul_defaults():

@@ -6,6 +6,8 @@ from enum import Enum
 from threading import RLock
 from typing import Any
 
+from yuki.cognition.gpu_monitor import GpuMemoryMonitor
+
 
 class ModelState(str, Enum):
     NOT_LOADED = "not_loaded"
@@ -39,8 +41,9 @@ class _ModelEntry:
 class ModelRegistry:
     """Central lifecycle and health registry for local model-like components."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, gpu_monitor: GpuMemoryMonitor | None = None) -> None:
         self._entries: dict[str, _ModelEntry] = {}
+        self._gpu_monitor = gpu_monitor
         self._lock = RLock()
 
     def register(self, spec: ModelSpec) -> None:
@@ -115,7 +118,39 @@ class ModelRegistry:
             "status": status,
             "healthy": status != "unhealthy",
             "models": health,
+            "gpu": self.gpu_health(),
         }
+
+    def gpu_health(self) -> dict:
+        if self._gpu_monitor is None:
+            return {"available": False, "reason": "not_configured", "low_memory": False}
+        return self._gpu_monitor.snapshot()
+
+    def relieve_memory_pressure(self) -> dict:
+        with self._lock:
+            before = self.gpu_health()
+            if not before.get("available", False):
+                return {"action": "none", "reason": before.get("reason", "gpu_unavailable"), "gpu": before}
+            if not before.get("low_memory", False):
+                return {"action": "none", "reason": "memory_ok", "gpu": before}
+            candidate = self._memory_pressure_candidate()
+            if candidate is None:
+                cleaned = self._gpu_monitor.empty_cache() if self._gpu_monitor is not None else False
+                return {
+                    "action": "none",
+                    "reason": "no_unload_candidate",
+                    "cache_cleared": cleaned,
+                    "gpu": before,
+                }
+            self._unload_locked(candidate, visiting=set())
+            cleaned = self._gpu_monitor.empty_cache() if self._gpu_monitor is not None else False
+            return {
+                "action": "unloaded",
+                "model": candidate,
+                "cache_cleared": cleaned,
+                "gpu_before": before,
+                "gpu_after": self.gpu_health(),
+            }
 
     def shutdown(self) -> None:
         with self._lock:
@@ -203,3 +238,22 @@ class ModelRegistry:
 
     def _unload_order(self) -> list[str]:
         return sorted(self._entries, key=lambda name: self._entries[name].spec.priority, reverse=True)
+
+    def _memory_pressure_candidate(self) -> str | None:
+        candidates = []
+        for name, entry in self._entries.items():
+            if not entry.spec.allow_unload:
+                continue
+            health = self._safe_health(entry)
+            if entry.state == ModelState.LOADED or health.get("loaded", False):
+                candidates.append(name)
+        if not candidates:
+            return None
+        return sorted(
+            candidates,
+            key=lambda name: (
+                self._entries[name].spec.priority,
+                self._entries[name].spec.vram_estimate_gb,
+            ),
+            reverse=True,
+        )[0]

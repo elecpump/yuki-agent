@@ -29,6 +29,7 @@ from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
+from yuki.cognition.gpu_monitor import GpuMemoryMonitor
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.model_registry import ModelRegistry, ModelSpec
@@ -114,7 +115,7 @@ class CognitionAssembler:
         self.model_registry = model_registry
 
     def assemble(self) -> CognitionRuntime:
-        model_registry = self.model_registry or ModelRegistry()
+        model_registry = self.model_registry or ModelRegistry(gpu_monitor=GpuMemoryMonitor())
         if self.pipeline is None:
             vlm = self.vlm or self._build_vlm()
             stt = self.stt or self._build_stt()
