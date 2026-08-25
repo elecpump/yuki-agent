@@ -345,6 +345,7 @@ class CognitionAssembler:
             prompt_max_tokens=local_cfg.router_prompt_max_tokens,
             timeout_ms=local_cfg.router_timeout_ms,
             local_tool_allowlist=local_cfg.local_tool_allowlist,
+            model_registry=model_registry,
         )
         composer = LocalComposer(
             model,
@@ -352,6 +353,7 @@ class CognitionAssembler:
             view_builder=LocalViewBuilder(max_tokens=local_cfg.local_prompt_max_tokens),
             reply_max_tokens=local_cfg.reply_max_tokens,
             timeout_ms=local_cfg.local_reply_timeout_ms,
+            model_registry=model_registry,
         )
         frame_client = pipeline.frame_client
         vlm = pipeline.vlm

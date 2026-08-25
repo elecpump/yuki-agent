@@ -1,5 +1,6 @@
 from yuki.cognition.brain.local.compose import LocalComposer, LocalViewBuilder
 from yuki.cognition.context.snapshot import ContextSnapshot
+from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
 
@@ -22,6 +23,18 @@ def test_local_composer_generates_short_reply(tmp_path):
     assert reply == "本地回答"
     assert "喜欢简短回答" in model.messages[0][0][1]["content"]
     memory.close()
+
+
+def test_local_composer_records_model_registry_metrics(tmp_path):
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
+    composer = LocalComposer(FakeModel(), model_registry=registry)
+
+    assert composer.generate("hi", ContextSnapshot(), None)
+
+    health = registry.get_model_health("local_chat")
+    assert health["success_count"] == 1
+    assert health["failure_count"] == 0
 
 
 def test_local_view_builder_drops_crisis_history_turn():

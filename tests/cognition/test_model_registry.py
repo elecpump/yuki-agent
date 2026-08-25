@@ -111,6 +111,47 @@ def test_model_registry_records_load_errors():
     assert health["state"] == "error"
     assert health["degraded"] is True
     assert health["last_error"] == "boom"
+    assert health["failure_count"] == 1
+
+    status = registry.get_overall_status()
+    assert status["recent_incidents"][0]["model"] == "broken"
+    assert status["recent_incidents"][0]["kind"] == "model_error"
+
+
+def test_model_registry_records_model_call_metrics():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
+
+    registry.record_success("local_chat", latency_ms=10.0)
+    registry.record_success("local_chat", latency_ms=20.0)
+    registry.record_failure("local_chat", "timeout", latency_ms=30.0)
+
+    health = registry.get_model_health("local_chat")
+    assert health["success_count"] == 2
+    assert health["failure_count"] == 1
+    assert health["last_error"] == "timeout"
+    assert health["latency_p50_ms"] == 20.0
+    assert health["latency_p95_ms"] == 30.0
+
+
+def test_model_registry_track_call_records_success_and_failure():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="vlm", loader=lambda: object()))
+
+    with registry.track_call("vlm"):
+        pass
+
+    with pytest.raises(RuntimeError, match="oom"):
+        with registry.track_call("vlm"):
+            raise RuntimeError("oom")
+
+    health = registry.get_model_health("vlm")
+    assert health["success_count"] == 1
+    assert health["failure_count"] == 1
+    assert health["last_error"] == "oom"
+    assert health["latency_p50_ms"] >= 0.0
+    assert health["latency_p95_ms"] >= 0.0
+    assert registry.get_overall_status()["recent_incidents"][0]["message"] == "oom"
 
 
 def test_model_registry_relieves_memory_pressure_by_unloading_lowest_priority_model():

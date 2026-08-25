@@ -1,4 +1,7 @@
+from contextlib import nullcontext
+
 from yuki.cognition.brain.local.router import CRISIS_KEYWORDS, is_crisis
+from yuki.cognition.model_registry import ModelRegistry
 from yuki.cognition.brain.persona import DEFAULT_BASE_PROMPT
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.view import estimate_tokens
@@ -98,12 +101,16 @@ class LocalComposer:
         view_builder: LocalViewBuilder | None = None,
         reply_max_tokens: int = 256,
         timeout_ms: int = 700,
+        model_registry: ModelRegistry | None = None,
+        model_name: str = "local_chat",
     ) -> None:
         self._model = model
         self._system = system_prompt or DEFAULT_BASE_PROMPT.format(persona=persona_name)
         self._view_builder = view_builder or LocalViewBuilder()
         self._reply_max_tokens = reply_max_tokens
         self._timeout_ms = timeout_ms
+        self._model_registry = model_registry
+        self._model_name = model_name
 
     def set_system_prompt(self, text: str) -> None:
         self._system = text
@@ -112,12 +119,18 @@ class LocalComposer:
         if is_crisis(utterance):
             raise RuntimeError("crisis input must not be answered by local model")
         view = self._view_builder.build(snapshot, memory, utterance)
-        reply = self._model.generate(
-            [
-                {"role": "system", "content": self._system},
-                {"role": "user", "content": view},
-            ],
-            max_new_tokens=self._reply_max_tokens,
-            timeout_ms=self._timeout_ms,
-        )
+        with self._model_call_tracker():
+            reply = self._model.generate(
+                [
+                    {"role": "system", "content": self._system},
+                    {"role": "user", "content": view},
+                ],
+                max_new_tokens=self._reply_max_tokens,
+                timeout_ms=self._timeout_ms,
+            )
         return (reply or "").strip()
+
+    def _model_call_tracker(self):
+        if self._model_registry is None:
+            return nullcontext()
+        return self._model_registry.track_call(self._model_name)

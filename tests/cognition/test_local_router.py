@@ -2,6 +2,7 @@ from pydantic import BaseModel
 
 from yuki.cognition.brain.classifier import Emotion, Intent
 from yuki.cognition.brain.local.router import LocalRoute, LocalRouter
+from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.functions.registry import FunctionRegistry
 
 
@@ -71,6 +72,35 @@ def test_invalid_json_retries_then_cloud():
     decision = router.route("你好")
     assert decision.route == LocalRoute.CLOUD
     assert len(model.messages) == 2
+
+
+def test_router_records_model_registry_metrics():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
+    model = FakeModel(
+        '{"route":"chat_local","confidence":0.91,"intent":"chit_chat","emotion":"neutral",'
+        '"tool_call":null}'
+    )
+    router = LocalRouter(model, threshold=0.7, model_registry=registry)
+
+    assert router.route("hi").route == LocalRoute.CHAT_LOCAL
+
+    health = registry.get_model_health("local_chat")
+    assert health["success_count"] == 1
+    assert health["failure_count"] == 0
+
+
+def test_router_records_invalid_model_output_as_failure():
+    registry = ModelRegistry()
+    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
+    model = FakeModel("not json")
+    router = LocalRouter(model, retry=0, model_registry=registry)
+
+    assert router.route("hi").route == LocalRoute.CLOUD
+
+    health = registry.get_model_health("local_chat")
+    assert health["success_count"] == 0
+    assert health["failure_count"] == 1
 
 
 def test_tool_local_requires_allowlisted_tool_call():

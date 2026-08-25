@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import time
+from collections import deque
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from threading import RLock
-from typing import Any
+from typing import Any, Iterator
 
+from yuki.cognition.error_context import ModelErrorContext
 from yuki.cognition.gpu_monitor import GpuMemoryMonitor
 
 
@@ -38,12 +42,27 @@ class _ModelEntry:
     last_error: str = ""
 
 
+@dataclass
+class _ModelStats:
+    success_count: int = 0
+    failure_count: int = 0
+    last_error: str = ""
+    latency_ms: deque[float] = field(default_factory=lambda: deque(maxlen=256))
+
+
 class ModelRegistry:
     """Central lifecycle and health registry for local model-like components."""
 
-    def __init__(self, *, gpu_monitor: GpuMemoryMonitor | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        gpu_monitor: GpuMemoryMonitor | None = None,
+        error_context: ModelErrorContext | None = None,
+    ) -> None:
         self._entries: dict[str, _ModelEntry] = {}
+        self._stats: dict[str, _ModelStats] = {}
         self._gpu_monitor = gpu_monitor
+        self._error_context = error_context or ModelErrorContext()
         self._lock = RLock()
 
     def register(self, spec: ModelSpec) -> None:
@@ -56,6 +75,7 @@ class ModelRegistry:
             if missing:
                 raise ValueError(f"unknown model dependencies for {spec.name}: {missing}")
             self._entries[spec.name] = _ModelEntry(spec=spec)
+            self._stats[spec.name] = _ModelStats()
 
     def load(self, model_id: str) -> None:
         with self._lock:
@@ -69,6 +89,42 @@ class ModelRegistry:
         with self._lock:
             self._unload_locked(model_id, visiting=set())
             self._load_locked(model_id, visiting=set())
+
+    @contextmanager
+    def track_call(self, model_id: str) -> Iterator[None]:
+        start = time.perf_counter()
+        try:
+            yield
+        except Exception as exc:
+            self.record_failure(model_id, exc, latency_ms=(time.perf_counter() - start) * 1000)
+            raise
+        else:
+            self.record_success(model_id, latency_ms=(time.perf_counter() - start) * 1000)
+
+    def record_success(self, model_id: str, *, latency_ms: float | None = None) -> None:
+        with self._lock:
+            stats = self._model_stats(model_id)
+            stats.success_count += 1
+            if latency_ms is not None:
+                stats.latency_ms.append(max(0.0, float(latency_ms)))
+
+    def record_failure(
+        self,
+        model_id: str,
+        error: Exception | str,
+        *,
+        latency_ms: float | None = None,
+    ) -> None:
+        with self._lock:
+            entry = self._entry(model_id)
+            stats = self._model_stats(model_id)
+            message = str(error)
+            stats.failure_count += 1
+            stats.last_error = message
+            entry.last_error = message
+            self._error_context.record(model_id, error)
+            if latency_ms is not None:
+                stats.latency_ms.append(max(0.0, float(latency_ms)))
 
     def get_loaded_models(self) -> list[str]:
         with self._lock:
@@ -93,6 +149,7 @@ class ModelRegistry:
                 "vram_estimate_gb": entry.spec.vram_estimate_gb,
                 "allow_unload": entry.spec.allow_unload,
                 "last_error": entry.last_error,
+                **self._stats_health(model_id),
                 **detail,
             }
 
@@ -119,6 +176,7 @@ class ModelRegistry:
             "healthy": status != "unhealthy",
             "models": health,
             "gpu": self.gpu_health(),
+            "recent_incidents": self._error_context.recent_incidents(limit=10),
         }
 
     def gpu_health(self) -> dict:
@@ -176,6 +234,7 @@ class ModelRegistry:
         except Exception as exc:
             entry.state = ModelState.ERROR
             entry.last_error = str(exc)
+            self.record_failure(model_id, exc)
             raise
 
     def _unload_locked(self, model_id: str, *, visiting: set[str]) -> None:
@@ -201,6 +260,7 @@ class ModelRegistry:
         except Exception as exc:
             entry.state = ModelState.ERROR
             entry.last_error = str(exc)
+            self.record_failure(model_id, exc)
             raise
 
     def _entry(self, model_id: str) -> _ModelEntry:
@@ -208,6 +268,22 @@ class ModelRegistry:
             return self._entries[model_id]
         except KeyError as exc:
             raise KeyError(f"unknown model: {model_id}") from exc
+
+    def _model_stats(self, model_id: str) -> _ModelStats:
+        self._entry(model_id)
+        return self._stats.setdefault(model_id, _ModelStats())
+
+    def _stats_health(self, model_id: str) -> dict:
+        stats = self._model_stats(model_id)
+        latencies = list(stats.latency_ms)
+        last_error = stats.last_error or self._entries[model_id].last_error
+        return {
+            "latency_p50_ms": _percentile(latencies, 50.0),
+            "latency_p95_ms": _percentile(latencies, 95.0),
+            "success_count": stats.success_count,
+            "failure_count": stats.failure_count,
+            "last_error": last_error,
+        }
 
     def _safe_health(self, entry: _ModelEntry) -> dict:
         if entry.spec.health_check is None:
@@ -257,3 +333,11 @@ class ModelRegistry:
             ),
             reverse=True,
         )[0]
+
+
+def _percentile(values: list[float], percentile: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    index = round((len(ordered) - 1) * max(0.0, min(100.0, percentile)) / 100.0)
+    return round(float(ordered[int(index)]), 3)

@@ -1,8 +1,10 @@
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from yuki.cognition.model_registry import ModelRegistry
 from yuki.cognition.brain.classifier import Emotion, Intent
 from yuki.functions.registry import FunctionRegistry
 from yuki.logger import get_logger
@@ -45,9 +47,13 @@ class LocalRouter:
         prompt_max_tokens: int = 1200,
         timeout_ms: int = 150,
         local_tool_allowlist: list[str] | None = None,
+        model_registry: ModelRegistry | None = None,
+        model_name: str = "local_chat",
     ) -> None:
         self._model = model
         self._registry = registry
+        self._model_registry = model_registry
+        self._model_name = model_name
         self._threshold = threshold
         self._retry = retry
         self._prompt_max_tokens = prompt_max_tokens
@@ -72,8 +78,13 @@ class LocalRouter:
         raw = ""
         for attempt in range(max(0, self._retry) + 1):
             try:
-                raw = self._model.generate(messages, max_new_tokens=180, timeout_ms=self._timeout_ms)
-                return self._parse_and_validate(raw)
+                with self._model_call_tracker():
+                    raw = self._model.generate(
+                        messages,
+                        max_new_tokens=180,
+                        timeout_ms=self._timeout_ms,
+                    )
+                    return self._parse_and_validate(raw)
             except Exception:
                 logger.warning("local router failed", attempt=attempt, raw=raw, exc_info=True)
                 messages = [
@@ -84,6 +95,11 @@ class LocalRouter:
                     },
                 ]
         return RouterDecision.cloud("router_failed")
+
+    def _model_call_tracker(self):
+        if self._model_registry is None:
+            return nullcontext()
+        return self._model_registry.track_call(self._model_name)
 
     def tool_summaries(self) -> list[dict]:
         if self._registry is None or not self._allowlist:
