@@ -4,12 +4,25 @@ from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 
 
 class FakeGpuMonitor:
-    def __init__(self, *, low_memory=True, free_gb=8.0):
+    def __init__(
+        self,
+        *,
+        low_memory=True,
+        free_gb=8.0,
+        low_memory_sequence=None,
+        free_gb_sequence=None,
+    ):
         self.low_memory = low_memory
         self.free_gb = free_gb
+        self.low_memory_sequence = list(low_memory_sequence or [])
+        self.free_gb_sequence = list(free_gb_sequence or [])
         self.cache_cleared = 0
 
     def snapshot(self):
+        if self.low_memory_sequence:
+            self.low_memory = self.low_memory_sequence.pop(0)
+        if self.free_gb_sequence:
+            self.free_gb = self.free_gb_sequence.pop(0)
         return {
             "available": True,
             "low_memory": self.low_memory,
@@ -157,6 +170,34 @@ def test_model_registry_shutdown_unloads_in_lowest_priority_first_order():
     assert calls == ["optional", "important"]
 
 
+def test_model_registry_shutdown_continues_after_unload_error():
+    calls = []
+    registry = ModelRegistry()
+    registry.register(
+        ModelSpec(
+            name="broken",
+            loader=lambda: "broken",
+            unloader=lambda handle: (_ for _ in ()).throw(RuntimeError("boom")),
+            priority=5,
+        )
+    )
+    registry.register(
+        ModelSpec(
+            name="healthy",
+            loader=lambda: "healthy",
+            unloader=lambda handle: calls.append(handle),
+            priority=1,
+        )
+    )
+    registry.load("broken")
+    registry.load("healthy")
+
+    with pytest.raises(RuntimeError, match="model shutdown failed"):
+        registry.shutdown()
+
+    assert calls == ["healthy"]
+
+
 def test_model_registry_records_load_errors():
     registry = ModelRegistry()
     registry.register(ModelSpec(name="broken", loader=lambda: (_ for _ in ()).throw(RuntimeError("boom"))))
@@ -215,7 +256,7 @@ def test_model_registry_relieves_memory_pressure_by_unloading_lowest_priority_mo
     calls = []
     optional = {"loaded": True}
     important = {"loaded": True}
-    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(low_memory=True))
+    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(low_memory_sequence=[True, False]))
     registry.register(
         ModelSpec(
             name="important",
@@ -239,8 +280,86 @@ def test_model_registry_relieves_memory_pressure_by_unloading_lowest_priority_mo
 
     assert result["action"] == "unloaded"
     assert result["model"] == "optional"
+    assert result["models"] == ["optional"]
     assert result["cache_cleared"] is True
     assert calls == ["optional"]
+
+
+def test_model_registry_relieves_memory_pressure_until_gpu_recovers():
+    calls = []
+    optional = {"loaded": True}
+    important = {"loaded": True}
+    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(low_memory=True))
+    registry.register(
+        ModelSpec(
+            name="important",
+            loader=lambda: important,
+            unloader=lambda handle: (important.update(loaded=False), calls.append("important")),
+            health_check=lambda: {"loaded": important["loaded"], "degraded": False},
+            priority=1,
+        )
+    )
+    registry.register(
+        ModelSpec(
+            name="optional",
+            loader=lambda: optional,
+            unloader=lambda handle: (optional.update(loaded=False), calls.append("optional")),
+            health_check=lambda: {"loaded": optional["loaded"], "degraded": False},
+            priority=5,
+        )
+    )
+
+    result = registry.relieve_memory_pressure()
+
+    assert result["action"] == "unloaded"
+    assert result["reason"] == "no_unload_candidate"
+    assert result["models"] == ["optional", "important"]
+    assert calls == ["optional", "important"]
+
+
+def test_model_registry_load_relieves_vram_preflight_before_loading_target():
+    calls = []
+    optional = {"loaded": True}
+    monitor = FakeGpuMonitor(low_memory=False, free_gb_sequence=[1.0, 1.0, 1.0, 1.0, 4.0])
+    registry = ModelRegistry(gpu_monitor=monitor)
+    registry.register(
+        ModelSpec(
+            name="optional",
+            loader=lambda: optional,
+            unloader=lambda handle: (optional.update(loaded=False), calls.append("optional")),
+            health_check=lambda: {"loaded": optional["loaded"], "degraded": False},
+            priority=5,
+            vram_estimate_gb=3.0,
+        )
+    )
+    registry.register(
+        ModelSpec(
+            name="target",
+            loader=lambda: calls.append("target") or "target",
+            priority=1,
+            vram_estimate_gb=2.0,
+        )
+    )
+
+    registry.load("target")
+
+    assert calls == ["optional", "target"]
+    assert optional["loaded"] is False
+
+
+def test_model_registry_load_fails_when_preflight_still_fails_after_relief():
+    registry = ModelRegistry(gpu_monitor=FakeGpuMonitor(low_memory=False, free_gb=1.0))
+    registry.register(
+        ModelSpec(
+            name="target",
+            loader=lambda: object(),
+            priority=1,
+            vram_estimate_gb=2.0,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="model preflight failed: target"):
+        registry.load("target")
 
 
 def test_model_registry_memory_pressure_respects_allow_unload():

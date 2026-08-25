@@ -16,6 +16,22 @@ class FakePipeline:
         self.warmups = 0
         self.stt_warmups = 0
 
+    @property
+    def frame_client(self):
+        return getattr(self, "_frame_client", None)
+
+    @property
+    def vlm(self):
+        return getattr(self, "_vlm", None)
+
+    @property
+    def stt(self):
+        return getattr(self, "_stt", None)
+
+    @property
+    def speech_buffer(self):
+        return getattr(self, "_speech_buffer", None)
+
     def warmup_vlm(self):
         self.warmups += 1
 
@@ -37,6 +53,11 @@ class FakeModelAdapter:
 
     def health(self):
         return {"loaded": self.loaded, "degraded": False}
+
+
+class FakeFrameClient:
+    def get_latest(self):
+        return {}
 
 
 def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
@@ -83,6 +104,7 @@ def test_cognition_assembler_registers_pipeline_models(tmp_path):
     pipeline = FakePipeline()
     pipeline._vlm = FakeModelAdapter()
     pipeline._stt = FakeModelAdapter()
+    pipeline._frame_client = FakeFrameClient()
     memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
 
     runtime = CognitionAssembler(
@@ -94,8 +116,45 @@ def test_cognition_assembler_registers_pipeline_models(tmp_path):
 
     try:
         health = runtime.model_registry.get_all_models_health()
-        assert set(health) == {"vlm", "stt"}
+        assert set(health) == {"frame_client", "vlm", "stt"}
         assert health["vlm"]["loaded"] is False
+        assert health["vlm"]["vram_estimate_gb"] == 5.0
+        assert health["stt"]["vram_estimate_gb"] == 1.5
+        assert health["frame_client"]["allow_unload"] is False
+    finally:
+        runtime.context.close()
+        memory.close()
+
+
+def test_cognition_assembler_registers_vision_screen_dependency_graph(tmp_path, monkeypatch):
+    class FakeLocalChat(FakeModelAdapter):
+        def warmup(self):
+            pass
+
+    monkeypatch.setattr("yuki.cognition.assembly.LocalChatModel", lambda **kwargs: FakeLocalChat())
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = FakeModelAdapter()
+    pipeline._stt = FakeModelAdapter()
+    pipeline._frame_client = FakeFrameClient()
+    memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
+
+    runtime = CognitionAssembler(
+        Config(
+            local_brain={"enabled": True},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+        pipeline=pipeline,
+        memory=memory,
+    ).assemble()
+
+    try:
+        health = runtime.model_registry.get_all_models_health()
+        assert {"frame_client", "vlm", "local_chat", "vision_screen"} <= set(health)
+        assert health["vision_screen"]["dependencies"] == ["frame_client", "vlm"]
+        assert health["vision_screen"]["allow_unload"] is False
+        assert health["local_chat"]["vram_estimate_gb"] == 2.0
     finally:
         runtime.context.close()
         memory.close()
@@ -120,6 +179,7 @@ def test_cognition_assembler_wires_vector_memory_from_config(tmp_path):
 
     try:
         assert runtime.memory._vector_enabled is True
+        assert runtime.memory._embedding_indexer._cache_manager is runtime.cache_manager
         memory_id = runtime.memory.write("preference", "assembler vector memory")
         assert runtime.memory._store.embeddings_count() == 1
         assert runtime.memory.query("asembler", top_k=1)[0]["id"] == memory_id

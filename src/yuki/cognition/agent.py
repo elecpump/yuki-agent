@@ -65,7 +65,10 @@ class CognitionAgent(ProcessAgent):
         if self._pipeline is not None and hasattr(self._pipeline, "close"):
             self._pipeline.close()
         if self._model_registry is not None:
-            self._model_registry.shutdown()
+            try:
+                self._model_registry.shutdown()
+            except Exception:
+                logger.warning("model registry shutdown failed", exc_info=True)
             self._model_registry = None
         if self._context is not None:
             self._context.close()
@@ -152,4 +155,4 @@ class CognitionAgent(ProcessAgent):
         if self._model_registry is None:
             return HealthStatus(True, {"status": "not_configured", "models": {}})
         status = self._model_registry.get_overall_status()
-        return HealthStatus(status["status"] == "healthy", status)
+        return HealthStatus(bool(status["healthy"]), status)

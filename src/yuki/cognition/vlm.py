@@ -8,6 +8,7 @@ from yuki.cognition.context_cache import ContextCache
 from yuki.cognition.load_gate import LoadGate
 from yuki.cognition.model_registry import ModelRegistry
 from yuki.logger import get_logger
+from yuki.model_cache import ModelCacheManager
 
 logger = get_logger("yuki.cognition.vlm")
 
@@ -41,10 +42,12 @@ class VisualUnderstander:
         clock: Callable[[], float] | None = None,
         model_registry: ModelRegistry | None = None,
         model_name: str = "vlm",
+        cache_manager: ModelCacheManager | None = None,
+        cache_ttl_s: float | None = None,
     ) -> None:
         self._model = model
         self._processor = processor
-        self._cache = cache or ContextCache()
+        self._cache = cache or ContextCache(cache_manager=cache_manager, ttl_s=cache_ttl_s)
         self._loaded = model is not None and processor is not None
         self._gate = LoadGate(
             enabled=enabled,
@@ -52,6 +55,7 @@ class VisualUnderstander:
             clock=clock or time.monotonic,
         )
         self._load_lock = threading.Lock()
+        self._infer_lock = threading.Lock()
         self._model_id = model_id
         self._cache_dir = cache_dir
         self._model_registry = model_registry
@@ -107,12 +111,13 @@ class VisualUnderstander:
         self._load()
 
     def unload(self) -> None:
-        with self._load_lock:
-            self._model = None
-            self._processor = None
-            self._loaded = False
-            self._gate.reset()
-            self.clear_cache()
+        with self._infer_lock:
+            with self._load_lock:
+                self._model = None
+                self._processor = None
+                self._loaded = False
+                self._gate.reset()
+                self.clear_cache()
         self._empty_torch_cache()
 
     def reload(self) -> None:
@@ -185,7 +190,8 @@ class VisualUnderstander:
                         "key_points": [], "degraded": True, "reason": error}
         try:
             with self._model_call_tracker():
-                result = self._infer(image)
+                with self._infer_lock:
+                    result = self._infer(image)
         except Exception:
             logger.exception("vlm inference failed, degrading")
             result = {"topic": "", "summary": "", "content_type": "unknown",
@@ -209,7 +215,8 @@ class VisualUnderstander:
                         "degraded": True, "reason": error}
         try:
             with self._model_call_tracker():
-                result = self._infer_for_question(image, question)
+                with self._infer_lock:
+                    result = self._infer_for_question(image, question)
         except Exception:
             logger.exception("vlm question inference failed, degrading")
             result = {
@@ -229,7 +236,7 @@ class VisualUnderstander:
         return result
 
     def clear_cache(self) -> None:
-        self._cache = ContextCache()
+        self._cache.clear()
 
     def health(self) -> dict:
         return {"loaded": self._loaded, **self._gate.health()}

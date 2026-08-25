@@ -40,6 +40,7 @@ class FsmnVadBackend:
             clock=clock or time.monotonic,
         )
         self._load_lock = threading.Lock()
+        self._infer_lock = threading.Lock()
         self._model_registry = model_registry
         self._model_name = model_name
 
@@ -59,11 +60,12 @@ class FsmnVadBackend:
         self._load()
 
     def unload(self) -> None:
-        with self._load_lock:
-            self._model = None
-            self._loaded = False
-            self._resolved_device = None
-            self._gate.reset()
+        with self._infer_lock:
+            with self._load_lock:
+                self._model = None
+                self._loaded = False
+                self._resolved_device = None
+                self._gate.reset()
         self._empty_torch_cache()
 
     def reload(self) -> None:
@@ -117,10 +119,11 @@ class FsmnVadBackend:
             return []
         try:
             with self._model_call_tracker():
-                self._load()
-                result = self._model.generate(input=np.asarray(samples, dtype=np.float32))
-                value = result[0].get("value", []) if isinstance(result, list) and result else []
-                return self._normalize_segments(value, len(samples))
+                with self._infer_lock:
+                    self._load()
+                    result = self._model.generate(input=np.asarray(samples, dtype=np.float32))
+                    value = result[0].get("value", []) if isinstance(result, list) and result else []
+                    return self._normalize_segments(value, len(samples))
         except Exception:
             logger.warning("vad segmentation failed", exc_info=True)
             return []

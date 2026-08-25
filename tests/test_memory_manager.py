@@ -12,6 +12,7 @@ from yuki.memory.embedding import (
 )
 from yuki.memory.manager import MemoryManager, Reflector, ShortTermMemory
 from yuki.memory.store import MemoryStore
+from yuki.model_cache import ModelCacheManager
 
 
 @pytest.fixture()
@@ -140,6 +141,35 @@ def test_vector_search_reuses_cached_matrix_and_reads_fresh_memory(tmp_path):
         store.touch(mem_id, at=123456.0)
         assert indexer.search("alpha", top_k=1)[0][0]["access_count"] == 1
         assert store.vector_rows_calls == 1
+    finally:
+        store.close()
+
+
+def test_vector_search_can_use_shared_model_cache_manager(tmp_path):
+    class CountingStore(MemoryStore):
+        def __init__(self, db_path):
+            super().__init__(db_path)
+            self.vector_rows_calls = 0
+
+        def vector_rows(self, **kwargs):
+            self.vector_rows_calls += 1
+            return super().vector_rows(**kwargs)
+
+    store = CountingStore(tmp_path / "mem.db")
+    cache_manager = ModelCacheManager(max_entries=10)
+    indexer = MemoryEmbeddingIndexer(
+        store,
+        HashingEmbeddingProvider(dimension=32),
+        cache_manager=cache_manager,
+    )
+    try:
+        mem_id = store.create("preference", "alpha memory")
+        indexer.upsert(store.get(mem_id))
+
+        assert indexer.search("alpha", top_k=1)
+        assert indexer.search("alpha", top_k=1)
+        assert store.vector_rows_calls == 1
+        assert cache_manager.stats()["namespaces"]["memory_vector_matrix"] == 1
     finally:
         store.close()
 

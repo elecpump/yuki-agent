@@ -80,6 +80,13 @@ class ModelRegistry:
 
     def load(self, model_id: str) -> None:
         with self._lock:
+            self._relieve_before_load(model_id)
+            preflight = self.preflight(model_id)
+            if not preflight["ok"]:
+                self._relieve_for_preflight(model_id, preflight)
+                preflight = self.preflight(model_id)
+            if not preflight["ok"]:
+                raise RuntimeError(f"model preflight failed: {model_id}")
             self._load_locked(model_id, visiting=set())
 
     def unload(self, model_id: str) -> None:
@@ -209,29 +216,43 @@ class ModelRegistry:
                 return {"action": "none", "reason": before.get("reason", "gpu_unavailable"), "gpu": before}
             if not before.get("low_memory", False):
                 return {"action": "none", "reason": "memory_ok", "gpu": before}
-            candidate = self._memory_pressure_candidate()
-            if candidate is None:
-                cleaned = self._gpu_monitor.empty_cache() if self._gpu_monitor is not None else False
-                return {
-                    "action": "none",
-                    "reason": "no_unload_candidate",
-                    "cache_cleared": cleaned,
-                    "gpu": before,
-                }
-            self._unload_locked(candidate, visiting=set())
+            unloaded = []
+            current = before
+            while current.get("low_memory", False):
+                candidate = self._memory_pressure_candidate()
+                if candidate is None:
+                    cleaned = self._gpu_monitor.empty_cache() if self._gpu_monitor is not None else False
+                    return {
+                        "action": "unloaded" if unloaded else "none",
+                        "reason": "no_unload_candidate",
+                        "models": unloaded,
+                        "cache_cleared": cleaned,
+                        "gpu_before": before,
+                        "gpu_after": current,
+                    }
+                self._unload_locked(candidate, visiting=set())
+                unloaded.append(candidate)
+                current = self.gpu_health()
             cleaned = self._gpu_monitor.empty_cache() if self._gpu_monitor is not None else False
             return {
                 "action": "unloaded",
-                "model": candidate,
+                "model": unloaded[0] if unloaded else "",
+                "models": unloaded,
                 "cache_cleared": cleaned,
                 "gpu_before": before,
-                "gpu_after": self.gpu_health(),
+                "gpu_after": current,
             }
 
     def shutdown(self) -> None:
+        errors = []
         with self._lock:
             for name in self._unload_order():
-                self._unload_locked(name, visiting=set())
+                try:
+                    self._unload_locked(name, visiting=set())
+                except Exception as exc:
+                    errors.append((name, str(exc)))
+        if errors:
+            raise RuntimeError(f"model shutdown failed: {errors}")
 
     def _load_locked(self, model_id: str, *, visiting: set[str]) -> None:
         entry = self._entry(model_id)
@@ -333,9 +354,58 @@ class ModelRegistry:
     def _unload_order(self) -> list[str]:
         return sorted(self._entries, key=lambda name: self._entries[name].spec.priority, reverse=True)
 
-    def _memory_pressure_candidate(self) -> str | None:
+    def _relieve_before_load(self, model_id: str) -> None:
+        del model_id
+        gpu = self.gpu_health()
+        if gpu.get("available", False) and gpu.get("low_memory", False):
+            self.relieve_memory_pressure()
+
+    def _relieve_for_preflight(self, model_id: str, preflight: dict) -> None:
+        if self._gpu_monitor is None:
+            return
+        model = preflight.get("models", {}).get(model_id, {})
+        vram_checks = [
+            check
+            for check in model.get("checks", [])
+            if check.get("name") == "vram_estimate"
+            and not check.get("ok", True)
+            and check.get("severity") == "error"
+        ]
+        if not vram_checks:
+            return
+        target_gb = float(vram_checks[0].get("detail", {}).get("vram_estimate_gb", 0.0))
+        required = self._required_models(model_id)
+        while True:
+            gpu = self.gpu_health()
+            if not gpu.get("available", False):
+                return
+            if float(gpu.get("free_gb", 0.0)) >= target_gb:
+                return
+            candidate = self._memory_pressure_candidate(exclude=required)
+            if candidate is None:
+                return
+            self._unload_locked(candidate, visiting=set())
+
+    def _required_models(self, model_id: str) -> set[str]:
+        required: set[str] = set()
+
+        def visit(name: str) -> None:
+            if name in required:
+                return
+            entry = self._entry(name)
+            required.add(name)
+            for dependency in entry.spec.dependencies:
+                visit(dependency)
+
+        visit(model_id)
+        return required
+
+    def _memory_pressure_candidate(self, *, exclude: set[str] | None = None) -> str | None:
+        exclude = exclude or set()
         candidates = []
         for name, entry in self._entries.items():
+            if name in exclude:
+                continue
             if not entry.spec.allow_unload:
                 continue
             health = self._safe_health(entry)

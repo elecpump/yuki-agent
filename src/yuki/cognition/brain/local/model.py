@@ -57,11 +57,12 @@ class LocalChatModel:
         self._load()
 
     def unload(self) -> None:
-        with self._load_lock:
-            self._model = None
-            self._tokenizer = None
-            self._loaded = False
-            self._gate.reset()
+        with self._infer_lock:
+            with self._load_lock:
+                self._model = None
+                self._tokenizer = None
+                self._loaded = False
+                self._gate.reset()
         self._empty_torch_cache()
 
     def reload(self) -> None:

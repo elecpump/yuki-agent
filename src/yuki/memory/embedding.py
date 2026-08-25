@@ -10,6 +10,7 @@ import numpy as np
 
 from yuki.logger import get_logger
 from yuki.memory.store import MemoryStore
+from yuki.model_cache import ModelCacheManager
 
 logger = get_logger("yuki.memory.embedding")
 
@@ -158,9 +159,16 @@ def _cache_key(
 
 
 class MemoryEmbeddingIndexer:
-    def __init__(self, store: MemoryStore, provider: EmbeddingProvider) -> None:
+    def __init__(
+        self,
+        store: MemoryStore,
+        provider: EmbeddingProvider,
+        *,
+        cache_manager: ModelCacheManager | None = None,
+    ) -> None:
         self._store = store
         self.provider = provider
+        self._cache_manager = cache_manager
         self._matrix_cache: dict[
             tuple[str, str, int, str | None, int],
             _VectorMatrixCache,
@@ -190,8 +198,15 @@ class MemoryEmbeddingIndexer:
             content_hash=digest,
             updated_at=time.time(),
         )
-        self._matrix_cache.clear()
+        self.clear_cache()
         return True
+
+    def clear_cache(self) -> int:
+        if self._cache_manager is not None:
+            return self._cache_manager.clear("memory_vector_matrix")
+        count = len(self._matrix_cache)
+        self._matrix_cache.clear()
+        return count
 
     def rebuild(self, *, memory_type: str | None = None, min_sensitivity: int = 0) -> int:
         count = 0
@@ -255,7 +270,7 @@ class MemoryEmbeddingIndexer:
             memory_type=memory_type,
             min_sensitivity=min_sensitivity,
         )
-        cached = self._matrix_cache.get(key)
+        cached = self._get_cached_matrix(key)
         if cached is not None and cached.signature == signature:
             return cached
         rows = self._store.vector_rows(
@@ -267,8 +282,28 @@ class MemoryEmbeddingIndexer:
         )
         memory_ids, matrix = _build_normalized_matrix(rows)
         cached = _VectorMatrixCache(signature=signature, memory_ids=memory_ids, matrix=matrix)
-        self._matrix_cache[key] = cached
+        self._put_cached_matrix(key, cached)
         return cached
+
+    def _get_cached_matrix(
+        self,
+        key: tuple[str, str, int, str | None, int],
+    ) -> _VectorMatrixCache | None:
+        if self._cache_manager is None:
+            return self._matrix_cache.get(key)
+        value = self._cache_manager.get("memory_vector_matrix", key)
+        return value if isinstance(value, _VectorMatrixCache) else None
+
+    def _put_cached_matrix(
+        self,
+        key: tuple[str, str, int, str | None, int],
+        cached: _VectorMatrixCache,
+    ) -> None:
+        if self._cache_manager is None:
+            self._matrix_cache[key] = cached
+            return
+        weight = int(cached.matrix.nbytes) + len(cached.memory_ids) * 8
+        self._cache_manager.put("memory_vector_matrix", key, cached, weight=weight)
 
 
 def build_embedding_indexer(
@@ -278,9 +313,11 @@ def build_embedding_indexer(
     model: str = "hashing-v1",
     dimension: int = 384,
     registry: EmbeddingProviderRegistry | None = None,
+    cache_manager: ModelCacheManager | None = None,
 ) -> MemoryEmbeddingIndexer:
     reg = registry or default_embedding_registry
     return MemoryEmbeddingIndexer(
         store,
         reg.build(provider_name, dimension=dimension, model=model),
+        cache_manager=cache_manager,
     )

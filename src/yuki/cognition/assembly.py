@@ -51,6 +51,7 @@ from yuki.memory.manager import MemoryManager
 from yuki.memory.privacy import MemoryAccess, MemoryPurpose
 from yuki.memory.service import register_memory_services
 from yuki.memory.store import MemoryStore
+from yuki.model_cache import ModelCacheManager
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.assembly")
@@ -68,6 +69,7 @@ class CognitionRuntime:
     soul_store: SoulStore
     persona_store: PersonaStore
     persona_refresh: Callable[..., None]
+    cache_manager: ModelCacheManager
 
     def handle_awake_request(self, payload: dict) -> dict:
         payload = dict(payload or {})
@@ -103,6 +105,7 @@ class CognitionAssembler:
         memory: MemoryManager | None = None,
         registry: FunctionRegistry | None = None,
         model_registry: ModelRegistry | None = None,
+        cache_manager: ModelCacheManager | None = None,
     ) -> None:
         self.config = config
         self.bus = bus
@@ -114,11 +117,13 @@ class CognitionAssembler:
         self.memory = memory
         self.registry = registry
         self.model_registry = model_registry
+        self.cache_manager = cache_manager
 
     def assemble(self) -> CognitionRuntime:
         model_registry = self.model_registry or ModelRegistry(gpu_monitor=GpuMemoryMonitor())
+        cache_manager = self.cache_manager or ModelCacheManager(max_entries=256)
         if self.pipeline is None:
-            vlm = self.vlm or self._build_vlm()
+            vlm = self.vlm or self._build_vlm(cache_manager=cache_manager)
             stt = self.stt or self._build_stt()
             speech_buffer = self.speech_buffer or self._build_speech_buffer()
             pipeline = build_pipeline(
@@ -140,12 +145,14 @@ class CognitionAssembler:
             vlm = getattr(pipeline, "vlm", getattr(pipeline, "_vlm", None))
             stt = getattr(pipeline, "stt", getattr(pipeline, "_stt", None))
             speech_buffer = getattr(pipeline, "speech_buffer", self.speech_buffer)
-        self._register_runtime_models(model_registry, vlm, stt, speech_buffer)
+        frame_client = getattr(pipeline, "frame_client", getattr(pipeline, "_frame_client", None))
+        self._register_runtime_models(model_registry, vlm, stt, speech_buffer, frame_client)
+        self._log_preflight(model_registry.preflight())
         pipeline.warmup_vlm()
         if self.config.stt.warmup and hasattr(pipeline, "warmup_stt"):
             pipeline.warmup_stt()
 
-        memory = self.memory or self._build_memory()
+        memory = self.memory or self._build_memory(cache_manager=cache_manager)
         register_memory_services(self.bus, memory)
         register_model_services(self.bus, model_registry)
 
@@ -202,6 +209,7 @@ class CognitionAssembler:
             pipeline,
             model_registry,
         )
+        self._log_preflight(model_registry.preflight())
         hub = build_brain(
             self.bus,
             memory=memory,
@@ -239,13 +247,14 @@ class CognitionAssembler:
             soul_store=soul_store,
             persona_store=persona_store,
             persona_refresh=persona_refresh,
+            cache_manager=cache_manager,
         )
         self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
         self.bus.respond(COGNITION_CHAT_SERVICE, runtime.handle_chat_request)
         self.bus.respond(SOUL_GET_SERVICE, runtime.handle_soul_get)
         return runtime
 
-    def _build_memory(self) -> MemoryManager:
+    def _build_memory(self, *, cache_manager: ModelCacheManager | None = None) -> MemoryManager:
         store = MemoryStore(self.config.memory.db_path)
         embedding_indexer = None
         if self.config.memory.vector_enabled:
@@ -254,6 +263,7 @@ class CognitionAssembler:
                 provider_name=self.config.memory.embedding_provider,
                 model=self.config.memory.embedding_model,
                 dimension=self.config.memory.embedding_dimension,
+                cache_manager=cache_manager,
             )
         return MemoryManager(
             store,
@@ -270,12 +280,13 @@ class CognitionAssembler:
             confidence_weight=self.config.memory.confidence_weight,
         )
 
-    def _build_vlm(self) -> VisualUnderstander:
+    def _build_vlm(self, *, cache_manager: ModelCacheManager | None = None) -> VisualUnderstander:
         vlm_cfg = self.config.vlm
         return VisualUnderstander(
             model_id=vlm_cfg.model,
             cache_dir=vlm_cfg.cache_dir,
             enabled=vlm_cfg.enabled,
+            cache_manager=cache_manager,
         )
 
     def _build_stt(self) -> SpeechRecognizer:
@@ -338,6 +349,7 @@ class CognitionAssembler:
             model,
             priority=1,
             critical=False,
+            vram_estimate_gb=2.0,
         )
         router = LocalRouter(
             model,
@@ -364,6 +376,15 @@ class CognitionAssembler:
             if frame_client is not None and vlm is not None
             else None
         )
+        if screen is not None:
+            self._register_static_component(
+                model_registry,
+                "vision_screen",
+                screen,
+                priority=0,
+                critical=False,
+                dependencies=["frame_client", "vlm"],
+            )
         router.warmup()
         return router, composer, screen
 
@@ -373,14 +394,48 @@ class CognitionAssembler:
         vlm,
         stt,
         speech_buffer,
+        frame_client,
     ) -> None:
+        if frame_client is not None:
+            self._register_static_component(
+                model_registry,
+                "frame_client",
+                frame_client,
+                priority=0,
+                critical=False,
+                health_check=lambda frame_client=frame_client: {
+                    "loaded": callable(getattr(frame_client, "get_latest", None)),
+                    "degraded": not callable(getattr(frame_client, "get_latest", None)),
+                },
+            )
         if vlm is not None:
-            self._register_model_object(model_registry, "vlm", vlm, priority=2, critical=False)
+            self._register_model_object(
+                model_registry,
+                "vlm",
+                vlm,
+                priority=2,
+                critical=False,
+                vram_estimate_gb=5.0,
+            )
         if stt is not None:
-            self._register_model_object(model_registry, "stt", stt, priority=1, critical=False)
+            self._register_model_object(
+                model_registry,
+                "stt",
+                stt,
+                priority=1,
+                critical=False,
+                vram_estimate_gb=1.5,
+            )
         vad = getattr(speech_buffer, "_vad", None)
         if vad is not None:
-            self._register_model_object(model_registry, "vad", vad, priority=1, critical=False)
+            self._register_model_object(
+                model_registry,
+                "vad",
+                vad,
+                priority=1,
+                critical=False,
+                vram_estimate_gb=0.5,
+            )
 
     def _register_model_object(
         self,
@@ -390,6 +445,7 @@ class CognitionAssembler:
         *,
         priority: int,
         critical: bool,
+        vram_estimate_gb: float = 0.0,
     ) -> None:
         load = getattr(model, "load", None)
         unload = getattr(model, "unload", None)
@@ -410,10 +466,44 @@ class CognitionAssembler:
                     health_check=health,
                     priority=priority,
                     critical=critical,
+                    vram_estimate_gb=vram_estimate_gb,
                 )
             )
         except ValueError:
             logger.debug("model already registered", model=name)
+
+    def _register_static_component(
+        self,
+        model_registry: ModelRegistry,
+        name: str,
+        component,
+        *,
+        priority: int,
+        critical: bool,
+        dependencies: list[str] | None = None,
+        health_check: Callable[[], dict] | None = None,
+    ) -> None:
+        health = health_check or (lambda: {"loaded": True, "degraded": False})
+        try:
+            model_registry.register(
+                ModelSpec(
+                    name=name,
+                    loader=lambda component=component: component,
+                    health_check=health,
+                    priority=priority,
+                    critical=critical,
+                    dependencies=list(dependencies or []),
+                    allow_unload=False,
+                )
+            )
+        except ValueError:
+            logger.debug("model already registered", model=name)
+
+    def _log_preflight(self, result: dict) -> None:
+        if not result["ok"]:
+            logger.warning("model preflight failed", result=result)
+        elif result["status"] == "warning":
+            logger.info("model preflight warning", result=result)
 
     def _active_persona_prompt(self, active, soul_store: SoulStore) -> str:
         return (

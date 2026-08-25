@@ -47,6 +47,7 @@ class SpeechRecognizer:
             clock=clock or time.monotonic,
         )
         self._load_lock = threading.Lock()
+        self._infer_lock = threading.Lock()
         self._model_registry = model_registry
         self._model_name = model_name
 
@@ -66,11 +67,12 @@ class SpeechRecognizer:
         self._load()
 
     def unload(self) -> None:
-        with self._load_lock:
-            self._model = None
-            self._loaded = False
-            self._resolved_device = None
-            self._gate.reset()
+        with self._infer_lock:
+            with self._load_lock:
+                self._model = None
+                self._loaded = False
+                self._resolved_device = None
+                self._gate.reset()
         self._empty_torch_cache()
 
     def reload(self) -> None:
@@ -143,7 +145,8 @@ class SpeechRecognizer:
             return ""
         try:
             with self._model_call_tracker():
-                return self._infer(samples, sample_rate)
+                with self._infer_lock:
+                    return self._infer(samples, sample_rate)
         except Exception:
             logger.exception("stt inference failed")
             return ""

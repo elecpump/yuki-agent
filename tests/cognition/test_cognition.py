@@ -38,15 +38,18 @@ class FakeVlm:
 
 
 class FakeManagedModel:
-    def __init__(self, *, degraded=False):
+    def __init__(self, *, degraded=False, unload_error=None):
         self.loaded = True
         self.degraded = degraded
+        self.unload_error = unload_error
         self.unloaded = 0
 
     def load(self):
         self.loaded = True
 
     def unload(self):
+        if self.unload_error is not None:
+            raise self.unload_error
         self.loaded = False
         self.unloaded += 1
 
@@ -222,8 +225,9 @@ def test_cognition_agent_health_includes_model_registry(tmp_path):
     agent.setup()
     try:
         status = agent.health_components()["models"]()
-        assert status.ok is False
+        assert status.ok is True
         assert status.detail["status"] == "degraded"
+        assert status.detail["healthy"] is True
         assert set(status.detail["models"]) == {"vlm", "stt"}
     finally:
         agent.teardown()
@@ -244,6 +248,25 @@ def test_cognition_agent_teardown_shuts_down_model_registry(tmp_path):
     agent.teardown()
 
     assert pipeline._vlm.unloaded == 1
+
+
+def test_cognition_agent_teardown_continues_after_model_shutdown_error(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    pipeline._vlm = FakeManagedModel(unload_error=RuntimeError("boom"))
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=pipeline,
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+
+    agent.teardown()
+
+    assert agent._model_registry is None
+    assert agent._context is None
+    assert agent._memory is None
 
 
 def test_cognition_agent_builds_tuner(tmp_path):
