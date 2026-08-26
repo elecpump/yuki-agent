@@ -52,3 +52,17 @@ Windows capture, audio, or multi-process behavior changes.
 Copy `config.example.yaml` to `config.yaml` for local settings. Keep secrets in environment
 variables such as `YUKI_CLOUD_API_KEY`; do not commit local `data/`, `logs/`, virtualenvs,
 or worktrees.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live in this repository's GitHub Issues. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-role label vocabulary. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.
