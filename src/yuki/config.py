@@ -49,6 +49,8 @@ class MemoryConfig(BaseModel):
     embedding_provider: str = "hashing"
     embedding_model: str = "hashing-v1"
     embedding_dimension: int = Field(384, ge=1)
+    embedding_cache_dir: str = ""     # sentence-transformers 的 HF 缓存目录（如 .model）；hashing 不用
+    embedding_device: str = "auto"    # auto | cpu | cuda:0；sentence-transformers provider
     vector_candidates: int = Field(30, ge=1)
     lexical_weight: float = Field(0.45, ge=0.0)
     vector_weight: float = Field(0.45, ge=0.0)

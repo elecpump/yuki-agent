@@ -27,6 +27,13 @@ memory:
   embedding_provider: hashing
   embedding_model: hashing-v1
   embedding_dimension: 384
+  embedding_cache_dir: ""     # sentence-transformers 的 HF 缓存目录（如 .model）；hashing 不用
+  embedding_device: auto      # auto | cpu | cuda:0；sentence-transformers provider
+  # 语义 embedding 示例（需安装 ml extra，本地模型放 cache dir）：
+  #   embedding_provider: sentence-transformers
+  #   embedding_model: Qwen/Qwen3-Embedding-0.6B
+  #   embedding_cache_dir: .model
+  #   embedding_device: auto
   vector_candidates: 30
   lexical_weight: 0.45
   vector_weight: 0.45

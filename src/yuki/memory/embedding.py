@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Protocol
@@ -44,7 +45,15 @@ class HashingEmbeddingProvider:
 
     name = "hashing"
 
-    def __init__(self, *, dimension: int = 384, model: str = "hashing-v1") -> None:
+    def __init__(
+        self,
+        *,
+        dimension: int = 384,
+        model: str = "hashing-v1",
+        cache_dir: str = "",
+        device: str = "auto",
+    ) -> None:
+        # cache_dir/device 仅用于与语义 provider 保持统一构造签名；hashing 不使用。
         self.dimension = int(dimension)
         self.model = model
 
@@ -74,10 +83,75 @@ class HashingEmbeddingProvider:
         return features
 
 
+class SentenceTransformerEmbeddingProvider:
+    """Semantic embeddings via sentence-transformers（可选依赖，懒加载）。
+
+    - 维度**从模型自身读取**（首次加载后确定）；配置的 `dimension` 仅对 hashing 有意义，
+      此处忽略，保证 DB 键 (provider, model, dimension) 始终与模型实际维度一致。
+    - `cache_dir` 指向 HF hub 缓存目录（如 `.model`，本地快照直接命中；缺省的
+      `modules.json`/`1_Pooling` 等 sentence-transformers 元文件首次加载会从 hub 补齐）。
+    - 加载/推理失败抛出异常：调用方（MemoryManager）捕获后降级 lexical/FTS。
+    - 输出已 L2 归一化（normalize_embeddings=True，等价官方 2_Normalize 模块）。
+    """
+
+    name = "sentence-transformers"
+
+    def __init__(
+        self,
+        *,
+        model: str = "Qwen/Qwen3-Embedding-0.6B",
+        dimension: int | None = None,
+        cache_dir: str = "",
+        device: str = "auto",
+        sentence_transformer_factory: Callable[..., object] | None = None,
+    ) -> None:
+        self.model = model
+        self._cache_dir = cache_dir
+        self._device = device
+        self._factory = sentence_transformer_factory
+        self._st = None
+        self._dimension: int | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def dimension(self) -> int | None:
+        return self._dimension
+
+    def _ensure(self):
+        st = self._st
+        if st is not None:
+            return st
+        with self._lock:
+            if self._st is not None:
+                return self._st
+            factory = self._factory
+            if factory is None:
+                # 懒导入：未安装 sentence-transformers 时模块级可导入、hashing 路径不受影响。
+                from sentence_transformers import SentenceTransformer
+
+                factory = SentenceTransformer
+            self._st = factory(
+                self.model,
+                cache_folder=self._cache_dir or None,
+                device=self._device,
+            )
+            self._dimension = int(self._st.get_sentence_embedding_dimension())
+            return self._st
+
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        st = self._ensure()
+        vectors = st.encode(texts, normalize_embeddings=True)
+        return [[float(value) for value in row] for row in vectors]
+
+
 default_embedding_registry = EmbeddingProviderRegistry()
 default_embedding_registry.register(
     "hashing",
     lambda **kwargs: HashingEmbeddingProvider(**kwargs),
+)
+default_embedding_registry.register(
+    "sentence-transformers",
+    lambda **kwargs: SentenceTransformerEmbeddingProvider(**kwargs),
 )
 
 
@@ -176,7 +250,12 @@ class MemoryEmbeddingIndexer:
 
     @property
     def dimension(self) -> int:
-        return int(self.provider.dimension)
+        value = self.provider.dimension
+        if value is None:
+            # 语义 provider 懒加载未完成：任何维度查询都匹配不到记录，等价"尚未嵌入"。
+            # upsert/search 均先 embed（触发加载）再使用本属性，故 0 不会写入 DB。
+            return 0
+        return int(value)
 
     def upsert(self, memory: dict) -> bool:
         digest = content_hash(memory.get("content", ""))
@@ -312,12 +391,20 @@ def build_embedding_indexer(
     provider_name: str = "hashing",
     model: str = "hashing-v1",
     dimension: int = 384,
+    cache_dir: str = "",
+    device: str = "auto",
     registry: EmbeddingProviderRegistry | None = None,
     cache_manager: ModelCacheManager | None = None,
 ) -> MemoryEmbeddingIndexer:
     reg = registry or default_embedding_registry
     return MemoryEmbeddingIndexer(
         store,
-        reg.build(provider_name, dimension=dimension, model=model),
+        reg.build(
+            provider_name,
+            dimension=dimension,
+            model=model,
+            cache_dir=cache_dir,
+            device=device,
+        ),
         cache_manager=cache_manager,
     )

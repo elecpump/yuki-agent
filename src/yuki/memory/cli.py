@@ -17,6 +17,8 @@ def build_manager(
     embedding_provider: str = "hashing",
     embedding_model: str = "hashing-v1",
     embedding_dimension: int = 384,
+    embedding_cache_dir: str = "",
+    embedding_device: str = "auto",
     vector_candidates: int = 30,
     lexical_weight: float = 0.45,
     vector_weight: float = 0.45,
@@ -30,6 +32,8 @@ def build_manager(
             provider_name=embedding_provider,
             model=embedding_model,
             dimension=embedding_dimension,
+            cache_dir=embedding_cache_dir,
+            device=embedding_device,
         )
     return MemoryManager(
         store,
@@ -142,6 +146,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embedding-provider", default="hashing")
     parser.add_argument("--embedding-model", default="hashing-v1")
     parser.add_argument("--embedding-dimension", type=int, default=384)
+    parser.add_argument("--embedding-cache-dir", default="")
+    parser.add_argument("--embedding-device", default="auto")
     parser.add_argument("--vector-candidates", type=int, default=30)
     parser.add_argument("--lexical-weight", type=float, default=0.45)
     parser.add_argument("--vector-weight", type=float, default=0.45)

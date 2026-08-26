@@ -136,7 +136,7 @@ class MemoryEmbeddingIndexer:
 
 实现说明：
 - **HashingEmbeddingProvider** 用字符 1/2-gram feature-hash 到 384 维并 L2 归一化，零依赖、稳定、与 FTS trigram 部分重叠但能覆盖单/双字查询。定位只是框架 baseline，不宣称语义。
-- **真实语义**：后续 `SentenceTransformerEmbeddingProvider`（放 `ml` extra）或 cloud embedding provider（默认关闭，走隐私策略）。
+- **真实语义（2026-08-26 已落地）**：`SentenceTransformerEmbeddingProvider`（`sentence-transformers`，已加入 `ml` extra，懒加载）——从模型自身读取维度（忽略配置的 `embedding_dimension`，保证 DB 键与实际维度一致），`cache_dir` 指向 HF hub 缓存（如 `.model`），`normalize_embeddings=True` 等价官方 `2_Normalize` 模块；默认模型 `Qwen/Qwen3-Embedding-0.6B`（last-token pooling，1024 维）。加载/推理失败由 `MemoryManager` 捕获降级 lexical/FTS。cloud embedding provider（默认关闭，走隐私策略）仍留后续。
 - **content_hash**：对 `content` 做 sha256（记忆内容创建后不可变，无 update API，故 content 即可）。
 
 ## 5. 写入路径

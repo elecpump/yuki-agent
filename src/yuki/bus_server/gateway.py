@@ -280,7 +280,7 @@ class GatewayRuntime:
             data["bus"] = dict(data["bus"])
             data["bus"]["auth_token"] = "<redacted>" if data["bus"].get("auth_token") else ""
         for section, fields in {
-            "memory": ("db_path",),
+            "memory": ("db_path", "embedding_cache_dir"),
             "soul": ("path", "tuner_state_path"),
             "gateway": ("history_dir",),
             "vlm": ("cache_dir",),

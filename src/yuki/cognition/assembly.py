@@ -263,6 +263,8 @@ class CognitionAssembler:
                 provider_name=self.config.memory.embedding_provider,
                 model=self.config.memory.embedding_model,
                 dimension=self.config.memory.embedding_dimension,
+                cache_dir=self.config.memory.embedding_cache_dir,
+                device=self.config.memory.embedding_device,
                 cache_manager=cache_manager,
             )
         return MemoryManager(
