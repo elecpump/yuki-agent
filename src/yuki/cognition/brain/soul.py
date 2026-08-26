@@ -8,10 +8,6 @@ from yuki.persistence import atomic_write_json
 
 logger = get_logger("yuki.cognition.brain.soul")
 
-TRAIT_CENTER = 0.5
-TRAIT_CENTER_STEP = 0.005
-PREFS_PER_PERSONA_REGEN = 5
-
 DEFAULT_TRAITS = {
     "warmth": 0.5,
     "humor": 0.5,
@@ -48,31 +44,8 @@ INITIAL_CORE_VALUES = (
     },
 )
 
-CORE_VALUE_CATALOG = {
-    "yuki.freq.low": {
-        "id": "cv.rhythm.restraint",
-        "text": "主动克制、尊重节奏。",
-        "keywords": ["主动克制", "尊重节奏", "少主动", "安静"],
-    },
-    "yuki.rhythm.frequency.low": {
-        "id": "cv.rhythm.restraint",
-        "text": "主动克制、尊重节奏。",
-        "keywords": ["主动克制", "尊重节奏", "少主动", "安静"],
-    },
-}
-
-CORE_VALUE_OPPOSITION_KEYWORDS = (
-    "我不认同",
-    "我不需要",
-    "我不想",
-    "不要",
-    "别",
-    "不喜欢",
-    "删掉",
-    "取消",
-)
-
 COOLDOWN_KEY = "proactive_cooldown_s"
+FLOOR_KEY = "cooldown_floor_s"
 
 
 def _now_iso() -> str:
@@ -222,47 +195,6 @@ class SoulStore:
             if value.get("role") == "binding"
         ]
 
-    def adjust_traits(self, deltas: dict[str, float]) -> dict:
-        soul = self.load_or_default()
-        traits = dict(soul["personality_traits"])
-        for name in DEFAULT_TRAITS:
-            current = float(traits.get(name, TRAIT_CENTER))
-            if current > TRAIT_CENTER:
-                current = max(TRAIT_CENTER, current - TRAIT_CENTER_STEP)
-            elif current < TRAIT_CENTER:
-                current = min(TRAIT_CENTER, current + TRAIT_CENTER_STEP)
-            traits[name] = current
-        for name, delta in deltas.items():
-            if name in DEFAULT_TRAITS:
-                traits[name] = _clamp_unit(float(traits.get(name, TRAIT_CENTER)) + delta)
-        soul["personality_traits"] = traits
-        self.save(soul)
-        return traits
-
-    def on_preference_sedimented(
-        self,
-        label: str,
-        confidence: float,
-        *,
-        is_new: bool = True,
-    ) -> dict:
-        soul = self.load_or_default()
-        if is_new:
-            soul["prefs_since_regen"] = int(soul.get("prefs_since_regen", 0)) + 1
-        if label == "yuki.rhythm.length.short":
-            soul["personality_traits"] = self._adjust_trait_values(
-                soul["personality_traits"],
-                {"directness": -0.05, "humor": -0.02},
-            )
-        self._promote_catalogued_core_value(soul, label, confidence)
-        self.save(soul)
-        return soul
-
-    def reset_prefs_since_regen(self) -> None:
-        soul = self.load_or_default()
-        soul["prefs_since_regen"] = 0
-        self.save(soul)
-
     def set_personality_description(self, description: str) -> bool:
         description = (description or "").strip()
         if not description:
@@ -273,32 +205,6 @@ class SoulStore:
         soul["personality_description"] = description
         self.save(soul)
         return True
-
-    def apply_core_value_feedback(self, text: str) -> bool:
-        if not text or not any(kw in text for kw in CORE_VALUE_OPPOSITION_KEYWORDS):
-            return False
-        soul = self.load_or_default()
-        remaining = []
-        changed = False
-        for value in soul["core_values"]:
-            keywords = value.get("keywords") or [value.get("text", "")]
-            matches = any(keyword and keyword in text for keyword in keywords)
-            if matches and value.get("role") != "binding":
-                replacement = self._extract_core_value_replacement(text)
-                if replacement:
-                    value["text"] = replacement
-                    value["source"] = "user"
-                    value["confidence"] = 1.0
-                    remaining.append(value)
-                changed = True
-                if not replacement:
-                    continue
-                continue
-            remaining.append(value)
-        if changed:
-            soul["core_values"] = remaining
-            self.save(soul)
-        return changed
 
     def _is_legacy_params_shape(self, data: dict) -> bool:
         return isinstance(data.get("params"), dict) and (
@@ -367,45 +273,6 @@ class SoulStore:
         if isinstance(value.get("keywords"), list):
             normalized["keywords"] = [kw for kw in value["keywords"] if isinstance(kw, str)]
         return normalized
-
-    def _promote_catalogued_core_value(self, soul: dict, label: str, confidence: float) -> None:
-        item = CORE_VALUE_CATALOG.get(label)
-        if item is None or confidence < 0.7:
-            return
-        for value in soul["core_values"]:
-            if value.get("id") == item["id"]:
-                value["confidence"] = max(float(value.get("confidence", 0.0)), confidence)
-                return
-        soul["core_values"].append({
-            "id": item["id"],
-            "text": item["text"],
-            "source": label,
-            "role": "guiding",
-            "confidence": _clamp_unit(confidence),
-            "keywords": list(item.get("keywords", [])),
-        })
-
-    def _extract_core_value_replacement(self, text: str) -> str:
-        for marker in ("改成", "改为", "而是"):
-            if marker in text:
-                replacement = text.split(marker, 1)[1].strip(" ：:，,。.!！")
-                if replacement:
-                    return replacement
-        return ""
-
-    def _adjust_trait_values(self, traits: dict, deltas: dict[str, float]) -> dict:
-        adjusted = dict(traits)
-        for name in DEFAULT_TRAITS:
-            current = float(adjusted.get(name, TRAIT_CENTER))
-            if current > TRAIT_CENTER:
-                current = max(TRAIT_CENTER, current - TRAIT_CENTER_STEP)
-            elif current < TRAIT_CENTER:
-                current = min(TRAIT_CENTER, current + TRAIT_CENTER_STEP)
-            adjusted[name] = current
-        for name, delta in deltas.items():
-            if name in DEFAULT_TRAITS:
-                adjusted[name] = _clamp_unit(float(adjusted.get(name, TRAIT_CENTER)) + delta)
-        return adjusted
 
     def _float_or_default(self, value: object, default: float) -> float:
         try:

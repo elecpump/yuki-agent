@@ -5,7 +5,7 @@ import pytest
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudError
-from yuki.cognition.l2.view import CloudViewBuilder
+from yuki.cognition.l2.loop import AgentLoop
 from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.registry import FunctionRegistry
 from yuki.memory.manager import MemoryManager
@@ -29,8 +29,10 @@ def test_generate_single_turn_text():
     bridge = CloudBridge(client, registry=FunctionRegistry())
     out = bridge.generate("你好")
     assert out == "你好呀"
-    assert client.calls[0][0][0]["role"] == "system"
-    assert client.calls[0][0][1]["role"] == "user"
+    messages = client.calls[0][0]
+    assert messages[0]["role"] == "system"
+    assert any("memory.write" in item.get("content", "") for item in messages)
+    assert next(item for item in messages if item["role"] == "user")
     assert client.calls[0][1] == []  # registry 无函数 → tools 为空列表
 
 
@@ -147,7 +149,8 @@ def test_generate_default_view_builder_assembles():
     bridge = CloudBridge(client)  # 默认 view_builder
     out = bridge.generate("你好", context=None, memory=None)
     assert out == "回答"
-    assert "用户说：你好" in client.calls[0][0][1]["content"]
+    user_message = next(item for item in client.calls[0][0] if item["role"] == "user")
+    assert "用户说：你好" in user_message["content"]
 
 
 def test_generate_uses_provided_system_prompt_as_is():
@@ -161,6 +164,8 @@ def test_set_system_prompt_updates():
     client = TurnClient([{"choices": [{"message": {"content": "回答"}}]}])
     bridge = CloudBridge(client, system_prompt="初始")
     bridge.set_system_prompt("新的系统提示")
+    assert isinstance(bridge.loop, AgentLoop)
+    assert bridge.loop._system == "新的系统提示"
     bridge.generate("你好", context=None, memory=None)
     assert client.calls[0][0][0]["content"] == "新的系统提示"
 

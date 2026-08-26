@@ -1,7 +1,7 @@
 import time
 
 from yuki.bus import BusTimeoutError
-from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
+from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE, DecisionHub
 from yuki.config import Config
 from yuki.interaction.agent import InteractionAgent, VolumeController
 from yuki.interaction.hotkey import HotkeyManager
@@ -25,10 +25,18 @@ class FakeTTS:
     def __init__(self):
         self.said = []
         self.emotions = []
+        self.kinds = []
+        self.reply_ids = []
+        self.cancelled = []
 
-    def speak(self, text, emotion="neutral"):
+    def speak(self, text, emotion="neutral", *, kind="final", reply_id=None):
         self.said.append(text)
         self.emotions.append(emotion)
+        self.kinds.append(kind)
+        self.reply_ids.append(reply_id)
+
+    def cancel(self, reply_id):
+        self.cancelled.append(reply_id)
 
 
 def test_hotkey_manager_register_trigger():
@@ -112,6 +120,68 @@ def test_interaction_agent_forwards_reply_emotion():
     )
     assert tts.said == ["太好了"]
     assert tts.emotions == ["joy"]
+    agent.teardown()
+
+
+def test_interaction_agent_forwards_reply_kind_and_id_and_handles_cancel():
+    bus = FakeBus()
+    tts = FakeTTS()
+    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=tts)
+    agent.setup()
+    on_reply = bus.subscriptions[Topics.REPLY][0]
+
+    on_reply(
+        Topics.REPLY,
+        {
+            "text": "我看看",
+            "emotion": "neutral",
+            "kind": "transition",
+            "reply_id": "reply-1",
+            "ts": 0.0,
+        },
+    )
+    on_reply(
+        Topics.REPLY,
+        {"text": "", "kind": "cancel", "reply_id": "reply-1", "ts": 0.1},
+    )
+
+    assert tts.said == ["我看看"]
+    assert tts.kinds == ["transition"]
+    assert tts.reply_ids == ["reply-1"]
+    assert tts.cancelled == ["reply-1"]
+    agent.teardown()
+
+
+def test_hub_transition_cancel_flow_reaches_interaction_controller():
+    class InterruptingLoop:
+        def run(
+            self,
+            utterance,
+            context=None,
+            memory=None,
+            *,
+            crisis=False,
+            on_transition=None,
+            interrupt_check=None,
+        ):
+            on_transition("我看看")
+            return {"text": "", "steps": 1, "interrupted": True, "failed": False}
+
+    bus = FakeBus()
+    tts = FakeTTS()
+    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=tts)
+    agent.setup()
+    hub = DecisionHub(bus, loop=InterruptingLoop(), local_enabled=False)
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "查一下", "ts": time.time()})
+    on_reply = bus.subscriptions[Topics.REPLY][0]
+    for topic, payload in list(bus.published):
+        if topic == Topics.REPLY:
+            on_reply(topic, payload)
+
+    assert tts.said == ["我看看"]
+    assert tts.kinds == ["transition"]
+    assert tts.cancelled == tts.reply_ids
     agent.teardown()
 
 

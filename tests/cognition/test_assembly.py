@@ -126,7 +126,7 @@ def test_cognition_assembler_registers_pipeline_models(tmp_path):
         memory.close()
 
 
-def test_cognition_assembler_registers_vision_screen_dependency_graph(tmp_path, monkeypatch):
+def test_cognition_assembler_registers_local_chat_without_vision_route(tmp_path, monkeypatch):
     class FakeLocalChat(FakeModelAdapter):
         def warmup(self):
             pass
@@ -151,9 +151,8 @@ def test_cognition_assembler_registers_vision_screen_dependency_graph(tmp_path, 
 
     try:
         health = runtime.model_registry.get_all_models_health()
-        assert {"frame_client", "vlm", "local_chat", "vision_screen"} <= set(health)
-        assert health["vision_screen"]["dependencies"] == ["frame_client", "vlm"]
-        assert health["vision_screen"]["allow_unload"] is False
+        assert {"frame_client", "vlm", "local_chat"} <= set(health)
+        assert "vision_screen" not in health
         assert health["local_chat"]["vram_estimate_gb"] == 2.0
     finally:
         runtime.context.close()

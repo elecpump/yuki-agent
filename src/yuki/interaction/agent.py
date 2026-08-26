@@ -68,17 +68,34 @@ class InteractionAgent(ProcessAgent):
             IndexTTSModel(config.tts),
             AudioPlayer(chunk_size=config.tts.chunk_size),
             self.bus,
+            transition_grace_s=config.agent_loop.transition_grace_s,
         )
         self._focus_manager = focus_manager or FocusManager()
         self._volume_controller = volume_controller or VolumeController()
 
-    def _speak(self, text: str, emotion: object = "neutral") -> None:
-        # 契约：注入的 TTS 必须接受 emotion kwarg（TtsController 与测试 FakeTTS 均满足）。
-        self._tts.speak(text, emotion=emotion)
+    def _speak(
+        self,
+        text: str,
+        emotion: object = "neutral",
+        *,
+        kind: str = "final",
+        reply_id: str | None = None,
+    ) -> None:
+        self._tts.speak(text, emotion=emotion, kind=kind, reply_id=reply_id)
 
     def setup(self) -> None:
-        def on_reply(topic: str, payload: dict) -> None:
-            self._speak(payload["text"], emotion=payload.get("emotion", "neutral"))
+        def on_reply(topic: str, payload: ReplyPayload) -> None:
+            kind = payload.get("kind", "final")
+            reply_id = payload.get("reply_id")
+            if kind == "cancel":
+                self._tts.cancel(reply_id)
+                return
+            self._speak(
+                payload["text"],
+                emotion=payload.get("emotion", "neutral"),
+                kind=kind,
+                reply_id=reply_id,
+            )
 
         def trigger_call() -> None:
             try:

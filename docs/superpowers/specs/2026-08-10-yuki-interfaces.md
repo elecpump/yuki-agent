@@ -47,7 +47,7 @@ payload 数值经 google.protobuf.Struct 以 double 存储，整数精确到 2^5
 | 主题 | 方向 | 载荷 |
 |---|---|---|
 | event/awake | 交互层→总线 | {"source":"hotkey"\|"wakeword","ts":float,"confidence":0..1}（confidence/wakeword 为 Phase 3 预留；当前仅发 hotkey+ts） |
-| event/reply | 认知层→总线 | {"text":str,"ts":float} |
+| event/reply | 认知层→总线 | {"text":str,"ts":float,"emotion"?:str,"kind"?:"transition"\|"final"\|"cancel","reply_id"?:str}；kind 缺省按 final，同一回合的 transition/final/cancel 共用 reply_id |
 | event/focus_changed | 采集层→总线 | {"app":str,"url":str,"title":str}（Phase 2b） |
 | event/perception/content_ready | 采集层→总线 | {"app":str,"url":str,"title":str,"reason":"focus_changed"\|"scroll_idle","frame_id":int,"ts":float,"frame_ts":float,"frame_width":int,"frame_height":int,"sensitive":bool,"scroll_percent"?:float} |
 | event/perception/situation_update | 认知层→总线 | {"situation_id":"frame:{frame_id}","source_id":str,"source_app":str,"source_title":str,"scroll_band":str,"observation_reason":str,"observation_ts":float,"frame_id":int,"frame_ts":float,"frame_width":int,"frame_height":int,"cache_key":str,"topic":str,"summary":str,"content_type":str,"key_points":list[str],"sensitive":bool,"degraded":bool,"reason":str,"ts":float,"scroll_percent"?:float} |

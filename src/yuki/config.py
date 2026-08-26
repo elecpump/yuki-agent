@@ -90,7 +90,6 @@ class LocalBrainConfig(BaseModel):
     retry: int = Field(1, ge=0)
     fp8_dequantize: bool = True
     local_files_only: bool = False
-    local_tool_allowlist: list[str] = Field(default_factory=list)
 
     @field_validator("device")
     @classmethod
@@ -150,6 +149,17 @@ class CloudConfig(BaseModel):
     max_turns: int = Field(3, ge=1)
 
 
+class AgentLoopConfig(BaseModel):
+    max_steps: int | None = Field(None, ge=1)
+    max_duration_s: float = Field(15.0, ge=1.0)
+    transition_enabled: bool = True
+    transition_fallback: str = "让我看一下……"
+    transition_grace_s: float = Field(0.8, ge=0.0, le=3.0)
+    tool_result_max_chars: int = Field(2000, ge=100)
+    compact_threshold_tokens: int = Field(0, ge=0)
+    interrupt_enabled: bool = True
+
+
 class SoulConfig(BaseModel):
     path: str = "data/soul.json"
     tuner_state_path: str = "data/tuner_state.json"
@@ -189,12 +199,6 @@ class ContextConfig(BaseModel):
     snapshot_path: str = "data/context_snapshot.json"
 
 
-class SedimenterConfig(BaseModel):
-    min_signals: int = Field(3, ge=1)
-    confidence_threshold: float = Field(0.6, ge=0.0, le=1.0)
-    topic_engagement_threshold: int = Field(3, ge=1)
-
-
 class PersonaConfig(BaseModel):
     prompt: str = (
         "你是{persona},一个温柔的中文语音陪伴 agent。"
@@ -206,6 +210,7 @@ class PersonaConfig(BaseModel):
     max_versions: int = Field(50, ge=1)
     enable_llm_refine: bool = False
     snapshots_path: str = "data/persona_snapshots.json"
+    refresh_every_utterances: int = Field(30, ge=1)
 
 
 class Config(BaseModel):
@@ -224,12 +229,12 @@ class Config(BaseModel):
     stt: SttConfig = Field(default_factory=SttConfig)
     tts: TtsConfig = Field(default_factory=TtsConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
+    agent_loop: AgentLoopConfig = Field(default_factory=AgentLoopConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
-    sedimenter: SedimenterConfig = Field(default_factory=SedimenterConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
 
     @classmethod
@@ -262,12 +267,12 @@ class Config(BaseModel):
             ("stt", SttConfig),
             ("tts", TtsConfig),
             ("cloud", CloudConfig),
+            ("agent_loop", AgentLoopConfig),
             ("soul", SoulConfig),
             ("perception", PerceptionConfig),
             ("wake_word", WakeWordConfig),
             ("gateway", GatewayConfig),
             ("context", ContextConfig),
-            ("sedimenter", SedimenterConfig),
             ("persona", PersonaConfig),
         ):
             section = data.setdefault(section_name, {})

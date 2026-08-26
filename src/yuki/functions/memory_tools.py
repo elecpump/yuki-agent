@@ -20,7 +20,7 @@ class WriteParams(BaseModel):
     memory_type: MemoryType
     content: str
     confidence: float = Field(0.5, ge=0.0, le=1.0)
-    sensitivity: int = Field(0, ge=0, le=2)
+    sensitivity: Literal[0] = 0
     source: str = "brain"
     metadata: dict = Field(default_factory=dict)
 
@@ -63,6 +63,10 @@ def register_memory_functions(registry: FunctionRegistry, manager: MemoryManager
         return {"memory": access.get(p.id, purpose=MemoryPurpose.LLM_TOOL_QUERY_RESULT)}
 
     registry.tool("memory.query", description="检索记忆（私密/高敏自动排除）", params=QueryParams)(on_query)
-    registry.tool("memory.write", description="写入一条记忆", params=WriteParams)(on_write)
+    registry.tool(
+        "memory.write",
+        description="写入一条非敏感公开记忆",
+        params=WriteParams,
+    )(on_write)
     registry.tool("memory.list", description="列出记忆（私密/高敏自动排除）", params=ListParams)(on_list)
     registry.tool("memory.get", description="按 id 获取记忆（私密/高敏返回 null）", params=GetParams)(on_get)

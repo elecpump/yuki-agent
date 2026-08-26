@@ -1,4 +1,4 @@
-from typing import NotRequired, TypedDict
+from typing import Literal, NotRequired, TypedDict
 
 
 class AwakePayload(TypedDict):
@@ -11,6 +11,8 @@ class ReplyPayload(TypedDict):
     text: str
     ts: float
     emotion: NotRequired[str]
+    kind: NotRequired[Literal["transition", "final", "cancel"]]
+    reply_id: NotRequired[str]
 
 
 class FocusChangedPayload(TypedDict):

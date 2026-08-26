@@ -1,16 +1,16 @@
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import ClassVar
 
 from yuki.logger import get_logger
 from yuki.topics import Topics
-
 
 logger = get_logger("yuki.interaction.tts_controller")
 
 
 class EmotionMapper:
-    _VECTORS = {
+    _VECTORS: ClassVar[dict[str, list[float]]] = {
         "joy": [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "anger": [0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
         "sadness": [0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0],
@@ -32,6 +32,10 @@ class _SpeechJob:
     generation: int
     text: str
     emotion: object
+    kind: str = "final"
+    reply_id: str | None = None
+    cancelled: threading.Event = field(default_factory=threading.Event, compare=False)
+    done: threading.Event = field(default_factory=threading.Event, compare=False)
 
 
 class _StaleJob(RuntimeError):
@@ -39,16 +43,26 @@ class _StaleJob(RuntimeError):
 
 
 class TtsController:
-    """Asynchronous latest-reply-wins synthesis and playback controller."""
+    """Asynchronous, kind-aware speech synthesis and playback controller."""
 
-    def __init__(self, model, player, bus, *, emotion_mapper=None) -> None:
+    def __init__(
+        self,
+        model,
+        player,
+        bus,
+        *,
+        emotion_mapper=None,
+        transition_grace_s: float = 0.8,
+    ) -> None:
         self._model = model
         self._player = player
         self._bus = bus
         self._emotion_mapper = emotion_mapper or EmotionMapper()
+        self._transition_grace_s = max(0.0, float(transition_grace_s))
         self._condition = threading.Condition(threading.RLock())
         self._generation = 0
         self._pending: _SpeechJob | None = None
+        self._processing_job: _SpeechJob | None = None
         self._active_job: _SpeechJob | None = None
         self._tts_is_active = False
         self._stopping = False
@@ -76,37 +90,142 @@ class TtsController:
 
     def _is_current(self, job: _SpeechJob) -> bool:
         with self._condition:
-            return not self._stopping and job.generation == self._generation
+            return not self._stopping and not job.cancelled.is_set()
 
-    def speak(self, text: str, emotion: object = "neutral") -> None:
+    @staticmethod
+    def _same_identified_reply(job: _SpeechJob, reply_id: str | None) -> bool:
+        return bool(reply_id) and job.reply_id == reply_id
+
+    def _has_final_locked(self) -> bool:
+        return any(
+            job is not None and job.kind == "final" and not job.cancelled.is_set()
+            for job in (self._pending, self._processing_job)
+        )
+
+    def speak(
+        self,
+        text: str,
+        emotion: object = "neutral",
+        *,
+        kind: str = "final",
+        reply_id: str | None = None,
+    ) -> None:
         text = str(text).strip()
         if not text:
             return
+        kind = "transition" if kind == "transition" else "final"
+        stop_active = False
+        grace_job: _SpeechJob | None = None
         with self._condition:
             if self._stopping:
                 return
+            if kind == "transition":
+                if self._has_final_locked():
+                    return
+                if self._processing_job is not None and not self._processing_job.cancelled.is_set():
+                    return
+                if self._pending is not None:
+                    self._pending.cancelled.set()
+            else:
+                if self._pending is not None:
+                    self._pending.cancelled.set()
+                    self._pending = None
+                processing = self._processing_job
+                if processing is not None and not processing.cancelled.is_set():
+                    matching_transition = (
+                        processing.kind == "transition"
+                        and self._same_identified_reply(processing, reply_id)
+                    )
+                    if matching_transition and self._active_job is processing:
+                        grace_job = processing
+                    else:
+                        processing.cancelled.set()
+                        stop_active = self._active_job is processing
+
             self._generation += 1
-            job = _SpeechJob(self._generation, text, emotion)
-            self._pending = job
-            stop_active = self._tts_is_active
+            self._pending = _SpeechJob(
+                self._generation,
+                text,
+                emotion,
+                kind=kind,
+                reply_id=reply_id,
+            )
             self._condition.notify()
-            if stop_active:
+
+        if stop_active:
+            self._player.stop()
+        if grace_job is not None:
+            self._stop_transition_after_grace(grace_job)
+
+    def _stop_transition_after_grace(self, job: _SpeechJob) -> None:
+        def expire() -> None:
+            should_stop = False
+            with self._condition:
+                if (
+                    not self._stopping
+                    and self._active_job is job
+                    and not job.cancelled.is_set()
+                ):
+                    job.cancelled.set()
+                    should_stop = True
+            if should_stop:
                 self._player.stop()
+
+        timer = threading.Timer(self._transition_grace_s, expire)
+        timer.daemon = True
+        timer.start()
+
+    def cancel(self, reply_id: str | None) -> None:
+        if not reply_id:
+            return
+        stop_active = False
+        with self._condition:
+            pending = self._pending
+            if (
+                pending is not None
+                and pending.kind == "transition"
+                and pending.reply_id == reply_id
+            ):
+                pending.cancelled.set()
+                self._pending = None
+            processing = self._processing_job
+            if (
+                processing is not None
+                and processing.kind == "transition"
+                and processing.reply_id == reply_id
+                and not processing.cancelled.is_set()
+            ):
+                processing.cancelled.set()
+                stop_active = self._active_job is processing
+            self._condition.notify()
+        if stop_active:
+            self._player.stop()
 
     def stop(self) -> None:
         with self._condition:
             if self._stopping:
                 return
-            self._generation += 1
+            if self._pending is not None:
+                self._pending.cancelled.set()
             self._pending = None
+            if self._processing_job is not None:
+                self._processing_job.cancelled.set()
             self._player.stop()
 
     def _publish(self, topic: str, job: _SpeechJob) -> None:
-        self._bus.publish(topic, {"text": job.text, "ts": time.time()})
+        self._bus.publish(
+            topic,
+            {
+                "text": job.text,
+                "ts": time.time(),
+                "kind": job.kind,
+                "reply_id": job.reply_id,
+            },
+        )
 
     def _mark_speaking(self, job: _SpeechJob) -> None:
         with self._condition:
-            if self._stopping or job.generation != self._generation:
+            if self._stopping or job.cancelled.is_set():
                 raise _StaleJob()
             self._tts_is_active = True
             self._active_job = job
@@ -114,14 +233,14 @@ class TtsController:
             self._publish(Topics.TTS_SPEAKING, job)
         except Exception:
             with self._condition:
-                if self._active_job == job:
+                if self._active_job is job:
                     self._tts_is_active = False
                     self._active_job = None
             raise
 
     def _finish(self, job: _SpeechJob) -> None:
         with self._condition:
-            if not self._tts_is_active or self._active_job != job:
+            if not self._tts_is_active or self._active_job is not job:
                 return
             self._tts_is_active = False
             self._active_job = None
@@ -209,15 +328,26 @@ class TtsController:
                 if self._stopping:
                     return
                 job, self._pending = self._pending, None
-            self._process(job)
+                self._processing_job = job
+            try:
+                self._process(job)
+            finally:
+                with self._condition:
+                    if self._processing_job is job:
+                        self._processing_job = None
+                    job.done.set()
+                    self._condition.notify_all()
 
     def shutdown(self) -> None:
         with self._condition:
             if self._stopping:
                 return
             self._stopping = True
-            self._generation += 1
+            if self._pending is not None:
+                self._pending.cancelled.set()
             self._pending = None
+            if self._processing_job is not None:
+                self._processing_job.cancelled.set()
             active_job = self._active_job if self._tts_is_active else None
             self._tts_is_active = False
             self._active_job = None

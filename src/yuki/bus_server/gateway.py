@@ -5,9 +5,8 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -339,7 +338,7 @@ class GatewayRuntime:
                 payload = event.get("payload") or {}
                 if topic == Topics.USER_UTTERANCE:
                     turns.append({"role": "user", "text": payload.get("text", ""), "ts": event.get("ts")})
-                if topic == Topics.REPLY:
+                if topic == Topics.REPLY and payload.get("kind", "final") == "final":
                     turns.append({"role": "assistant", "text": payload.get("text", ""), "ts": event.get("ts")})
         return {"session_id": session_id, "turns": turns}
 

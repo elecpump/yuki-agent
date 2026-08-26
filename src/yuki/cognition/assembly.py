@@ -1,13 +1,13 @@
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from yuki.cognition.brain.hub import (
     COGNITION_AWAKE_SERVICE,
     COGNITION_CHAT_SERVICE,
-    DecisionHub,
     SOUL_GET_SERVICE,
+    DecisionHub,
     build_brain,
 )
 from yuki.cognition.brain.local import (
@@ -15,16 +15,13 @@ from yuki.cognition.brain.local import (
     LocalComposer,
     LocalRouter,
     LocalViewBuilder,
-    VisionScreenAdapter,
 )
 from yuki.cognition.brain.persona import (
-    compose_personality_description,
     generate as generate_persona,
 )
 from yuki.cognition.brain.policy import DecisionPolicy
-from yuki.cognition.brain.sedimenter import PreferenceSedimenter
 from yuki.cognition.brain.snapshots import PersonaStore
-from yuki.cognition.brain.soul import PREFS_PER_PERSONA_REGEN, SoulStore, TunerStateStore
+from yuki.cognition.brain.soul import SoulStore, TunerStateStore
 from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
@@ -176,8 +173,6 @@ class CognitionAssembler:
             tuner_state_path=self.config.soul.tuner_state_path,
         )
         soul_store.ensure()
-        persona_refresh = self._build_persona_refresh(memory, bridge, persona_store, soul_store)
-
         policy = DecisionPolicy(
             proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
             proactive_enabled=self.config.brain.proactive_enabled,
@@ -186,7 +181,6 @@ class CognitionAssembler:
         tuner = FeedbackTuner(
             policy,
             TunerStateStore(self.config.soul.tuner_state_path, self.config.persona_name),
-            soul=soul_store,
         )
         tuner.load_soul()
         context = WorkingContext(
@@ -195,19 +189,13 @@ class CognitionAssembler:
         )
         context.restore()
         projector = ContextProjector(max_turns=self.config.context.max_turns)
-        sedimenter = PreferenceSedimenter(
+        local_router, local_composer = self._build_local_brain(model_registry)
+        persona_refresh = self._build_persona_refresh(
             memory,
-            tuner=tuner,
-            min_signals=self.config.sedimenter.min_signals,
-            confidence_threshold=self.config.sedimenter.confidence_threshold,
-            topic_engagement_threshold=self.config.sedimenter.topic_engagement_threshold,
-            soul=soul_store,
-            on_sedimented=persona_refresh,
-        )
-        local_router, local_composer, vision_screen = self._build_local_brain(
-            registry,
-            pipeline,
-            model_registry,
+            bridge,
+            persona_store,
+            soul_store,
+            local_composer,
         )
         self._log_preflight(model_registry.preflight())
         hub = build_brain(
@@ -220,10 +208,10 @@ class CognitionAssembler:
             tuner=tuner,
             context=context,
             projector=projector,
-            sedimenter=sedimenter,
             local_router=local_router,
             local_composer=local_composer,
-            vision_screen=vision_screen,
+            periodic=[persona_refresh],
+            periodic_interval=self.config.persona.refresh_every_utterances,
             register_awake_service=False,
         )
 
@@ -324,19 +312,27 @@ class CognitionAssembler:
                 timeout_s=self.config.cloud.timeout_s,
             ),
             registry=registry,
-            max_turns=self.config.cloud.max_turns,
+            max_turns=(
+                self.config.agent_loop.max_steps
+                if self.config.agent_loop.max_steps is not None
+                else self.config.cloud.max_turns
+            ),
             persona_name=self.config.persona_name,
+            loop_kw={
+                "max_duration_s": self.config.agent_loop.max_duration_s,
+                "tool_result_max_chars": self.config.agent_loop.tool_result_max_chars,
+                "compact_threshold_tokens": self.config.agent_loop.compact_threshold_tokens,
+                "transition_fallback": self.config.agent_loop.transition_fallback,
+            },
         )
 
     def _build_local_brain(
         self,
-        registry: FunctionRegistry,
-        pipeline: PerceptionPipeline,
         model_registry: ModelRegistry,
-    ) -> tuple[LocalRouter | None, LocalComposer | None, VisionScreenAdapter | None]:
+    ) -> tuple[LocalRouter | None, LocalComposer | None]:
         local_cfg = self.config.local_brain
         if not local_cfg.enabled:
-            return None, None, None
+            return None, None
         model = LocalChatModel(
             model_id=local_cfg.model_id,
             cache_dir=local_cfg.cache_dir,
@@ -355,12 +351,10 @@ class CognitionAssembler:
         )
         router = LocalRouter(
             model,
-            registry=registry,
             threshold=local_cfg.router_threshold,
             retry=local_cfg.retry,
             prompt_max_tokens=local_cfg.router_prompt_max_tokens,
             timeout_ms=local_cfg.router_timeout_ms,
-            local_tool_allowlist=local_cfg.local_tool_allowlist,
             model_registry=model_registry,
         )
         composer = LocalComposer(
@@ -371,24 +365,8 @@ class CognitionAssembler:
             timeout_ms=local_cfg.local_reply_timeout_ms,
             model_registry=model_registry,
         )
-        frame_client = pipeline.frame_client
-        vlm = pipeline.vlm
-        screen = (
-            VisionScreenAdapter(frame_client, vlm, timeout_ms=local_cfg.vision_timeout_ms)
-            if frame_client is not None and vlm is not None
-            else None
-        )
-        if screen is not None:
-            self._register_static_component(
-                model_registry,
-                "vision_screen",
-                screen,
-                priority=0,
-                critical=False,
-                dependencies=["frame_client", "vlm"],
-            )
         router.warmup()
-        return router, composer, screen
+        return router, composer
 
     def _register_runtime_models(
         self,
@@ -533,40 +511,15 @@ class CognitionAssembler:
         bridge: CloudBridge | None,
         persona_store: PersonaStore,
         soul_store: SoulStore,
+        local_composer,
     ) -> Callable[[], None]:
-        def persona_refresh(
-            *,
-            label: str = "",
-            confidence: float = 0.0,
-            content: str = "",
-            is_new: bool = True,
-        ) -> None:
-            if label:
-                soul = soul_store.on_preference_sedimented(
-                    label,
-                    confidence,
-                    is_new=is_new,
-                )
-            else:
-                soul = soul_store.load_or_default()
+        def persona_refresh() -> None:
+            soul = soul_store.load_or_default()
             prefs = MemoryAccess(memory).list(
                 purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
                 memory_type="preference",
             )
             refine = bridge.refine_persona if self.config.persona.enable_llm_refine and bridge else None
-            should_regenerate_description = (
-                int(soul.get("prefs_since_regen", 0)) >= PREFS_PER_PERSONA_REGEN
-            )
-            if should_regenerate_description:
-                description = compose_personality_description(
-                    soul,
-                    base_description=self.config.persona.prompt.format(
-                        persona=self.config.persona_name
-                    ),
-                    refine=refine,
-                )
-                if soul_store.set_personality_description(description):
-                    soul = soul_store.load_or_default()
             prompt = generate_persona(
                 self.config.persona_name,
                 prefs,
@@ -576,9 +529,10 @@ class CognitionAssembler:
                 soul=soul,
             )
             snap = persona_store.save(prompt, {}, soul=soul_store.snapshot())
-            if snap is not None and bridge is not None:
-                bridge.set_system_prompt(snap.persona_prompt)
-            if should_regenerate_description:
-                soul_store.reset_prefs_since_regen()
+            effective_prompt = snap.persona_prompt if snap is not None else prompt
+            if bridge is not None:
+                bridge.set_system_prompt(effective_prompt)
+            if local_composer is not None:
+                local_composer.set_system_prompt(effective_prompt)
 
         return persona_refresh

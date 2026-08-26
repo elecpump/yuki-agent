@@ -4,7 +4,6 @@ from yuki.cognition.brain.hub import (
     COGNITION_CHAT_SERVICE,
     SOUL_GET_SERVICE,
 )
-from yuki.cognition.brain.classifier import Intent
 from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
@@ -317,22 +316,6 @@ def test_cognition_agent_teardown_closes_context(tmp_path):
     # 本测试仅验证不抛异常
 
 
-def test_cognition_agent_builds_sedimenter(tmp_path):
-    bus = FakeBus()
-    agent = CognitionAgent(
-        Config(persona={"snapshots_path": str(tmp_path / "persona.json")},
-               context={"snapshot_path": str(tmp_path / "snap.json")}),
-        bus=bus,
-        pipeline=FakePipeline(),
-        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
-    )
-    agent.setup()
-    try:
-        assert agent._hub._sedimenter is not None
-    finally:
-        agent.teardown()
-
-
 def test_cognition_agent_assembles_persona(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
@@ -345,7 +328,7 @@ def test_cognition_agent_assembles_persona(tmp_path):
     agent.setup()
     try:
         assert agent._persona_store is not None
-        assert agent._hub._sedimenter._on_sedimented is not None
+        assert agent._hub._periodic == [agent._persona_refresh]
     finally:
         agent.teardown()
 
@@ -468,7 +451,7 @@ def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, mon
         agent.teardown()
 
 
-def test_persona_refresh_includes_safe_explicit_sedimented_preference(tmp_path, monkeypatch):
+def test_persona_refresh_includes_safe_explicit_preference(tmp_path, monkeypatch):
     class FakeCloudClient:
         def __init__(self, **kwargs):
             self.calls = []
@@ -491,32 +474,14 @@ def test_persona_refresh_includes_safe_explicit_sedimented_preference(tmp_path, 
     )
     agent.setup()
     try:
-        agent._hub._sedimenter.on_user_utterance("请回复简短一些", Intent.SYSTEM)
+        agent._memory.write(
+            "preference",
+            "请回复简短一些",
+            source="user",
+            sensitivity=0,
+        )
+        agent._persona_refresh()
         refine_prompt = fake.calls[-1][-1]["content"]
         assert "请回复简短一些" in refine_prompt
-    finally:
-        agent.teardown()
-
-
-def test_persona_loop_sedimentation_creates_version(tmp_path):
-    config = Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
-                             "enable_llm_refine": False},
-                    context={"snapshot_path": str(tmp_path / "ctx.json")},
-                    cloud={"enabled": True, "base_url": "http://x", "model": "m"})
-    bus = FakeBus()
-    agent = CognitionAgent(
-        config,
-        bus=bus,
-        pipeline=FakePipeline(),
-        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
-    )
-    agent.setup()
-    try:
-        assert agent._bridge is not None
-        assert len(agent._persona_store.list_versions()) == 1  # session-init refresh 创建 v1
-        sedimenter = agent._hub._sedimenter
-        for _ in range(3):
-            sedimenter.on_user_utterance("太吵了", Intent.UNKNOWN)
-        assert len(agent._persona_store.list_versions()) == 2  # 沉淀回调 → 新版本
     finally:
         agent.teardown()

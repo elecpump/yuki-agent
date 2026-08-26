@@ -1,9 +1,5 @@
-from pydantic import BaseModel
-
-from yuki.cognition.brain.classifier import Emotion, Intent
-from yuki.cognition.brain.local.router import LocalRoute, LocalRouter
+from yuki.cognition.brain.local.router import GateRoute, LocalRouter
 from yuki.cognition.model_registry import ModelRegistry, ModelSpec
-from yuki.functions.registry import FunctionRegistry
 
 
 class FakeModel:
@@ -19,71 +15,83 @@ class FakeModel:
         return value
 
 
-class EchoParams(BaseModel):
-    text: str
-
-
-def make_registry():
-    registry = FunctionRegistry()
-
-    @registry.tool("local.echo", description="echo text", params=EchoParams)
-    def echo(params):
-        return {"reply": params.text}
-
-    return registry
-
-
-def test_crisis_short_circuits_before_model():
+def test_crisis_short_circuits_to_cloud_before_model():
     model = FakeModel(RuntimeError("should not run"))
-    router = LocalRouter(model)
-    decision = router.route("我不想活了")
-    assert decision.route == LocalRoute.CLOUD
-    assert decision.intent == Intent.SAFETY
+
+    decision = LocalRouter(model).route("我不想活了")
+
+    assert decision.route == GateRoute.CLOUD
+    assert decision.reason == "crisis"
     assert model.messages == []
 
 
-def test_valid_json_routes_chat_local():
-    model = FakeModel(
-        '{"route":"chat_local","confidence":0.91,"intent":"chit_chat","emotion":"neutral",'
-        '"tool_call":null}'
-    )
-    router = LocalRouter(model, threshold=0.7)
-    decision = router.route("你好")
-    assert decision.route == LocalRoute.CHAT_LOCAL
-    assert decision.intent == Intent.CHIT_CHAT
-    assert decision.emotion == Emotion.NEUTRAL
-    assert decision.trusted_metadata is True
+def test_explicit_preference_short_circuits_to_cloud_before_model():
+    model = FakeModel(RuntimeError("should not run"))
+
+    decision = LocalRouter(model).route("请记住我喜欢黑咖啡")
+
+    assert decision.route == GateRoute.CLOUD
+    assert decision.reason == "explicit_preference"
+    assert model.messages == []
+
+
+def test_valid_json_routes_simple_chat_local():
+    model = FakeModel('{"route":"local","confidence":0.91}')
+
+    decision = LocalRouter(model, threshold=0.7).route("你好")
+
+    assert decision.route == GateRoute.LOCAL
+    assert decision.confidence == 0.91
+    assert decision.reason == "router"
+
+
+def test_valid_json_can_route_complex_request_to_cloud():
+    model = FakeModel('{"route":"cloud","confidence":0.91}')
+
+    decision = LocalRouter(model, threshold=0.7).route("分析一下这份方案")
+
+    assert decision.route == GateRoute.CLOUD
 
 
 def test_low_confidence_falls_to_cloud():
-    model = FakeModel(
-        '{"route":"chat_local","confidence":0.2,"intent":"chit_chat","emotion":"neutral",'
-        '"tool_call":null}'
-    )
-    router = LocalRouter(model, threshold=0.7)
-    decision = router.route("你好")
-    assert decision.route == LocalRoute.CLOUD
-    assert decision.trusted_metadata is False
+    model = FakeModel('{"route":"local","confidence":0.2}')
+
+    decision = LocalRouter(model, threshold=0.7).route("你好")
+
+    assert decision.route == GateRoute.CLOUD
+    assert decision.reason == "low_confidence"
 
 
 def test_invalid_json_retries_then_cloud():
     model = FakeModel("not json", "still not json")
-    router = LocalRouter(model, retry=1)
-    decision = router.route("你好")
-    assert decision.route == LocalRoute.CLOUD
+
+    decision = LocalRouter(model, retry=1).route("你好")
+
+    assert decision.route == GateRoute.CLOUD
+    assert decision.reason == "router_failed"
     assert len(model.messages) == 2
+
+
+def test_router_prompt_only_requests_binary_gate_fields():
+    model = FakeModel('{"route":"local","confidence":0.91}')
+
+    LocalRouter(model).route("你好")
+
+    prompt = str(model.messages[0][0])
+    assert '"local"' in prompt
+    assert '"cloud"' in prompt
+    assert "tool_call" not in prompt
+    assert "emotion" not in prompt
+    assert "intent" not in prompt
 
 
 def test_router_records_model_registry_metrics():
     registry = ModelRegistry()
     registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
-    model = FakeModel(
-        '{"route":"chat_local","confidence":0.91,"intent":"chit_chat","emotion":"neutral",'
-        '"tool_call":null}'
-    )
+    model = FakeModel('{"route":"local","confidence":0.91}')
     router = LocalRouter(model, threshold=0.7, model_registry=registry)
 
-    assert router.route("hi").route == LocalRoute.CHAT_LOCAL
+    assert router.route("hi").route == GateRoute.LOCAL
 
     health = registry.get_model_health("local_chat")
     assert health["success_count"] == 1
@@ -96,34 +104,8 @@ def test_router_records_invalid_model_output_as_failure():
     model = FakeModel("not json")
     router = LocalRouter(model, retry=0, model_registry=registry)
 
-    assert router.route("hi").route == LocalRoute.CLOUD
+    assert router.route("hi").route == GateRoute.CLOUD
 
     health = registry.get_model_health("local_chat")
     assert health["success_count"] == 0
     assert health["failure_count"] == 1
-
-
-def test_tool_local_requires_allowlisted_tool_call():
-    registry = make_registry()
-    model = FakeModel(
-        '{"route":"tool_local","confidence":0.9,"intent":"system","emotion":"neutral",'
-        '"tool_call":{"name":"local.echo","arguments":{"text":"ok"}}}'
-    )
-    router = LocalRouter(
-        model,
-        registry=registry,
-        local_tool_allowlist=["local.echo"],
-    )
-    decision = router.route("echo")
-    assert decision.route == LocalRoute.TOOL_LOCAL
-    assert decision.tool_call["name"] == "local.echo"
-
-
-def test_tool_local_rejects_non_allowlisted_tool():
-    registry = make_registry()
-    model = FakeModel(
-        '{"route":"tool_local","confidence":0.9,"intent":"system","emotion":"neutral",'
-        '"tool_call":{"name":"local.echo","arguments":{"text":"ok"}}}'
-    )
-    router = LocalRouter(model, registry=registry, local_tool_allowlist=[])
-    assert router.route("echo").route == LocalRoute.CLOUD

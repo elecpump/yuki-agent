@@ -4,8 +4,6 @@ import pytest
 
 from yuki.cognition.brain.soul import (
     COOLDOWN_KEY,
-    CORE_VALUE_CATALOG,
-    PREFS_PER_PERSONA_REGEN,
     SoulStore,
     TunerStateStore,
 )
@@ -118,47 +116,3 @@ def test_tuner_state_roundtrip(tmp_path):
     state = TunerStateStore(tmp_path / "tuner_state.json", "yuki")
     state.save({COOLDOWN_KEY: 180.0})
     assert state.load()[COOLDOWN_KEY] == pytest.approx(180.0)
-
-
-def test_adjust_traits_recenters_before_delta(tmp_path):
-    store = SoulStore(tmp_path / "soul.json", "yuki")
-    soul = store.default_soul()
-    soul["personality_traits"]["warmth"] = 1.0
-    store.save(soul)
-    traits = store.adjust_traits({"warmth": -0.03, "directness": 0.02})
-    assert traits["warmth"] == pytest.approx(0.965)
-    assert traits["directness"] == pytest.approx(0.52)
-
-
-def test_catalogued_preference_promotes_guiding_core_value(tmp_path):
-    store = SoulStore(tmp_path / "soul.json", "yuki")
-    label = "yuki.rhythm.frequency.low"
-    soul = store.on_preference_sedimented(label, 0.8)
-    promoted = [v for v in soul["core_values"] if v["id"] == CORE_VALUE_CATALOG[label]["id"]]
-    assert promoted
-    assert promoted[0]["role"] == "guiding"
-    assert soul["prefs_since_regen"] == 1
-
-
-def test_catalogued_preference_below_confidence_does_not_promote(tmp_path):
-    store = SoulStore(tmp_path / "soul.json", "yuki")
-    soul = store.on_preference_sedimented("yuki.rhythm.frequency.low", 0.69)
-    assert all(v["id"] != "cv.rhythm.restraint" for v in soul["core_values"])
-
-
-def test_prefs_since_regen_is_persistent_and_resettable(tmp_path):
-    store = SoulStore(tmp_path / "soul.json", "yuki")
-    for _ in range(PREFS_PER_PERSONA_REGEN):
-        store.on_preference_sedimented("yuki.explicit", 1.0)
-    assert SoulStore(tmp_path / "soul.json", "yuki").load()["prefs_since_regen"] == 5
-    store.reset_prefs_since_regen()
-    assert store.load()["prefs_since_regen"] == 0
-
-
-def test_core_value_feedback_can_modify_guiding_value(tmp_path):
-    store = SoulStore(tmp_path / "soul.json", "yuki")
-    store.on_preference_sedimented("yuki.rhythm.frequency.low", 1.0)
-    store.apply_core_value_feedback("我不需要主动克制,改成先等我明确邀请")
-    value = [v for v in store.load()["core_values"] if v["id"] == "cv.rhythm.restraint"][0]
-    assert value["text"] == "先等我明确邀请"
-    assert value["source"] == "user"

@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+import threading
+import time
 
-from yuki.cognition.brain.classifier import Emotion, Intent
 from yuki.cognition.brain.hub import (
     COGNITION_AWAKE_SERVICE,
     CRISIS_FALLBACK_REPLY,
@@ -8,7 +8,7 @@ from yuki.cognition.brain.hub import (
     DecisionHub,
     build_brain,
 )
-from yuki.cognition.brain.local.router import LocalRoute, RouterDecision
+from yuki.cognition.brain.local.router import GateRoute, RouterDecision
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.context.store import ShortTermTurnStore
@@ -36,6 +36,41 @@ class FakeBridge:
         return self._reply
 
 
+class FakeLoop:
+    def __init__(self, result=None, transition=None, check_interrupt=False):
+        self.calls = []
+        self.result = result or {
+            "text": "cloud reply",
+            "steps": 1,
+            "interrupted": False,
+            "failed": False,
+        }
+        self.transition = transition
+        self.check_interrupt = check_interrupt
+
+    def run(
+        self,
+        utterance,
+        context=None,
+        memory=None,
+        *,
+        crisis=False,
+        on_transition=None,
+        interrupt_check=None,
+    ):
+        self.calls.append({
+            "utterance": utterance,
+            "crisis": crisis,
+            "on_transition": on_transition,
+            "interrupt_check": interrupt_check,
+        })
+        if self.check_interrupt and interrupt_check is not None and interrupt_check():
+            return {"text": "", "steps": 0, "interrupted": True, "failed": False}
+        if self.transition is not None and on_transition is not None:
+            on_transition(self.transition)
+        return dict(self.result)
+
+
 class FakeRouter:
     def __init__(self, decision):
         self.decision = decision
@@ -57,16 +92,6 @@ class FakeComposer:
         if self.error:
             raise self.error
         return self.reply
-
-
-class FakeScreen:
-    def __init__(self, result):
-        self.result = result
-        self.calls = []
-
-    def inspect(self, question):
-        self.calls.append(question)
-        return self.result
 
 
 def _reply_text(bus) -> str | None:
@@ -112,6 +137,112 @@ def test_chat_request_does_not_publish_reply(tmp_path):
     memory.close()
 
 
+def test_chat_request_is_not_interrupted_by_voice_probe(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    loop = FakeLoop(check_interrupt=True)
+    hub = DecisionHub(bus, memory=memory, loop=loop, local_enabled=False)
+    hub.on_user_utterance_probe(
+        Topics.USER_UTTERANCE,
+        {"text": "语音输入", "ts": time.time() + 1.0},
+    )
+
+    result = hub.handle_chat_request({"text": "桌面聊天请求"})
+
+    assert loop.calls[0]["interrupt_check"] is None
+    assert result["text"] == "cloud reply"
+    assert _reply_text(bus) is None
+    memory.close()
+
+
+def test_non_finite_voice_probe_is_ignored_instead_of_poisoning_future_loops(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    loop = FakeLoop(check_interrupt=True)
+    hub = DecisionHub(bus, memory=memory, loop=loop, local_enabled=False)
+    hub.on_user_utterance_probe(
+        Topics.USER_UTTERANCE,
+        {"text": "invalid timestamp", "ts": float("inf")},
+    )
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "ts": time.time()})
+
+    assert _reply_text(bus) == "cloud reply"
+    assert hub._pending_input_ts == 0.0
+    memory.close()
+
+
+def test_interrupted_voice_loop_cancels_published_transition(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    loop = FakeLoop(
+        transition="让我看看",
+        result={"text": "", "steps": 1, "interrupted": True, "failed": False},
+    )
+    hub = DecisionHub(bus, memory=memory, loop=loop, local_enabled=False)
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "查一下", "ts": 1.0})
+
+    replies = [payload for topic, payload in bus.published if topic == Topics.REPLY]
+    assert [payload["kind"] for payload in replies] == ["transition", "cancel"]
+    assert replies[0]["reply_id"] == replies[1]["reply_id"]
+    memory.close()
+
+
+def test_crisis_loop_uses_crisis_mode_and_interrupt_falls_back(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    loop = FakeLoop(
+        result={"text": "", "steps": 1, "interrupted": True, "failed": False},
+    )
+    hub = DecisionHub(bus, memory=memory, loop=loop, local_enabled=False)
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "我想死", "ts": 1.0})
+
+    assert loop.calls[0]["crisis"] is True
+    replies = [payload for topic, payload in bus.published if topic == Topics.REPLY]
+    assert [payload["kind"] for payload in replies] == ["final"]
+    assert replies[0]["text"] == CRISIS_FALLBACK_REPLY
+    assert replies[0]["emotion"] == "sadness"
+    memory.close()
+
+
+def test_periodic_callback_does_not_drop_trigger_while_running(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    fired: list[int] = []
+    first_started = threading.Event()
+    release_first = threading.Event()
+    second_finished = threading.Event()
+
+    def callback():
+        fired.append(1)
+        if len(fired) == 1:
+            first_started.set()
+            assert release_first.wait(1.0)
+        if len(fired) == 2:
+            second_finished.set()
+
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        loop=FakeLoop(),
+        local_enabled=False,
+        periodic=[callback],
+        periodic_interval=2,
+    )
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "一", "ts": 1.0})
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "二", "ts": 2.0})
+    assert first_started.wait(1.0)
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "三", "ts": 3.0})
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "四", "ts": 4.0})
+    release_first.set()
+
+    assert second_finished.wait(1.0)
+    assert len(fired) == 2
+    memory.close()
+
+
 def test_local_disabled_utterance_uses_cloud_when_available(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
@@ -123,10 +254,45 @@ def test_local_disabled_utterance_uses_cloud_when_available(tmp_path):
     memory.close()
 
 
+def test_successful_cloud_reply_uses_input_emotion(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        bridge=FakeBridge(reply="我听到了"),
+        local_enabled=False,
+    )
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "气死我了"})
+
+    reply = next(payload for topic, payload in bus.published if topic == Topics.REPLY)
+    assert reply["emotion"] == "anger"
+    memory.close()
+
+
+def test_cloud_failure_notice_is_always_neutral(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        bridge=FakeBridge(error=CloudError("boom")),
+        local_enabled=False,
+    )
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "气死我了"})
+
+    reply = next(payload for topic, payload in bus.published if topic == Topics.REPLY)
+    assert reply["text"] == L2_UNAVAILABLE_NOTICE
+    assert reply["emotion"] == "neutral"
+    memory.close()
+
+
 def test_crisis_never_calls_router_and_has_static_fallback(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    router = FakeRouter(RouterDecision(LocalRoute.CHAT_LOCAL, 1.0))
+    router = FakeRouter(RouterDecision(GateRoute.LOCAL, 1.0))
     hub = DecisionHub(bus, memory=memory, local_router=router, local_enabled=True)
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "我不想活了"})
     assert router.calls == []
@@ -147,13 +313,7 @@ def test_crisis_can_use_cloud_before_static_fallback(tmp_path):
 def test_chat_local_route_uses_composer(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    decision = RouterDecision(
-        LocalRoute.CHAT_LOCAL,
-        0.9,
-        intent=Intent.CHIT_CHAT,
-        emotion=Emotion.NEUTRAL,
-        trusted_metadata=True,
-    )
+    decision = RouterDecision(GateRoute.LOCAL, 0.9)
     composer = FakeComposer(reply="local hi")
     hub = DecisionHub(
         bus,
@@ -171,7 +331,7 @@ def test_chat_local_route_uses_composer(tmp_path):
 def test_chat_local_failure_falls_to_cloud_notice(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    decision = RouterDecision(LocalRoute.CHAT_LOCAL, 0.9, trusted_metadata=True)
+    decision = RouterDecision(GateRoute.LOCAL, 0.9)
     hub = DecisionHub(
         bus,
         memory=memory,
@@ -184,101 +344,6 @@ def test_chat_local_failure_falls_to_cloud_notice(tmp_path):
     memory.close()
 
 
-class EchoParams(BaseModel):
-    text: str
-
-
-def test_tool_local_dispatches_allowlisted_tool(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    registry = FunctionRegistry()
-
-    @registry.tool("local.echo", description="echo", params=EchoParams)
-    def echo(params):
-        return {"reply": params.text}
-
-    decision = RouterDecision(
-        LocalRoute.TOOL_LOCAL,
-        0.9,
-        intent=Intent.SYSTEM,
-        emotion=Emotion.NEUTRAL,
-        tool_call={"name": "local.echo", "arguments": {"text": "done"}},
-        trusted_metadata=True,
-    )
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        registry=registry,
-        local_router=FakeRouter(decision),
-        local_enabled=True,
-        local_tool_allowlist=["local.echo"],
-    )
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "do it"})
-    assert _reply_text(bus) == "done"
-    memory.close()
-
-
-def test_tool_local_invalid_falls_to_cloud(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    decision = RouterDecision(
-        LocalRoute.TOOL_LOCAL,
-        0.9,
-        tool_call={"name": "local.echo", "arguments": {}},
-        trusted_metadata=True,
-    )
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        local_router=FakeRouter(decision),
-        local_enabled=True,
-        local_tool_allowlist=[],
-    )
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "do it"})
-    assert _reply_text(bus) == L2_UNAVAILABLE_NOTICE
-    memory.close()
-
-
-def test_vision_can_answer_uses_local_composer_with_screen_context(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    decision = RouterDecision(LocalRoute.VISION, 0.9, trusted_metadata=True)
-    composer = FakeComposer(reply="screen answer")
-    screen = FakeScreen({"topic": "论文", "summary": "摘要", "key_points": [], "can_answer": True})
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        local_router=FakeRouter(decision),
-        local_composer=composer,
-        vision_screen=screen,
-        local_enabled=True,
-    )
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "这页讲什么"})
-    assert _reply_text(bus) == "screen answer"
-    assert composer.calls[0][1].situation["topic"] == "论文"
-    memory.close()
-
-
-def test_vision_cannot_answer_falls_to_cloud(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    decision = RouterDecision(LocalRoute.VISION, 0.9, trusted_metadata=True)
-    bridge = FakeBridge(reply="cloud vision")
-    screen = FakeScreen({"topic": "论文", "summary": "摘要", "key_points": [], "can_answer": False})
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        bridge=bridge,
-        local_router=FakeRouter(decision),
-        vision_screen=screen,
-        local_enabled=True,
-    )
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "作者最近论文是什么"})
-    assert _reply_text(bus) == "cloud vision"
-    assert bridge.calls[0][1].situation["topic"] == "论文"
-    memory.close()
-
-
 def test_decision_trace_includes_route(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
@@ -287,7 +352,9 @@ def test_decision_trace_includes_route(tmp_path):
     hub._trace_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert records[0]["route"] == "cloud"
+    assert records[0]["reply_id"]
     assert "tier" not in records[0]
+    assert "intent" not in records[0]
     memory.close()
 
 
@@ -327,59 +394,6 @@ def test_hub_writes_context_without_double_write(tmp_path):
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert ctx.users == ["你好"]
     assert ctx.agents == [L2_UNAVAILABLE_NOTICE]
-    memory.close()
-
-
-class FakeSedimenter:
-    def __init__(self):
-        self.utterances = []
-        self.topics = []
-
-    def on_user_utterance(self, text, intent):
-        self.utterances.append((text, intent))
-
-    def on_engagement(self, topic):
-        self.topics.append(topic)
-
-
-def test_sedimenter_only_receives_trusted_router_metadata(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    sed = FakeSedimenter()
-    decision = RouterDecision(
-        LocalRoute.CHAT_LOCAL,
-        0.9,
-        intent=Intent.SYSTEM,
-        trusted_metadata=True,
-    )
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        sedimenter=sed,
-        local_router=FakeRouter(decision),
-        local_composer=FakeComposer(),
-        local_enabled=True,
-    )
-    hub._context = {"topic": "量子计算"}
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "其实我不喜欢主动聊天"})
-    assert sed.utterances == [("其实我不喜欢主动聊天", Intent.SYSTEM)]
-    assert sed.topics == ["量子计算"]
-    memory.close()
-
-
-def test_sedimenter_skips_router_failure_metadata(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    sed = FakeSedimenter()
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        sedimenter=sed,
-        local_router=FakeRouter(RouterDecision.cloud("router_failed")),
-        local_enabled=True,
-    )
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "其实我不喜欢主动聊天"})
-    assert sed.utterances == []
     memory.close()
 
 
@@ -439,42 +453,8 @@ def test_build_brain_subscribes_and_configures(tmp_path):
     assert COGNITION_AWAKE_SERVICE in bus.services
     assert Topics.AWAKE not in bus.subscriptions
     assert Topics.USER_UTTERANCE in bus.subscriptions
+    assert len(bus.subscriptions[Topics.USER_UTTERANCE]) == 2
     assert Topics.SITUATION_UPDATE in bus.subscriptions
-    memory.close()
-
-
-def test_hub_can_register_custom_route(tmp_path):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-
-    class CustomDispatcher:
-        def can_handle(self, decision):
-            return decision.route == "custom"
-
-        def dispatch(self, text, snapshot, decision):
-            return {
-                "rendered": "custom-reply",
-                "spoke": True,
-                "reason": "custom",
-                "route": "custom",
-                "intent": Intent.UNKNOWN,
-                "emotion": Emotion.NEUTRAL,
-                "actions": [],
-                "trusted_metadata": False,
-            }
-
-    decision = RouterDecision("custom", 0.9, reason="custom")
-    hub = DecisionHub(
-        bus,
-        memory=memory,
-        local_router=FakeRouter(decision),
-        local_composer=FakeComposer(),
-        local_enabled=True,
-    )
-    hub.register_route(CustomDispatcher())
-
-    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "custom route"})
-    assert _reply_text(bus) == "custom-reply"
     memory.close()
 
 

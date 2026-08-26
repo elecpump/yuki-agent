@@ -49,6 +49,23 @@ def test_write_rejects_invalid_memory_type(tmp_path):
         registry.call("memory.write", {"memory_type": "bogus", "content": "x"})
 
 
+@pytest.mark.parametrize("sensitivity", [1, 2])
+def test_write_rejects_non_public_sensitivity(tmp_path, sensitivity):
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    registry = FunctionRegistry()
+    register_memory_functions(registry, manager)
+
+    with pytest.raises(ArgumentValidationError):
+        registry.call(
+            "memory.write",
+            {
+                "memory_type": "preference",
+                "content": "敏感偏好",
+                "sensitivity": sensitivity,
+            },
+        )
+
+
 def test_write_and_get_roundtrip(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     registry = FunctionRegistry()

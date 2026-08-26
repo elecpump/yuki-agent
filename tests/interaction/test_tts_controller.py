@@ -71,6 +71,13 @@ def test_controller_publishes_speaking_before_write_and_finished():
         ("write", b"pcm"),
         (Topics.TTS_FINISHED, "hello"),
     ]
+    lifecycle = [
+        payload
+        for topic, payload in bus.published
+        if topic in {Topics.TTS_SPEAKING, Topics.TTS_FINISHED}
+    ]
+    assert all(payload["kind"] == "final" for payload in lifecycle)
+    assert all(payload["reply_id"] is None for payload in lifecycle)
     controller.shutdown()
 
 
@@ -194,3 +201,210 @@ def test_emotion_mapper_tolerates_missing_and_invalid_values():
     assert mapper.map("neutral") is None
     assert mapper.map("invalid") is None
     assert mapper.map("joy") == [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+
+
+def test_final_replaces_pending_transition_without_synthesizing_it():
+    model = FakeModel()
+    player = FakePlayer()
+    controller = TtsController(model, player, FakeBus())
+
+    with controller._condition:
+        controller.speak("transition", kind="transition", reply_id="r1")
+        controller.speak("final", kind="final", reply_id="r1")
+
+    _wait_until(lambda: ("write", b"pcm") in player.events)
+    assert [text for text, _ in model.calls] == ["final"]
+    controller.shutdown()
+
+
+def test_final_invalidates_transition_still_synthesizing_without_stopping_player():
+    synth_started = threading.Event()
+    release_synth = threading.Event()
+
+    class BlockingModel(FakeModel):
+        def synthesize_stream(self, text, emotion_vector=None):
+            self.calls.append((text, emotion_vector))
+            if text == "transition":
+                synth_started.set()
+                assert release_synth.wait(1.0)
+            return iter([text.encode()])
+
+    model = BlockingModel()
+    player = FakePlayer()
+    controller = TtsController(model, player, FakeBus(), transition_grace_s=0.5)
+    controller.speak("transition", kind="transition", reply_id="r1")
+    assert synth_started.wait(1.0)
+
+    controller.speak("final", kind="final", reply_id="r1")
+
+    assert player.stop_calls == 0
+    release_synth.set()
+    _wait_until(lambda: ("write", b"final") in player.events)
+    assert ("write", b"transition") not in player.events
+    controller.shutdown()
+
+
+def test_final_waits_for_matching_speaking_transition_to_finish_naturally():
+    transition_started = threading.Event()
+    release_transition = threading.Event()
+
+    class TextModel(FakeModel):
+        def synthesize_stream(self, text, emotion_vector=None):
+            self.calls.append((text, emotion_vector))
+            return iter([text.encode()])
+
+    class BlockingPlayer(FakePlayer):
+        def play_stream(self, chunks, on_first_chunk=None):
+            for chunk in chunks:
+                if on_first_chunk is not None:
+                    on_first_chunk()
+                    on_first_chunk = None
+                if chunk == b"transition":
+                    transition_started.set()
+                    assert release_transition.wait(1.0)
+                self.events.append(("write", chunk))
+            return True
+
+    player = BlockingPlayer()
+    controller = TtsController(TextModel(), player, FakeBus(), transition_grace_s=0.5)
+    controller.speak("transition", kind="transition", reply_id="r1")
+    assert transition_started.wait(1.0)
+
+    controller.speak("final", kind="final", reply_id="r1")
+    assert player.stop_calls == 0
+    release_transition.set()
+
+    _wait_until(lambda: ("write", b"final") in player.events)
+    assert player.events[:2] == [("write", b"transition"), ("write", b"final")]
+    assert player.stop_calls == 0
+    controller.shutdown()
+
+
+def test_final_stops_matching_transition_after_grace_expires():
+    transition_started = threading.Event()
+    release_transition = threading.Event()
+
+    class TextModel(FakeModel):
+        def synthesize_stream(self, text, emotion_vector=None):
+            self.calls.append((text, emotion_vector))
+            return iter([text.encode()])
+
+    class BlockingPlayer(FakePlayer):
+        def play_stream(self, chunks, on_first_chunk=None):
+            for chunk in chunks:
+                if on_first_chunk is not None:
+                    on_first_chunk()
+                    on_first_chunk = None
+                if chunk == b"transition":
+                    transition_started.set()
+                    assert release_transition.wait(1.0)
+                    if self.stop_calls:
+                        return False
+                self.events.append(("write", chunk))
+            return True
+
+        def stop(self):
+            super().stop()
+            release_transition.set()
+
+    player = BlockingPlayer()
+    controller = TtsController(TextModel(), player, FakeBus(), transition_grace_s=0.01)
+    controller.speak("transition", kind="transition", reply_id="r1")
+    assert transition_started.wait(1.0)
+
+    controller.speak("final", kind="final", reply_id="r1")
+
+    _wait_until(lambda: ("write", b"final") in player.events)
+    assert player.stop_calls == 1
+    assert ("write", b"transition") not in player.events
+    controller.shutdown()
+
+
+def test_transition_is_dropped_while_final_is_active_without_stopping_it():
+    final_started = threading.Event()
+    release_final = threading.Event()
+
+    class TextModel(FakeModel):
+        def synthesize_stream(self, text, emotion_vector=None):
+            self.calls.append((text, emotion_vector))
+            return iter([text.encode()])
+
+    class BlockingPlayer(FakePlayer):
+        def play_stream(self, chunks, on_first_chunk=None):
+            for chunk in chunks:
+                on_first_chunk()
+                final_started.set()
+                assert release_final.wait(1.0)
+                self.events.append(("write", chunk))
+            return True
+
+    model = TextModel()
+    player = BlockingPlayer()
+    controller = TtsController(model, player, FakeBus())
+    controller.speak("final", kind="final", reply_id="r1")
+    assert final_started.wait(1.0)
+
+    controller.speak("transition", kind="transition", reply_id="r2")
+
+    assert player.stop_calls == 0
+    release_final.set()
+    _wait_until(lambda: ("write", b"final") in player.events)
+    assert [text for text, _ in model.calls] == ["final"]
+    controller.shutdown()
+
+
+def test_cancel_only_stops_matching_identified_transition():
+    transition_started = threading.Event()
+    release_transition = threading.Event()
+
+    class BlockingPlayer(FakePlayer):
+        def play_stream(self, chunks, on_first_chunk=None):
+            for chunk in chunks:
+                on_first_chunk()
+                transition_started.set()
+                assert release_transition.wait(1.0)
+                return False
+            return True
+
+        def stop(self):
+            super().stop()
+            release_transition.set()
+
+    player = BlockingPlayer()
+    controller = TtsController(FakeModel(), player, FakeBus())
+    controller.speak("transition", kind="transition", reply_id="r1")
+    assert transition_started.wait(1.0)
+
+    controller.cancel(None)
+    controller.cancel("other")
+    assert player.stop_calls == 0
+    controller.cancel("r1")
+
+    assert player.stop_calls == 1
+    controller.shutdown()
+
+
+def test_cancel_never_stops_a_final_with_the_same_reply_id():
+    final_started = threading.Event()
+    release_final = threading.Event()
+
+    class BlockingPlayer(FakePlayer):
+        def play_stream(self, chunks, on_first_chunk=None):
+            for chunk in chunks:
+                on_first_chunk()
+                final_started.set()
+                assert release_final.wait(1.0)
+                self.events.append(("write", chunk))
+            return True
+
+    player = BlockingPlayer()
+    controller = TtsController(FakeModel(), player, FakeBus())
+    controller.speak("final", kind="final", reply_id="r1")
+    assert final_started.wait(1.0)
+
+    controller.cancel("r1")
+
+    assert player.stop_calls == 0
+    release_final.set()
+    _wait_until(lambda: ("write", b"pcm") in player.events)
+    controller.shutdown()

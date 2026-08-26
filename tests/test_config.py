@@ -245,6 +245,18 @@ def test_cloud_defaults():
     assert config.cloud.max_turns == 3
 
 
+def test_agent_loop_defaults():
+    config = Config()
+    assert config.agent_loop.max_steps is None
+    assert config.agent_loop.max_duration_s == 15.0
+    assert config.agent_loop.transition_enabled is True
+    assert config.agent_loop.transition_fallback == "让我看一下……"
+    assert config.agent_loop.transition_grace_s == 0.8
+    assert config.agent_loop.tool_result_max_chars == 2000
+    assert config.agent_loop.compact_threshold_tokens == 0
+    assert config.agent_loop.interrupt_enabled is True
+
+
 def test_cloud_env_override(monkeypatch):
     monkeypatch.setenv("YUKI_CLOUD_ENABLED", "true")
     monkeypatch.setenv("YUKI_CLOUD_MODEL", "gpt-5")
@@ -430,25 +442,11 @@ def test_context_env_override(monkeypatch):
     assert config.context.snapshot_path == "tmp/snap.json"
 
 
-def test_sedimenter_defaults():
-    config = Config()
-    assert config.sedimenter.min_signals == 3
-    assert config.sedimenter.confidence_threshold == 0.6
-    assert config.sedimenter.topic_engagement_threshold == 3
-
-
-def test_sedimenter_env_override(monkeypatch):
-    monkeypatch.setenv("YUKI_SEDIMENTER_MIN_SIGNALS", "5")
-    monkeypatch.setenv("YUKI_SEDIMENTER_CONFIDENCE_THRESHOLD", "0.8")
-    config = Config.load(None)
-    assert config.sedimenter.min_signals == 5
-    assert config.sedimenter.confidence_threshold == 0.8
-
-
 def test_persona_defaults():
     config = Config()
     assert config.persona.max_versions == 50
     assert config.persona.enable_llm_refine is False
+    assert config.persona.refresh_every_utterances == 30
     assert config.persona.snapshots_path == "data/persona_snapshots.json"
     assert "yuki" in config.persona.prompt or "{persona}" in config.persona.prompt
 

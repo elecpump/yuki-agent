@@ -1,11 +1,12 @@
+import math
 import threading
 import time
+import uuid
 
-from yuki.cognition.brain.classifier import Emotion, Intent
-from yuki.cognition.brain.local.router import LocalRoute, RouterDecision, is_crisis
+from yuki.cognition.brain.classifier import Emotion, detect_emotion
+from yuki.cognition.brain.local.router import GateRoute, RouterDecision, is_crisis
 from yuki.cognition.brain.policy import DecisionPolicy, SituationAction, TriggerKind
-from yuki.cognition.brain.route import DecisionRouter, RouteDispatcher
-from yuki.cognition.brain.sink import DecisionSink, SedimenterSink, TunerSink
+from yuki.cognition.brain.sink import DecisionSink, TunerSink
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.logger import get_decision_logger, get_logger
 from yuki.topics import Topics
@@ -20,29 +21,6 @@ CRISIS_FALLBACK_REPLY = (
 COGNITION_AWAKE_SERVICE = "cognition.awake"
 COGNITION_CHAT_SERVICE = "cognition.chat"
 SOUL_GET_SERVICE = "soul.get"
-
-
-class _HubRouteDispatcher:
-    def __init__(self, route: LocalRoute, handler) -> None:
-        self._route = route
-        self._handler = handler
-
-    def can_handle(self, decision: RouterDecision) -> bool:
-        return decision.route == self._route
-
-    def dispatch(self, text, snapshot, decision) -> dict:
-        return self._handler(text, snapshot, decision)
-
-
-class _HubCloudFallback:
-    def __init__(self, hub: "DecisionHub") -> None:
-        self._hub = hub
-
-    def can_handle(self, decision: RouterDecision) -> bool:
-        return True
-
-    def dispatch(self, text, snapshot, decision) -> dict:
-        return self._hub._cloud_or_notice(text, snapshot, decision=decision, reason="cloud")
 
 
 def situation_provenance(situation: dict | None) -> dict:
@@ -65,23 +43,23 @@ class DecisionTrace:
         *,
         ts,
         trigger,
-        intent,
         emotion,
         actions,
         rendered,
         reason,
         route,
+        reply_id,
         cooldown_state,
         situation_provenance=None,
     ) -> None:
         self.ts = ts
         self.trigger = trigger
-        self.intent = intent
         self.emotion = emotion
         self.actions = actions
         self.rendered = rendered
         self.reason = reason
         self.route = route
+        self.reply_id = reply_id
         self.cooldown_state = cooldown_state
         self.situation_provenance = situation_provenance or {}
 
@@ -89,19 +67,19 @@ class DecisionTrace:
         return {
             "ts": self.ts,
             "trigger": self.trigger,
-            "intent": self.intent,
             "emotion": self.emotion,
             "actions": [a.name if hasattr(a, "name") else str(a) for a in self.actions],
             "rendered": self.rendered,
             "reason": self.reason,
             "route": self.route,
+            "reply_id": self.reply_id,
             "cooldown_state": self.cooldown_state,
             "situation_provenance": self.situation_provenance,
         }
 
 
 class DecisionHub:
-    """Brain core after local-brain route rewrite."""
+    """Coordinate the binary local/cloud decision and publish completed replies."""
 
     def __init__(
         self,
@@ -112,15 +90,16 @@ class DecisionHub:
         registry=None,
         trace_logger=None,
         bridge=None,
+        loop=None,
         tuner=None,
         context=None,
         projector=None,
-        sedimenter=None,
         local_router=None,
         local_composer=None,
-        vision_screen=None,
         local_enabled: bool = False,
-        local_tool_allowlist: list[str] | None = None,
+        transition_enabled: bool = True,
+        periodic=None,
+        periodic_interval: int = 0,
     ) -> None:
         self._bus = bus
         self._policy = policy or DecisionPolicy(proactive_cooldown_s=120.0)
@@ -128,39 +107,30 @@ class DecisionHub:
         self._registry = registry
         self._trace_logger = trace_logger or get_decision_logger()
         self._bridge = bridge
+        self._loop = loop or (getattr(bridge, "loop", None) if bridge is not None else None)
         self._tuner = tuner
         self._sinks: list[DecisionSink] = []
         if tuner is not None:
             self._sinks.append(TunerSink(tuner))
-        if sedimenter is not None:
-            self._sinks.append(SedimenterSink(sedimenter))
         self._local_router = local_router
         self._local_composer = local_composer
-        self._vision_screen = vision_screen
         self._local_enabled = local_enabled
-        self._local_tool_allowlist = set(local_tool_allowlist or [])
         self._decision_lock = threading.Lock()
+        self._probe_lock = threading.Lock()
+        self._pending_input_ts = 0.0
+        self._transition_enabled = bool(transition_enabled)
+        self._periodic = list(periodic or [])
+        self._periodic_interval = max(0, int(periodic_interval or 0))
+        self._utterance_count = 0
+        self._periodic_running = False
+        self._periodic_pending = 0
+        self._periodic_lock = threading.Lock()
         self._context = None
         self._situation_fast = None
         self._situation_deep = None
         self._last_open_ts = None
         self._context_wrapper = context
         self._projector = projector
-        self._sedimenter = sedimenter
-        self._route_registry = DecisionRouter()
-        self._route_registry.register(_HubRouteDispatcher(
-            LocalRoute.CHAT_LOCAL, self._dispatch_chat_local,
-        ))
-        self._route_registry.register(_HubRouteDispatcher(
-            LocalRoute.TOOL_LOCAL, self._dispatch_tool_local,
-        ))
-        self._route_registry.register(_HubRouteDispatcher(
-            LocalRoute.VISION, self._dispatch_vision,
-        ))
-        self._route_fallback = _HubCloudFallback(self)
-
-    def register_route(self, dispatcher: RouteDispatcher) -> None:
-        self._route_registry.register(dispatcher)
 
     def register_sink(self, sink: DecisionSink) -> None:
         self._sinks.append(sink)
@@ -183,8 +153,19 @@ class DecisionHub:
         )
 
     def on_user_utterance(self, topic: str, payload: dict) -> None:
-        text = payload.get("text", "")
-        self._handle(TriggerKind.UTTERANCE, text, publish_reply=True)
+        self._handle(TriggerKind.UTTERANCE, payload.get("text", ""), publish_reply=True)
+
+    def on_user_utterance_probe(self, topic: str, payload: dict) -> None:
+        ts = (payload or {}).get("ts")
+        if (
+            isinstance(ts, bool)
+            or not isinstance(ts, (int, float))
+            or not math.isfinite(float(ts))
+        ):
+            logger.warning("ignoring utterance probe without valid timestamp")
+            return
+        with self._probe_lock:
+            self._pending_input_ts = max(self._pending_input_ts, float(ts))
 
     def _handle(
         self,
@@ -217,32 +198,37 @@ class DecisionHub:
             snapshot = ContextSnapshot(situation=effective_situation)
 
         if trigger == TriggerKind.UTTERANCE:
-            result = self._handle_utterance(text, snapshot, effective_situation)
+            result = self._handle_utterance(
+                text,
+                snapshot,
+                effective_situation,
+                publish_reply=publish_reply,
+            )
         elif trigger == TriggerKind.SITUATION:
             result = self._handle_situation(trigger, effective_situation)
         else:
-            result = {
-                "rendered": "",
-                "spoke": False,
-                "reason": "silent",
-                "route": "silent",
-                "intent": Intent.UNKNOWN,
-                "emotion": Emotion.NEUTRAL,
-                "actions": [],
-                "trusted_metadata": False,
-            }
+            result = self._result("", False, reason="silent", route="silent")
 
         rendered = result["rendered"]
         spoke = result["spoke"]
         emotion = result["emotion"]
         emotion_value = emotion.value if hasattr(emotion, "value") else str(emotion)
         reply_ts = time.time()
+        reply_id = result.get("reply_id")
+        if spoke and reply_id is None:
+            reply_id = uuid.uuid4().hex
         if spoke:
             self._last_open_ts = reply_ts
             if publish_reply:
                 self._bus.publish(
                     Topics.REPLY,
-                    {"text": rendered, "ts": reply_ts, "emotion": emotion_value},
+                    {
+                        "text": rendered,
+                        "ts": reply_ts,
+                        "emotion": emotion_value,
+                        "kind": "final",
+                        "reply_id": reply_id,
+                    },
                 )
 
         if self._context_wrapper is not None:
@@ -256,34 +242,22 @@ class DecisionHub:
                 sink.on_proactive_open()
         if trigger == TriggerKind.UTTERANCE:
             for sink in self._sinks:
-                if not bool(getattr(sink, "trusted_only", False)):
-                    sink.on_user_utterance(text)
-
-        intent = result["intent"]
-        if (
-            trigger == TriggerKind.UTTERANCE
-            and result.get("trusted_metadata")
-            and intent != Intent.UNKNOWN
-            and result.get("reason") != "crisis"
-        ):
-            topic = (effective_situation or {}).get("topic")
-            for sink in self._sinks:
-                if bool(getattr(sink, "trusted_only", False)):
-                    sink.on_user_utterance(text, intent)
-                    if topic:
-                        sink.on_engagement(topic)
+                sink.on_user_utterance(text)
+            self._utterance_count += 1
+            if self._periodic_interval > 0 and self._utterance_count % self._periodic_interval == 0:
+                self._run_periodic()
 
         self._trace_logger.info(
             "decision",
             **DecisionTrace(
                 ts=time.time(),
                 trigger=trigger.value,
-                intent=intent.value,
                 emotion=emotion_value,
                 actions=result["actions"],
                 rendered=rendered,
                 reason=result["reason"],
                 route=result["route"],
+                reply_id=reply_id,
                 cooldown_state={"last_open_ts": self._last_open_ts},
                 situation_provenance=situation_provenance(effective_situation),
             ).to_dict(),
@@ -296,34 +270,73 @@ class DecisionHub:
             "reason": result["reason"],
         }
 
+    def _run_periodic(self) -> None:
+        with self._periodic_lock:
+            self._periodic_pending += 1
+            if self._periodic_running:
+                return
+            self._periodic_running = True
+
+        def worker() -> None:
+            while True:
+                with self._periodic_lock:
+                    if self._periodic_pending <= 0:
+                        self._periodic_running = False
+                        return
+                    self._periodic_pending -= 1
+                for callback in self._periodic:
+                    try:
+                        callback()
+                    except Exception:
+                        logger.warning("periodic callback failed", exc_info=True)
+
+        threading.Thread(target=worker, daemon=True, name="yuki-periodic").start()
+
     def _handle_utterance(
         self,
         text: str,
         snapshot: ContextSnapshot,
         situation: dict | None,
+        *,
+        publish_reply: bool,
     ) -> dict:
         if is_crisis(text):
-            rendered, spoke, failed = self._try_cloud(text, snapshot)
-            if failed or not spoke:
+            cloud = self._call_cloud(text, snapshot, crisis=True, publish_reply=publish_reply)
+            if cloud["failed"] or cloud["interrupted"] or not cloud["spoke"]:
                 rendered, spoke = CRISIS_FALLBACK_REPLY, True
+            else:
+                rendered, spoke = cloud["rendered"], True
             return self._result(
                 rendered,
                 spoke,
                 reason="crisis",
-                route=LocalRoute.CLOUD,
-                intent=Intent.SAFETY,
+                route=GateRoute.CLOUD,
                 emotion=Emotion.SADNESS,
+                reply_id=cloud["reply_id"],
             )
 
         if not self._local_enabled or self._local_router is None:
-            return self._cloud_or_notice(text, snapshot, reason="cloud")
+            return self._cloud_or_notice(
+                text,
+                snapshot,
+                reason="cloud",
+                publish_reply=publish_reply,
+            )
 
         decision = self._local_router.route(text, snapshot=snapshot, situation=situation)
-        return self._route_registry.dispatch(
+        if decision.route == GateRoute.CLOUD:
+            return self._cloud_or_notice(
+                text,
+                snapshot,
+                decision=decision,
+                reason="cloud",
+                publish_reply=publish_reply,
+            )
+        return self._dispatch_local(
             text,
             snapshot,
             decision,
-            fallback=self._route_fallback,
+            publish_reply=publish_reply,
         )
 
     def _handle_situation(self, trigger: TriggerKind, situation: dict | None) -> dict:
@@ -342,71 +355,48 @@ class DecisionHub:
             actions=actions,
         )
 
-    def _dispatch_chat_local(
+    def _dispatch_local(
         self,
         text: str,
         snapshot: ContextSnapshot,
         decision: RouterDecision,
+        *,
+        publish_reply: bool,
     ) -> dict:
         if self._local_composer is None:
-            return self._cloud_or_notice(text, snapshot, decision=decision, reason="chat_local_failed")
+            return self._cloud_or_notice(
+                text,
+                snapshot,
+                decision=decision,
+                reason="chat_local_failed",
+                publish_reply=publish_reply,
+            )
         try:
             rendered = self._local_composer.generate(text, snapshot=snapshot, memory=self._memory)
         except Exception:
             logger.warning("local reply failed, falling back to cloud", exc_info=True)
-            return self._cloud_or_notice(text, snapshot, decision=decision, reason="chat_local_failed")
+            return self._cloud_or_notice(
+                text,
+                snapshot,
+                decision=decision,
+                reason="chat_local_failed",
+                publish_reply=publish_reply,
+            )
         if not rendered:
-            return self._cloud_or_notice(text, snapshot, decision=decision, reason="chat_local_empty")
+            return self._cloud_or_notice(
+                text,
+                snapshot,
+                decision=decision,
+                reason="chat_local_empty",
+                publish_reply=publish_reply,
+            )
         return self._result(
             rendered,
             True,
             reason="chat_local",
             route=decision.route,
-            intent=decision.intent,
-            emotion=decision.emotion,
-            trusted_metadata=decision.trusted_metadata,
+            emotion=detect_emotion(text),
         )
-
-    def _dispatch_tool_local(
-        self,
-        text: str,
-        snapshot: ContextSnapshot,
-        decision: RouterDecision,
-    ) -> dict:
-        if self._registry is None or not self._is_allowed_tool_call(decision.tool_call):
-            return self._cloud_or_notice(text, snapshot, decision=decision, reason="tool_local_invalid")
-        result = self._registry.dispatch(decision.tool_call)
-        if not result.get("ok"):
-            return self._cloud_or_notice(text, snapshot, decision=decision, reason="tool_local_failed")
-        rendered = self._render_tool_result(result.get("result"))
-        return self._result(
-            rendered,
-            bool(rendered),
-            reason="tool_local",
-            route=decision.route,
-            intent=decision.intent,
-            emotion=decision.emotion,
-            trusted_metadata=decision.trusted_metadata,
-        )
-
-    def _dispatch_vision(
-        self,
-        text: str,
-        snapshot: ContextSnapshot,
-        decision: RouterDecision,
-    ) -> dict:
-        if self._vision_screen is None:
-            return self._cloud_or_notice(text, snapshot, decision=decision, reason="vision_unavailable")
-        context = self._vision_screen.inspect(text)
-        if context.get("can_answer"):
-            vision_snapshot = self._snapshot_with_situation(snapshot, context)
-            return self._dispatch_chat_local(text, vision_snapshot, decision)
-        cloud_snapshot = (
-            self._snapshot_with_situation(snapshot, context)
-            if context and not context.get("degraded")
-            else self._snapshot_with_situation(snapshot, None)
-        )
-        return self._cloud_or_notice(text, cloud_snapshot, decision=decision, reason="vision_cloud")
 
     def _cloud_or_notice(
         self,
@@ -415,19 +405,137 @@ class DecisionHub:
         *,
         decision: RouterDecision | None = None,
         reason: str,
+        publish_reply: bool = True,
     ) -> dict:
-        rendered, spoke, failed = self._try_cloud(text, snapshot)
-        if failed or not spoke:
-            rendered, spoke, reason = L2_UNAVAILABLE_NOTICE, True, "l2_unavailable_fallback"
+        cloud = self._call_cloud(text, snapshot, publish_reply=publish_reply)
+        if cloud["interrupted"]:
+            return self._result(
+                "",
+                False,
+                reason="interrupted",
+                route=GateRoute.CLOUD,
+                reply_id=cloud["reply_id"],
+            )
+        if cloud["failed"] or not cloud["spoke"]:
+            return self._result(
+                L2_UNAVAILABLE_NOTICE,
+                True,
+                reason="l2_unavailable_fallback",
+                route=GateRoute.CLOUD,
+                emotion=Emotion.NEUTRAL,
+                reply_id=cloud["reply_id"],
+            )
         return self._result(
-            rendered,
-            spoke,
+            cloud["rendered"],
+            True,
             reason=reason,
-            route=LocalRoute.CLOUD,
-            intent=decision.intent if decision else Intent.UNKNOWN,
-            emotion=decision.emotion if decision else Emotion.NEUTRAL,
-            trusted_metadata=bool(decision and decision.trusted_metadata),
+            route=GateRoute.CLOUD,
+            emotion=detect_emotion(text),
+            reply_id=cloud["reply_id"],
         )
+
+    def _call_cloud(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        *,
+        crisis: bool = False,
+        publish_reply: bool,
+    ) -> dict:
+        if self._loop is not None:
+            return self._run_cloud_loop(
+                text,
+                snapshot,
+                crisis=crisis,
+                publish_reply=publish_reply,
+            )
+        rendered, spoke, failed = self._try_cloud(text, snapshot)
+        return {
+            "rendered": rendered,
+            "spoke": spoke,
+            "failed": failed,
+            "interrupted": False,
+            "reply_id": uuid.uuid4().hex,
+        }
+
+    def _run_cloud_loop(
+        self,
+        text: str,
+        snapshot: ContextSnapshot,
+        *,
+        crisis: bool = False,
+        publish_reply: bool,
+    ) -> dict:
+        reply_id = uuid.uuid4().hex
+        started = time.time()
+        transition_sent = False
+
+        def on_transition(transition: str) -> None:
+            nonlocal transition_sent
+            transition_sent = True
+            self._bus.publish(
+                Topics.REPLY,
+                {
+                    "text": transition,
+                    "ts": time.time(),
+                    "emotion": "neutral",
+                    "kind": "transition",
+                    "reply_id": reply_id,
+                },
+            )
+
+        def interrupt_check() -> bool:
+            with self._probe_lock:
+                return self._pending_input_ts > started
+
+        try:
+            result = self._loop.run(
+                text,
+                snapshot,
+                self._memory,
+                crisis=crisis,
+                on_transition=(
+                    on_transition if publish_reply and self._transition_enabled else None
+                ),
+                interrupt_check=interrupt_check if publish_reply else None,
+            )
+        except Exception:
+            logger.warning("agent loop failed", exc_info=True)
+            return {
+                "rendered": "",
+                "spoke": False,
+                "failed": True,
+                "interrupted": False,
+                "reply_id": reply_id,
+            }
+        if result.get("interrupted"):
+            if publish_reply and transition_sent:
+                self._bus.publish(
+                    Topics.REPLY,
+                    {
+                        "text": "",
+                        "ts": time.time(),
+                        "emotion": "neutral",
+                        "kind": "cancel",
+                        "reply_id": reply_id,
+                    },
+                )
+            return {
+                "rendered": "",
+                "spoke": False,
+                "failed": False,
+                "interrupted": True,
+                "reply_id": reply_id,
+            }
+        reply = (result.get("text") or "").strip()
+        failed = bool(result.get("failed")) or not reply
+        return {
+            "rendered": "" if failed else reply,
+            "spoke": not failed,
+            "failed": failed,
+            "interrupted": False,
+            "reply_id": reply_id,
+        }
 
     def _try_cloud(self, text: str, snapshot: ContextSnapshot | None) -> tuple[str, bool, bool]:
         if self._bridge is None:
@@ -441,24 +549,6 @@ class DecisionHub:
         if not reply:
             return "", False, True
         return reply, True, False
-
-    def _is_allowed_tool_call(self, tool_call: dict | None) -> bool:
-        if not isinstance(tool_call, dict):
-            return False
-        name = tool_call.get("name")
-        return isinstance(name, str) and name in self._local_tool_allowlist
-
-    def _render_tool_result(self, result) -> str:
-        if isinstance(result, str):
-            return result.strip()
-        if isinstance(result, dict):
-            for key in ("reply", "text", "message"):
-                value = result.get(key)
-                if isinstance(value, str) and value.strip():
-                    return value.strip()
-        if result is not None:
-            return "好的。"
-        return ""
 
     def _render_situation_actions(
         self,
@@ -476,18 +566,6 @@ class DecisionHub:
                 fragments.append(f"关于{topic}，你想聊哪一块？" if topic else "想聊聊吗？")
         return " ".join(fragments)
 
-    def _snapshot_with_situation(
-        self,
-        snapshot: ContextSnapshot,
-        situation: dict | None,
-    ) -> ContextSnapshot:
-        return ContextSnapshot(
-            situation=situation,
-            recent_turns=snapshot.recent_turns,
-            summaries=snapshot.summaries,
-            long_term_memory=snapshot.long_term_memory,
-        )
-
     def _result(
         self,
         rendered: str,
@@ -495,20 +573,18 @@ class DecisionHub:
         *,
         reason: str,
         route,
-        intent: Intent = Intent.UNKNOWN,
         emotion: Emotion = Emotion.NEUTRAL,
         actions: list | None = None,
-        trusted_metadata: bool = False,
+        reply_id: str | None = None,
     ) -> dict:
         return {
             "rendered": rendered,
             "spoke": spoke,
             "reason": reason,
             "route": route.value if hasattr(route, "value") else str(route),
-            "intent": intent,
             "emotion": emotion,
             "actions": actions or [],
-            "trusted_metadata": trusted_metadata,
+            "reply_id": reply_id,
         }
 
     def _select_situation(self, payload: dict) -> dict:
@@ -546,14 +622,14 @@ def build_brain(
     tuner=None,
     context=None,
     projector=None,
-    sedimenter=None,
+    periodic=None,
+    periodic_interval: int = 0,
     local_router=None,
     local_composer=None,
-    vision_screen=None,
     register_awake_service: bool = True,
 ) -> DecisionHub:
-    from yuki.config import Config
     from yuki.cognition.brain.soul import SoulStore
+    from yuki.config import Config
 
     cfg = config or Config.from_env()
     if policy is None:
@@ -577,15 +653,17 @@ def build_brain(
         tuner=tuner,
         context=context,
         projector=projector,
-        sedimenter=sedimenter,
         local_router=local_router,
         local_composer=local_composer,
-        vision_screen=vision_screen,
         local_enabled=cfg.local_brain.enabled,
-        local_tool_allowlist=cfg.local_brain.local_tool_allowlist,
+        transition_enabled=cfg.agent_loop.transition_enabled,
+        periodic=periodic,
+        periodic_interval=periodic_interval,
     )
     if register_awake_service:
         bus.respond(COGNITION_AWAKE_SERVICE, hub.handle_awake_request)
     bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance)
+    if cfg.agent_loop.interrupt_enabled:
+        bus.subscribe(Topics.USER_UTTERANCE, hub.on_user_utterance_probe)
     bus.subscribe(Topics.SITUATION_UPDATE, hub.on_situation_update)
     return hub

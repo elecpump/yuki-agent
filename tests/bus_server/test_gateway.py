@@ -269,6 +269,42 @@ def test_gateway_history_reads_user_and_assistant_turns(tmp_path):
     ]
 
 
+def test_gateway_history_only_keeps_final_replies(tmp_path):
+    session = tmp_path / "sess-1"
+    session.mkdir()
+    events = [
+        {"ts": 1.0, "topic": Topics.USER_UTTERANCE, "payload": {"text": "hi"}},
+        {
+            "ts": 2.0,
+            "topic": Topics.REPLY,
+            "payload": {"text": "one moment", "kind": "transition", "reply_id": "r1"},
+        },
+        {
+            "ts": 3.0,
+            "topic": Topics.REPLY,
+            "payload": {"text": "", "kind": "cancel", "reply_id": "r1"},
+        },
+        {
+            "ts": 4.0,
+            "topic": Topics.REPLY,
+            "payload": {"text": "answer", "kind": "final", "reply_id": "r1"},
+        },
+    ]
+    (session / "events.jsonl").write_text(
+        "\n".join(json.dumps(event) for event in events),
+        encoding="utf-8",
+    )
+    runtime, client = _client(Config(gateway={"history_dir": str(tmp_path)}))
+
+    with client:
+        history = client.get("/api/history/sess-1").json()
+
+    assert history["turns"] == [
+        {"role": "user", "text": "hi", "ts": 1.0},
+        {"role": "assistant", "text": "answer", "ts": 4.0},
+    ]
+
+
 def test_bus_server_agent_starts_and_stops_gateway():
     class FakeGateway:
         def __init__(self):

@@ -12,7 +12,7 @@ Date: 2026-08-26
 - pyaudio OutputStream **流式播放**（SDK 输出 22050 Hz；流式粒度为 **segment 级**（已确认），每段合成完返回一个 torch.Tensor，归一化为 16-bit mono PCM 后"合成完一段播一段"）。
 - emotion 为**可选增强**：REPLY 可不携带 emotion；不指定/`neutral` 时 `emo_vector=None`，**沿用参考音频的自然情绪**（不构造"neutral 向量"）。
 - 降级策略：IndexTTS 不可用 → 控制台打印（`[yuki] {text}` 前缀不变，e2e 依赖此格式）。
-- **线程模型**：`speak()` 仅执行轻量控制操作（递增 generation、必要时立即停止当前播放、覆盖待处理 job）后返回；合成 + 播放跑在 TtsController 专用 worker 线程，绝不在 bus 订阅回调线程里执行（GPU 合成 + 阻塞播放会卡死订阅分发）。
+- **线程模型**：`speak()` 仅执行轻量控制操作（使过期 job 的取消 token 失效、必要时停止当前播放、覆盖待处理 job）后返回；合成 + 播放跑在 TtsController 专用 worker 线程，绝不在 bus 订阅回调线程里执行（GPU 合成 + 阻塞播放会卡死订阅分发）。
 - **语言策略**：合成必须显式传 `lang`（SDK `infer(..., lang, ...)` 无默认）；本期由 `TtsConfig.language` 配置决定（默认 `zh`），语言自动检测留后续。
 - **参考音频为硬依赖**：SDK 直接读取 `spk_audio_prompt`，**无默认音色**；配置校验失败（文件缺失/不可读）→ 禁用模型 → console 降级，不存在"引擎默认声音"。
 
@@ -80,21 +80,24 @@ DecisionHub → event/reply {text, emotion?}        ← §4 改造后 emotion �
            "reason": result["reason"], "emotion": result["emotion"].value}
    ```
 
-4. **interaction 侧读取**（`agent.py:78`）：`self._tts.speak(payload["text"], emotion=payload.get("emotion", "neutral"))`。`ReplyPayload` 变更后，旧格式（无 emotion）仍兼容——`payload.get` 兜底。
+4. **interaction 侧读取**：`kind` 缺省按 `final`；`transition`/`final` 调用 `speak(..., kind=kind, reply_id=reply_id)`，`cancel` 只调用 `cancel(reply_id)`，不合成空文本。旧格式（无 emotion/kind/reply_id）仍按 neutral final 兼容。
 
 ## 组件设计
 
 ### 5.1 TtsController（新文件 `src/yuki/interaction/tts_controller.py`）
 
 - 构造注入：`IndexTTSModel`、`AudioPlayer`、`EmotionMapper`、bus（发布事件用）、config。
-- **worker 线程 + latest-job 槽**：只保留一个待处理 job（`Queue(maxsize=1)` 并覆盖旧 pending，或 condition + `_pending` 单槽，优先复用 `_LatestJobWorker` 思路，其线程即 `daemon=True`）；**worker 线程必须 `daemon=True`**——GPU 合成不可取消，join 超时后依赖进程退出回收资源，非 daemon 线程会永久阻止解释器退出；`speak(text, emotion="neutral")` 做完轻量控制后立即返回，worker 串行消费。禁止使用无界队列积累已经过期的回复。打断语义：
-  - **generation 计数**：每次 `speak` 时**立即递增**（在途 job 即刻失效，不等 worker 轮询），并覆盖尚未开始的 pending job；worker 在合成前、每次 generator yield 后、播放前均校验 generation/停止标志，过期即关闭 generator 并丢弃。若当前正在播放，`speak()` 同步调用 `player.stop()` 后返回。
-  - **`stop()`**：递增 generation + **立即调用 `player.stop()`**（`stop_stream()` 停流、**不关流**，见 §5.3）；`stop()` 需持锁（pyaudio `stop_stream` 非线程安全）。bus 回调线程调 `stop()` 时可能等待 worker 持有的 write 锁，上界约一个 chunk 的 write 时长（≈46ms + PortAudio 缓冲），可接受，但不得在锁内叠加更重操作。
+- **worker 线程 + pending 单槽**：只保留一个待处理 job，worker 串行合成/播放且必须 `daemon=True`；禁止无界队列积累过期回复。job 带 `kind`/`reply_id` 和取消 token，worker 在合成返回后、播放前及 chunk 之间检查 token。调度语义：
+  - **final latest-wins**：新 final 覆盖 pending final，并停止旧的 active final。active/pending final 存在时，transition 直接丢弃，不得停止 final。
+  - **pending/合成中 transition**：同 `reply_id` final 到达时立即清除 pending，或使合成中 job 失效；迟到音频必须丢弃，不进入 `player.play_stream()`，也不等 grace。
+  - **已播放 transition**：只有已经 `_mark_speaking` 的同 id transition 可自然收尾至多 `agent_loop.transition_grace_s`；超时后 `player.stop()`，再播放 final。
+  - **cancel**：仅清除/停止匹配非空 `reply_id` 的 transition；`reply_id=None`、不匹配 id 或 final 均不受影响。
+  - **`stop()`**：使 pending/processing job 的取消 token 失效 + **立即调用 `player.stop()`**（`stop_stream()` 停流、**不关流**，见 §5.3）；`stop()` 需持锁（pyaudio `stop_stream` 非线程安全）。bus 回调线程调 `stop()` 时可能等待 worker 持有的 write 锁，上界约一个 chunk 的 write 时长（≈46ms + PortAudio 缓冲），可接受，但不得在锁内叠加更重操作。
   - **物理现实**：GPU 上的合成一旦开始不可取消——"打断 = 丢弃过期 chunk 流 + 停播"，不是取消 GPU 任务；正在合成的 job 无法中途停止，只能丢弃其产出。
-- **事件时机契约**：`event/tts_speaking` 在**首个音频 chunk 实际写入声卡之前**发布（由 `AudioPlayer.play_stream` 在首次 `write()` 前回调触发，见 §5.3）；**没有产出音频（合成失败/空输出）时不发布 speaking**。`event/tts_finished` **仅当 speaking 已发布**才发布（正常结束、被打断、合成中途异常均发，保证 ASR 状态不悬挂），均带 `text`、`ts`；播放期间由 controller 内部维护 active 状态（`is_active` 属性，供健康上报）。
+- **事件时机契约**：`event/tts_speaking` 在**首个音频 chunk 实际写入声卡之前**发布（由 `AudioPlayer.play_stream` 在首次 `write()` 前回调触发，见 §5.3）；**没有产出音频（合成失败/空输出）时不发布 speaking**。`event/tts_finished` **仅当 speaking 已发布**才发布，均带 `text`、`ts`、`kind`、`reply_id`；播放期间由 controller 内部维护 active 状态（`is_active` 属性，供健康上报）。
 - 模型不可用（LoadGate disabled/degraded）→ 直接控制台打印 `[yuki] {text}`，不发布 speaking/finished 事件（ASR 无需联动）。
 - 空文本（strip 后为空）→ 直接 return，不合成不发布。
-- **`shutdown()`（供 `InteractionAgent.teardown()` 调用）**，顺序固定：① 在 controller 锁内原子设置 `stopping=True`、递增 generation、清空 pending，并捕获/清除 `_tts_is_active` → ② **`player.stop()`**（先物理停播，解除 worker 阻塞在 `write()` 的可能）→ ③ 若步骤①捕获到 active，发布一次 `event/tts_finished`（必须在停播后发布，且与 worker 的 finally 通过 active 标志保证恰好一次）→ ④ `join(timeout=2s)`。仅当 worker 已退出时才调用 `player.close()`；若超时，记录 warning 并不跨线程 close，依赖进程退出回收资源（worker 为 daemon 线程，见上，进程可正常退出）。worker 在每次 generator yield 后和任何 player 调用前都必须检查 `stopping`，保证超时后也不会再次访问 player。
+- **`shutdown()`（供 `InteractionAgent.teardown()` 调用）**，顺序固定：① 在 controller 锁内原子设置 `stopping=True`、使 pending/processing job 的取消 token 失效、清空 pending，并捕获/清除 `_tts_is_active` → ② **`player.stop()`**（先物理停播，解除 worker 阻塞在 `write()` 的可能）→ ③ 若步骤①捕获到 active，发布一次 `event/tts_finished`（必须在停播后发布，且与 worker 的 finally 通过 active 标志保证恰好一次）→ ④ `join(timeout=2s)`。仅当 worker 已退出时才调用 `player.close()`；若超时，记录 warning 并不跨线程 close，依赖进程退出回收资源（worker 为 daemon 线程，见上，进程可正常退出）。worker 在每次 generator yield 后和任何 player 调用前都必须检查 `stopping`，保证超时后也不会再次访问 player。
 
 ### 5.2 IndexTTSModel（新文件 `src/yuki/interaction/tts.py`）
 
@@ -214,7 +217,7 @@ class TtsConfig(BaseModel):
 | 模型加载失败 / GPU 显存不足 | LoadGate `mark_failure` → console 打印 → 60s 窗口后下次 speak 惰性重试 |
 | 配置校验失败（`cfg_path`/`model_dir`/参考音频/必需 checkpoint/`hf_cache` 辅助模型任一无效） | warning + **`IndexTTSModel._config_error` 永久拦截（进程生命周期内不重试，不经 LoadGate，§5.2）** → console 降级；health 必须 `degraded=True`；SDK 无默认音色，"缺 ref 用默认声音"不成立 |
 | 空文本（strip 后为空） | 直接 return，不合成、不发布事件 |
-| 播放期间新 REPLY | `speak` 更新 latest-job 槽并 generation++ → **立即 `player.stop()`（停流不关流）** → 丢弃过期 chunk → 新合成（合成不可取消，见 §5.1） |
+| 播放期间新 final | 使旧 final 的取消 token 失效 → **立即 `player.stop()`（停流不关流）** → 丢弃过期 chunk → 新合成；同 id transition 则先等待 grace（见 §5.1） |
 | pyaudio 初始化/播放失败 | error 日志 → 本次降级 console → 下次播放 `_ensure_stream()`：inactive → `start_stream()`；closed/不可恢复 → 惰性重建（§5.3） |
 | emotion 缺失 / 非法值 | `emo_vector=None`（沿用参考音频自然情绪），容错 `Emotion(str(...))` 抛 `ValueError` 的路径 |
 | 合成中途异常 / 无音频产出 | 捕获 → 日志 → 本次降级 console → **仅当 speaking 已发布才发布 `event/tts_finished`**（未发布 speaking 则不发，ASR 从未关闭无需回退） |
@@ -249,7 +252,7 @@ class TtsConfig(BaseModel):
 - **数据链路**：hub 发布 REPLY 含 `emotion`；旧格式载荷（无 emotion）兼容。
 - ASR 联动：`event/tts_speaking` → AsrSession `tts` 状态（**断言新状态名，非 `speaking`**）；`event/tts_finished` → 回退；合成异常且 speaking 已发布 → 也发布 finished（状态不悬挂）。
 - **事件时机**：合成失败/空输出 → **不发布 speaking**（ASR 不关闭）；speaking 在首个 chunk 写入前发布（FakeStream 断言回调与 `write()` 的相对顺序）。
-- 播放期间新 REPLY → generation 递增 + **立即 `player.stop()`（FakePlayer 断言 stop 调用时机）** → 旧流丢弃。
+- 播放期间新 final → 旧 final 取消 token 失效 + **立即 `player.stop()`（FakePlayer 断言 stop 调用时机）** → 旧流丢弃。
 - **生命周期**：`shutdown()` 断言 **置 stopping/清 active → player.stop → finished（active 时恰好一次）→ join → close** 的相对顺序；finished 不得早于物理停播。join 超时断言不调用 `player.close()`，且 worker 后续不再访问 player。**worker 线程 `daemon=True`**（断言 `thread.daemon is True`）。
 - 配置校验失败（`cfg_path`/`model_dir`/参考音频/任一必需 checkpoint/`hf_cache` 辅助模型无效）→ `_config_error` 永久拦截（**多次 speak 不重试**）+ console 降级 + health 含 `config_error` 且 `degraded=True`。
 - **emotion 归一化**：非 neutral 向量经 `normalize_emo_vec(apply_bias=True)` 后**总强度 ≤ 0.8**（FakeModel 断言）；neutral/缺失 → `emo_vector=None`。
@@ -258,7 +261,7 @@ class TtsConfig(BaseModel):
 - **可选依赖**：未安装 `pyaudio` 时仍可导入 interaction 相关模块、运行 `enabled=False` 路径；首次实际播放才触发懒导入，失败后本次 console 降级。
 - `language` 非法值（如 `ko`）→ Config 加载期 Pydantic 校验失败。
 - 空文本不合成、不发布事件。
-- **latest-job**：连续快速调用 `speak(A/B/C)` 时只保留 C；A 在途时 generation 失效，B pending 被 C 覆盖，无界队列不增长；旧 job 失败时也不得打印或发布成当前回复。
+- **latest-final**：连续快速调用 final `speak(A/B/C)` 时只保留 C；A 在途时取消 token 失效，B pending 被 C 覆盖，无界队列不增长；旧 job 失败时也不得打印或发布成当前回复。
 - `speak()` 不执行合成/阻塞播放；除一次受锁保护的 `player.stop()` 外立即返回。
 
 ## 范围外（后续阶段）
