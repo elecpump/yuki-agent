@@ -22,6 +22,26 @@ def test_defaults():
     assert config.health.heartbeat_interval_s == 5.0
 
 
+def test_tts_defaults_and_language_validation():
+    config = Config()
+    assert config.tts.enabled is False
+    assert config.tts.language == "zh"
+    assert config.tts.chunk_size == 1024
+    assert not hasattr(config.tts, "sample_rate")
+    with pytest.raises(ValidationError):
+        Config(tts={"language": "ko"})
+
+
+def test_tts_env_override(monkeypatch):
+    monkeypatch.setenv("YUKI_TTS_ENABLED", "true")
+    monkeypatch.setenv("YUKI_TTS_LANGUAGE", "ja")
+    monkeypatch.setenv("YUKI_TTS_CHUNK_SIZE", "2048")
+    config = Config.from_env()
+    assert config.tts.enabled is True
+    assert config.tts.language == "ja"
+    assert config.tts.chunk_size == 2048
+
+
 def test_from_env_merges_env_overrides(monkeypatch):
     monkeypatch.setenv("YUKI_BUS_BASE_PORT", "7000")
     monkeypatch.setenv("YUKI_BUS_HWM", "500")

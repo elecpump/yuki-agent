@@ -72,6 +72,15 @@ stt:
     vad_interval_ms: 400
     end_silence_ms: 800
     max_utterance_s: 10.0
+tts:
+  enabled: false
+  cfg_path: checkpoints/config.yaml
+  model_dir: checkpoints
+  use_bf16: true
+  language: zh
+  reference_audio_path: data/tts/reference_audio/default.wav
+  chunk_size: 1024
+  retry_window_s: 60.0
 cloud:
   enabled: false
   base_url: https://api.deepseek.com/v1

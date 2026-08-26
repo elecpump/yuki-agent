@@ -75,20 +75,25 @@ class AsrSession:
     def feed(self, samples) -> bool:
         """on_mic：累积 pre-roll；listening 时同时入 speech buffer，返回是否 listening。"""
         with self._lock:
+            if self._state == "tts":
+                return False
             self._pre_roll.append(samples)
-            listening = self._listening
-        if listening:
-            self.add_frame(samples)
-        return listening
+            if not self._listening:
+                return False
+            self._add_frame_locked(samples)
+            return True
 
     def add_frame(self, samples) -> None:
-        self._speech_buffer.add_frame(samples)
         with self._lock:
             if not self._listening:
                 return
-            if self.has_speech():
-                self._state = "speaking"
-                self._last_activity = self._clock()
+            self._add_frame_locked(samples)
+
+    def _add_frame_locked(self, samples) -> None:
+        self._speech_buffer.add_frame(samples)
+        if self._listening and self.has_speech():
+            self._state = "speaking"
+            self._last_activity = self._clock()
 
     def has_speech(self) -> bool:
         has_speech = getattr(self._speech_buffer, "has_speech", None)
@@ -139,11 +144,39 @@ class AsrSession:
 
     def return_to_idle(self) -> None:
         with self._lock:
+            if self._state == "tts":
+                return
             self._generation += 1
             self._session_id = None
             self._state = "idle"
             self._listening = False
             self._current_timeout_s = self._listen_timeout_s
+            self._speech_buffer.reset()
+
+    def enter_tts(self) -> None:
+        """Pause recognition and discard microphone history while TTS is audible."""
+        with self._lock:
+            if self._state == "tts":
+                return
+            self._generation += 1
+            self._session_id = None
+            self._state = "tts"
+            self._listening = False
+            self._current_timeout_s = self._listen_timeout_s
+            self._pre_roll.clear()
+            self._speech_buffer.reset()
+
+    def exit_tts(self) -> None:
+        """Return from TTS ducking to idle without reviving a stale ASR session."""
+        with self._lock:
+            if self._state != "tts":
+                return
+            self._generation += 1
+            self._session_id = None
+            self._state = "idle"
+            self._listening = False
+            self._current_timeout_s = self._listen_timeout_s
+            self._pre_roll.clear()
             self._speech_buffer.reset()
 
     def reset(self) -> None:

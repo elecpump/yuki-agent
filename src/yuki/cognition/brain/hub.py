@@ -234,11 +234,16 @@ class DecisionHub:
 
         rendered = result["rendered"]
         spoke = result["spoke"]
+        emotion = result["emotion"]
+        emotion_value = emotion.value if hasattr(emotion, "value") else str(emotion)
         reply_ts = time.time()
         if spoke:
             self._last_open_ts = reply_ts
             if publish_reply:
-                self._bus.publish(Topics.REPLY, {"text": rendered, "ts": reply_ts})
+                self._bus.publish(
+                    Topics.REPLY,
+                    {"text": rendered, "ts": reply_ts, "emotion": emotion_value},
+                )
 
         if self._context_wrapper is not None:
             if trigger == TriggerKind.UTTERANCE:
@@ -274,7 +279,7 @@ class DecisionHub:
                 ts=time.time(),
                 trigger=trigger.value,
                 intent=intent.value,
-                emotion=result["emotion"].value,
+                emotion=emotion_value,
                 actions=result["actions"],
                 rendered=rendered,
                 reason=result["reason"],
@@ -283,7 +288,13 @@ class DecisionHub:
                 situation_provenance=situation_provenance(effective_situation),
             ).to_dict(),
         )
-        return {"text": rendered, "ts": reply_ts, "spoke": spoke, "reason": result["reason"]}
+        return {
+            "text": rendered,
+            "ts": reply_ts,
+            "emotion": emotion_value,
+            "spoke": spoke,
+            "reason": result["reason"],
+        }
 
     def _handle_utterance(
         self,

@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -127,6 +128,17 @@ class SttConfig(BaseModel):
         return _validate_model_device(value)
 
 
+class TtsConfig(BaseModel):
+    enabled: bool = False
+    cfg_path: str = "checkpoints/config.yaml"
+    model_dir: str = "checkpoints"
+    use_bf16: bool = True
+    language: Literal["zh", "en", "ja", "ar", "es"] = "zh"
+    reference_audio_path: str = "data/tts/reference_audio/default.wav"
+    chunk_size: int = Field(1024, ge=1)
+    retry_window_s: float = Field(60.0, ge=0.0)
+
+
 class CloudConfig(BaseModel):
     enabled: bool = False
     base_url: str = "https://api.openai.com/v1"
@@ -208,6 +220,7 @@ class Config(BaseModel):
     local_brain: LocalBrainConfig = Field(default_factory=LocalBrainConfig)
     vlm: VlmConfig = Field(default_factory=VlmConfig)
     stt: SttConfig = Field(default_factory=SttConfig)
+    tts: TtsConfig = Field(default_factory=TtsConfig)
     cloud: CloudConfig = Field(default_factory=CloudConfig)
     soul: SoulConfig = Field(default_factory=SoulConfig)
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
@@ -245,6 +258,7 @@ class Config(BaseModel):
             ("local_brain", LocalBrainConfig),
             ("vlm", VlmConfig),
             ("stt", SttConfig),
+            ("tts", TtsConfig),
             ("cloud", CloudConfig),
             ("soul", SoulConfig),
             ("perception", PerceptionConfig),

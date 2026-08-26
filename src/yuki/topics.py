@@ -8,3 +8,5 @@ class Topics:
     HEARTBEAT = "event/heartbeat"
     MIC = "audio/mic"
     TTS_REF = "audio/tts_ref"
+    TTS_SPEAKING = "event/tts_speaking"
+    TTS_FINISHED = "event/tts_finished"

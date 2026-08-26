@@ -93,6 +93,8 @@ def test_local_disabled_utterance_goes_cloud_notice(tmp_path):
     hub = DecisionHub(bus, memory=memory, local_enabled=False)
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert _reply_text(bus) == L2_UNAVAILABLE_NOTICE
+    reply = next(payload for topic, payload in bus.published if topic == Topics.REPLY)
+    assert reply["emotion"] == "neutral"
     memory.close()
 
 
@@ -105,6 +107,7 @@ def test_chat_request_does_not_publish_reply(tmp_path):
 
     assert result["text"] == L2_UNAVAILABLE_NOTICE
     assert result["spoke"] is True
+    assert result["emotion"] == "neutral"
     assert _reply_text(bus) is None
     memory.close()
 

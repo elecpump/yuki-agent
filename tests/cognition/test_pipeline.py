@@ -312,6 +312,32 @@ def test_pipeline_understand_screen_returns_vlm_context():
     assert not any(t == Topics.REPLY for t, _ in bus.published)
 
 
+def test_pipeline_tts_events_duck_and_restore_asr():
+    sb = FakeSpeechBuffer()
+    bus = FakeBus()
+    pipeline = build_pipeline(
+        bus,
+        vlm=FakeVLM(),
+        stt=FakeSTT(),
+        frame_client=FakeFrameClient(),
+        speech_buffer=sb,
+    )
+    assert Topics.TTS_SPEAKING in bus.subscriptions
+    assert Topics.TTS_FINISHED in bus.subscriptions
+
+    bus.subscriptions[Topics.AWAKE][0](Topics.AWAKE, {"source": "hotkey"})
+    bus.subscriptions[Topics.TTS_SPEAKING][0](Topics.TTS_SPEAKING, {"text": "reply"})
+    assert pipeline._asr.state == "tts"
+
+    pcm = base64.b64encode(np.ones(320, dtype=np.float32).tobytes()).decode("ascii")
+    bus.subscriptions[Topics.MIC][0](Topics.MIC, {"pcm": pcm, "sample_rate": 16000})
+    assert sb.frames == []
+
+    bus.subscriptions[Topics.TTS_FINISHED][0](Topics.TTS_FINISHED, {"text": "reply"})
+    assert pipeline._asr.state == "idle"
+    pipeline.close()
+
+
 def test_pipeline_understand_screen_uses_text_evidence_before_vlm():
     vlm = FakeVLM()
     pipeline = _make_pipeline(

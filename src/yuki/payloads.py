@@ -10,6 +10,7 @@ class AwakePayload(TypedDict):
 class ReplyPayload(TypedDict):
     text: str
     ts: float
+    emotion: NotRequired[str]
 
 
 class FocusChangedPayload(TypedDict):

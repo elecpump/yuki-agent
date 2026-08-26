@@ -89,3 +89,43 @@ def test_is_current_matches_session():
     sid = session.session_id
     assert session.is_current(sid) is True
     assert session.is_current(sid + 1) is False
+
+
+def test_tts_state_discards_audio_and_clears_pre_roll():
+    now = [10.0]
+    sb = FakeSpeechBuffer()
+    session = _session(now, sb)
+    before = np.ones(320, dtype=np.float32)
+    session.feed(before)
+
+    session.enter_tts()
+    assert session.state == "tts"
+    assert session.session_id is None
+    assert session.feed(np.ones(320, dtype=np.float32) * 2) is False
+    assert sb.frames == []
+
+    session.exit_tts()
+    assert session.state == "idle"
+    assert session.begin() == []
+
+
+def test_tts_transitions_are_idempotent_and_cancel_processing():
+    now = [10.0]
+    sb = FakeSpeechBuffer()
+    session = _session(now, sb)
+    session.begin()
+    sid = session.session_id
+    assert session.consume_utterance(sid) is True
+
+    session.enter_tts()
+    resets_after_enter = sb.reset_calls
+    session.enter_tts()
+    assert session.state == "tts"
+    assert sb.reset_calls == resets_after_enter
+    assert session.is_current(sid) is False
+
+    session.exit_tts()
+    resets_after_exit = sb.reset_calls
+    session.exit_tts()
+    assert session.state == "idle"
+    assert sb.reset_calls == resets_after_exit

@@ -7,17 +7,13 @@ from yuki.bus import BusError, BusTimeoutError
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.config import Config
 from yuki.health import HealthStatus
+from yuki.interaction.audio_output import AudioPlayer
 from yuki.interaction.hotkey import HotkeyManager
+from yuki.interaction.tts import IndexTTSModel
+from yuki.interaction.tts_controller import TtsController
 from yuki.payloads import ReplyPayload
 from yuki.process import ProcessAgent
 from yuki.topics import Topics
-
-
-class TTS:
-    """TTS 合成桩：控制台输出。Phase 4 由真实语音合成替换。"""
-
-    def speak(self, text: str) -> None:
-        print(f"[yuki] {text}", flush=True)
 
 
 class FocusManager:
@@ -68,14 +64,21 @@ class InteractionAgent(ProcessAgent):
                  hotkeys=None, tts=None, focus_manager=None, volume_controller=None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
         self._hotkeys = hotkeys or HotkeyManager()
-        self._tts = tts or TTS()
+        self._tts = tts or TtsController(
+            IndexTTSModel(config.tts),
+            AudioPlayer(chunk_size=config.tts.chunk_size),
+            self.bus,
+        )
         self._focus_manager = focus_manager or FocusManager()
         self._volume_controller = volume_controller or VolumeController()
-        self._tts_is_active = False
+
+    def _speak(self, text: str, emotion: object = "neutral") -> None:
+        # 契约：注入的 TTS 必须接受 emotion kwarg（TtsController 与测试 FakeTTS 均满足）。
+        self._tts.speak(text, emotion=emotion)
 
     def setup(self) -> None:
         def on_reply(topic: str, payload: dict) -> None:
-            self._tts.speak(payload["text"])
+            self._speak(payload["text"], emotion=payload.get("emotion", "neutral"))
 
         def trigger_call() -> None:
             try:
@@ -85,14 +88,17 @@ class InteractionAgent(ProcessAgent):
                     timeout_ms=self.config.health.timeout_ms,
                 )
             except (BusError, BusTimeoutError):
-                self._tts.speak("我现在连接不上 cognition。")
+                self._speak("我现在连接不上 cognition。", emotion="neutral")
                 return
             text = (reply or {}).get("text", "")
             if text:
-                self._tts.speak(text)
+                self._speak(text, emotion=(reply or {}).get("emotion", "neutral"))
 
         self.bus.subscribe(Topics.REPLY, on_reply)
         self._hotkeys.register("trigger", trigger_call)
+        warmup = getattr(self._tts, "warmup", None)
+        if callable(warmup):
+            warmup()
 
         if "--trigger-after" in sys.argv:
             import threading
@@ -105,11 +111,19 @@ class InteractionAgent(ProcessAgent):
             threading.Thread(target=delayed, daemon=True).start()
 
     def teardown(self) -> None:
-        pass
+        shutdown = getattr(self._tts, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
+    def _tts_health(self) -> HealthStatus:
+        check = getattr(self._tts, "health", None)
+        detail = check() if callable(check) else {"output": "injected"}
+        # TTS degradation is an intentional console fallback, not a process failure.
+        return HealthStatus(True, detail)
 
     def health_components(self):
         return {
-            "tts": lambda: HealthStatus(True, {"output": "console"}),
+            "tts": self._tts_health,
             "hotkeys": lambda: HealthStatus(
                 "trigger" in getattr(self._hotkeys, "_handlers", {}),
                 {"installed": "trigger" in getattr(self._hotkeys, "_handlers", {})},

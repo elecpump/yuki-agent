@@ -404,6 +404,12 @@ class PerceptionPipeline:
         samples = np.frombuffer(raw, dtype=np.float32)
         self._asr.feed(samples)
 
+    def on_tts_speaking(self, topic: str, payload: dict) -> None:
+        self._asr.enter_tts()
+
+    def on_tts_finished(self, topic: str, payload: dict) -> None:
+        self._asr.exit_tts()
+
     def check_asr_due(self) -> bool:
         return self._asr.check_due()
 
@@ -564,4 +570,6 @@ def build_pipeline(bus, *, vlm=None, stt=None,
     bus.subscribe(Topics.FOCUS_CHANGED, pipeline.on_focus_changed)
     bus.subscribe(Topics.AWAKE, pipeline.on_awake)
     bus.subscribe(Topics.MIC, pipeline.on_mic)
+    bus.subscribe(Topics.TTS_SPEAKING, pipeline.on_tts_speaking)
+    bus.subscribe(Topics.TTS_FINISHED, pipeline.on_tts_finished)
     return pipeline

@@ -1,6 +1,8 @@
-from yuki.config import Config
+import time
+
 from yuki.bus import BusTimeoutError
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
+from yuki.config import Config
 from yuki.interaction.agent import InteractionAgent, VolumeController
 from yuki.interaction.hotkey import HotkeyManager
 from yuki.topics import Topics
@@ -22,9 +24,11 @@ class FakeHotkeys:
 class FakeTTS:
     def __init__(self):
         self.said = []
+        self.emotions = []
 
-    def speak(self, text):
+    def speak(self, text, emotion="neutral"):
         self.said.append(text)
+        self.emotions.append(emotion)
 
 
 def test_hotkey_manager_register_trigger():
@@ -50,6 +54,7 @@ def test_interaction_agent_requests_awake_on_trigger_and_speaks_reply():
     agent._hotkeys.trigger("trigger")
     assert calls and calls[0]["source"] == "hotkey"
     assert tts.said == ["ready"]
+    assert tts.emotions == ["neutral"]
     assert not any(topic == Topics.AWAKE for topic, _ in bus.published)
     agent.teardown()
 
@@ -92,4 +97,38 @@ def test_interaction_agent_reply_feeds_tts():
     agent.setup()
     bus.subscriptions[Topics.REPLY][0](Topics.REPLY, {"text": "你好", "ts": 0.0})
     assert tts.said == ["你好"]
+    assert tts.emotions == ["neutral"]
+    agent.teardown()
+
+
+def test_interaction_agent_forwards_reply_emotion():
+    bus = FakeBus()
+    tts = FakeTTS()
+    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=tts)
+    agent.setup()
+    bus.subscriptions[Topics.REPLY][0](
+        Topics.REPLY,
+        {"text": "太好了", "emotion": "joy", "ts": 0.0},
+    )
+    assert tts.said == ["太好了"]
+    assert tts.emotions == ["joy"]
+    agent.teardown()
+
+
+def test_default_disabled_tts_falls_back_without_optional_dependencies(capsys):
+    bus = FakeBus()
+    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys())
+    agent.setup()
+    bus.subscriptions[Topics.REPLY][0](
+        Topics.REPLY,
+        {"text": "console fallback", "emotion": "joy", "ts": 0.0},
+    )
+    deadline = time.monotonic() + 1.0
+    output = ""
+    while "console fallback" not in output and time.monotonic() < deadline:
+        time.sleep(0.01)
+        output += capsys.readouterr().out
+    assert "[yuki] console fallback" in output
+    assert agent._tts_health().ok is True
+    assert agent._tts_health().detail["degraded"] is True
     agent.teardown()
