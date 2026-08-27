@@ -190,6 +190,11 @@ class BusHub(_Base):
                 "router": {"ok": True},
             },
         }
+
+    def health_snapshot(self) -> dict:
+        """Return a thread-safe snapshot for an in-process BusHub owner."""
+        return self._collect_health()
+
     def _router_loop(self) -> None:
         while not self._stop.is_set():
             self._purge_stale_services(time.monotonic())
@@ -289,6 +294,8 @@ class BusHub(_Base):
 class BusNode(_Base):
     """节点：PUB/DEALER/SUB，publish/subscribe/request/respond。"""
 
+    supports_response_lanes = True
+
     def __init__(
         self,
         base_port: int = 5555,
@@ -297,6 +304,10 @@ class BusNode(_Base):
         subscriber_queue_size: int = 256,
         auth_token: str = "",
         max_msg_size: int = 10 * 1024 * 1024,
+        responder_queue_size: int | None = None,
+        control_workers: int = 1,
+        work_workers: int = 4,
+        stream_workers: int = 2,
     ) -> None:
         super().__init__()
         self._xsub_port = base_port
@@ -308,7 +319,7 @@ class BusNode(_Base):
         self._max_msg_size = max_msg_size
         self._register_interval = register_interval
         self._handlers: dict[str, list[Callable[[str, dict], None]]] = {}
-        self._services: dict[str, Callable[[dict], dict]] = {}
+        self._services: dict[str, tuple[Callable[[dict], dict], str]] = {}
         self._pending: dict[str, dict] = {}
         self._handlers_lock = threading.Lock()
         # 兼容旧代码路径：订阅/请求/响应共用一把互斥锁即可满足
@@ -323,6 +334,12 @@ class BusNode(_Base):
 
         self._pub_queue: queue.Queue = queue.Queue(maxsize=max(1, hwm))
         self._dealer_outbox: queue.Queue = queue.Queue(maxsize=max(1, hwm * 2))
+        lane_queue_size = max(1, responder_queue_size or hwm)
+        self._responder_queues: dict[str, queue.Queue] = {
+            "control": queue.Queue(maxsize=lane_queue_size),
+            "work": queue.Queue(maxsize=lane_queue_size),
+            "stream": queue.Queue(maxsize=lane_queue_size),
+        }
         self._sub_cmds: queue.Queue = queue.Queue()
         self._loop_heartbeats = {
             "pub": time.monotonic(),
@@ -353,6 +370,16 @@ class BusNode(_Base):
         self._spawn(self._dealer_loop, name="yuki-bus-dealer")
         self._spawn(self._register_loop, name="yuki-bus-register")
         self._spawn(self._run_sub, name="yuki-bus-sub")
+        for lane, worker_count in {
+            "control": control_workers,
+            "work": work_workers,
+            "stream": stream_workers,
+        }.items():
+            for index in range(max(1, int(worker_count))):
+                self._spawn(
+                    lambda lane=lane: self._responder_worker(lane),
+                    name=f"yuki-bus-responder:{lane}:{index}",
+                )
 
     @property
     def error_count(self) -> int:
@@ -378,6 +405,7 @@ class BusNode(_Base):
             "threads": ages,
             "dropped_count": dropped,
         }
+
     def _bump_error(self, n: int = 1) -> None:
         with self._counts_lock:
             self._error_count += n
@@ -448,7 +476,7 @@ class BusNode(_Base):
         event = threading.Event()
         trace_id = uuid.uuid4().hex
         envelope = build_request(service, rid, trace_id, payload)
-        with self._lock:
+        with self._pending_lock:
             self._pending[rid] = {"event": event, "result": None}
         frames = [service.encode()]
         if self._auth_token:
@@ -457,16 +485,16 @@ class BusNode(_Base):
         if not self._enqueue_dealer(
             frames, timeout_s=min(max(timeout_ms / 1000.0, 0.1), 2.0)
         ):
-            with self._lock:
+            with self._pending_lock:
                 self._pending.pop(rid, None)
             raise BusTimeoutError(
                 f"request to {service!r} dropped: dealer outbox full"
             )
         if not event.wait(timeout_ms / 1000.0):
-            with self._lock:
+            with self._pending_lock:
                 self._pending.pop(rid, None)
             raise BusTimeoutError(f"request to {service!r} timed out after {timeout_ms}ms")
-        with self._lock:
+        with self._pending_lock:
             resp = self._pending.pop(rid)["result"]
         if resp is None:
             raise BusTimeoutError(f"request to {service!r} timed out after {timeout_ms}ms")
@@ -474,9 +502,17 @@ class BusNode(_Base):
             raise BusError(resp.response.error)
         return response_result(resp)
 
-    def respond(self, service: str, handler: Callable[[dict], dict]) -> None:
+    def respond(
+        self,
+        service: str,
+        handler: Callable[[dict], dict],
+        *,
+        lane: str = "work",
+    ) -> None:
+        if lane not in self._responder_queues:
+            raise ValueError(f"unknown responder lane: {lane}")
         with self._services_lock:
-            self._services.__setitem__(service, handler)  # locked
+            self._services[service] = (handler, lane)
         if not self._enqueue_dealer(self._register_frames(service)):
             logger.warning(
                 "REGISTER frame dropped (dealer outbox full)", service=service
@@ -491,6 +527,50 @@ class BusNode(_Base):
                 except queue.Full:
                     # 队列已满时 worker 正在退出或积压；关闭阶段由 daemon 线程兜底。
                     pass
+        for responder_queue in self._responder_queues.values():
+            for _ in range(8):
+                try:
+                    responder_queue.put_nowait(None)
+                except queue.Full:
+                    try:
+                        responder_queue.get_nowait()
+                    except queue.Empty:
+                        break
+
+    def _responder_worker(self, lane: str) -> None:
+        responder_queue = self._responder_queues[lane]
+        while not self._stop.is_set():
+            try:
+                item = responder_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if item is None:
+                return
+            client_id, envelope, service, handler = item
+            if envelope.trace_id:
+                bind_trace_id(envelope.trace_id)
+            try:
+                try:
+                    result = handler(request_payload(envelope))
+                    reply = build_response_result(
+                        envelope.request.request_id,
+                        result,
+                        trace_id=envelope.trace_id,
+                    )
+                except Exception:
+                    logger.error("responder handler failed", service=service, exc_info=True)
+                    self._bump_error()
+                    reply = build_response_error(
+                        envelope.request.request_id,
+                        "handler error",
+                        trace_id=envelope.trace_id,
+                    )
+                if not self._enqueue_dealer([client_id, reply.SerializeToString()]):
+                    self._bump_dropped()
+                    logger.warning("responder outbox full, dropping response", service=service)
+            finally:
+                if envelope.trace_id:
+                    unbind_trace_id()
 
     def _handler_worker(self, handler, worker_queue: queue.Queue) -> None:
         while True:
@@ -552,52 +632,51 @@ class BusNode(_Base):
                 if not version_supported(envelope):
                     logger.warning("dropping unsupported request version", version=envelope.version)
                     continue
-                if envelope.trace_id:
-                    bind_trace_id(envelope.trace_id)
+                kind = envelope.WhichOneof("body")
+                if kind != "request":
+                    logger.warning("unknown oneof kind in dealer request path", kind=kind)
+                    continue
+                service = envelope.request.service
+                with self._services_lock:
+                    registration = self._services.get(service)
+                if registration is None:
+                    reply = build_response_error(
+                        envelope.request.request_id,
+                        "service not found",
+                        trace_id=envelope.trace_id,
+                    )
+                    self._enqueue_dealer([client_id, reply.SerializeToString()])
+                    continue
+                handler, lane = registration
                 try:
-                    kind = envelope.WhichOneof("body")
-                    if kind != "request":
-                        logger.warning("unknown oneof kind in dealer request path", kind=kind)
-                        continue
-                    with self._services_lock:
-                        handler = self._services.get(envelope.request.service)
-                    if handler is None:
-                        reply = build_response_error(
-                            envelope.request.request_id, "service not found",
-                            trace_id=envelope.trace_id,
-                        )
-                    else:
-                        try:
-                            result = handler(request_payload(envelope))
-                            reply = build_response_result(
-                                envelope.request.request_id, result,
-                                trace_id=envelope.trace_id,
-                            )
-                        except Exception:
-                            logger.error("responder handler failed", service=envelope.request.service)
-                            self._bump_error()
-                            reply = build_response_error(
-                                envelope.request.request_id, "handler error",
-                                trace_id=envelope.trace_id,
-                            )
-                    self._dealer.send_multipart([client_id, reply.SerializeToString()])
-                finally:
-                    if envelope.trace_id:
-                        unbind_trace_id()
+                    self._responder_queues[lane].put_nowait(
+                        (client_id, envelope, service, handler)
+                    )
+                except queue.Full:
+                    self._bump_dropped()
+                    reply = build_response_error(
+                        envelope.request.request_id,
+                        "server busy",
+                        trace_id=envelope.trace_id,
+                    )
+                    self._enqueue_dealer([client_id, reply.SerializeToString()])
             elif len(frames) == 1:
                 try:
                     envelope = parse_envelope(frames[0])
                 except DecodeError:
                     continue
                 if not version_supported(envelope):
-                    logger.warning("dropping unsupported response version", version=envelope.version)
+                    logger.warning(
+                        "dropping unsupported response version",
+                        version=envelope.version,
+                    )
                     continue
                 kind = envelope.WhichOneof("body")
                 if kind != "response":
                     logger.warning("unknown oneof kind in dealer response path", kind=kind)
                     continue
                 rid = envelope.response.request_id
-                with self._lock:
+                with self._pending_lock:
                     entry = self._pending.get(rid)
                 if entry:
                     entry["result"] = envelope

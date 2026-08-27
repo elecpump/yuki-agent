@@ -2,10 +2,12 @@ from abc import ABC, abstractmethod
 from typing import Callable
 
 from yuki.bus import BusNode
+from yuki.bus_bridge import WireRuntimeBusAdapter
 from yuki.config import Config
 from yuki.health import HealthReporter, HealthStatus
-from yuki.shutdown import ShutdownManager
 from yuki.logger import configure_logging
+from yuki.runtime_bus import RuntimeBusProtocol
+from yuki.shutdown import ShutdownManager
 
 
 class ProcessAgent(ABC):
@@ -18,24 +20,27 @@ class ProcessAgent(ABC):
         self,
         config: Config,
         *,
-        bus: BusNode | None = None,
+        bus: RuntimeBusProtocol | None = None,
         shutdown: ShutdownManager | None = None,
     ) -> None:
         self.config = config
-        self.bus = bus or self._make_bus()
-        self.shutdown = shutdown or ShutdownManager()
+        self.bus = bus if bus is not None else self._make_bus()
+        self.shutdown = shutdown if shutdown is not None else ShutdownManager()
         self.health = HealthReporter(
             self.bus,
             process=self.name,
             heartbeat_interval=config.health.heartbeat_interval_s,
         )
 
-    def _make_bus(self) -> BusNode:
-        return BusNode(
-            base_port=self.config.bus.base_port,
-            hwm=self.config.bus.hwm,
-            auth_token=self.config.bus.auth_token,
-            max_msg_size=self.config.bus.max_msg_size,
+    def _make_bus(self) -> RuntimeBusProtocol:
+        return WireRuntimeBusAdapter(
+            BusNode(
+                base_port=self.config.bus.base_port,
+                hwm=self.config.bus.hwm,
+                auth_token=self.config.bus.auth_token,
+                max_msg_size=self.config.bus.max_msg_size,
+                register_interval=self.config.bus.register_interval_s,
+            )
         )
 
     @abstractmethod

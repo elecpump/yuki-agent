@@ -2,16 +2,16 @@ import os
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
-from yuki.bus import BusNode
+from yuki.runtime_bus import RuntimeBusProtocol
 from yuki.topics import Topics
 
 
 @dataclass
 class HealthStatus:
     ok: bool
-    detail: dict = field(default_factory=dict)
+    detail: dict[str, Any] = field(default_factory=dict)
 
 
 class HealthReporter:
@@ -19,7 +19,7 @@ class HealthReporter:
 
     def __init__(
         self,
-        bus: BusNode,
+        bus: RuntimeBusProtocol,
         process: str,
         heartbeat_interval: float = 5.0,
     ) -> None:
@@ -34,8 +34,8 @@ class HealthReporter:
     def register_component(self, name: str, check: Callable[[], HealthStatus]) -> None:
         self._components[name] = check
 
-    def collect(self) -> dict:
-        components: dict[str, dict] = {}
+    def collect(self) -> dict[str, Any]:
+        components: dict[str, dict[str, Any]] = {}
         healthy = True
         for name, check in self._components.items():
             try:
@@ -61,7 +61,12 @@ class HealthReporter:
         }
 
     def start(self) -> None:
-        self._bus.respond(f"health/{self._process}", lambda payload: self.collect())
+        service = f"health/{self._process}"
+        handler = lambda payload: self.collect()
+        if hasattr(self._bus, "supports_response_lanes"):
+            self._bus.respond(service, handler, lane="control")
+        else:
+            self._bus.respond(service, handler)
         self._stop.clear()
         self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._thread.start()

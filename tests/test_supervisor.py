@@ -533,3 +533,132 @@ def test_async_restart_gives_up_once_without_thrashing():
         slog.critical = orig_critical
     assert len(created) == 3  # 初始 + 窗口内 2 次重启后放弃，不再反复调度
     assert len(critical_logs) == 1  # "giving up" 只记一次，不刷屏
+
+
+class _TopologyProc:
+    def __init__(self, name, alive=True):
+        self.name = name
+        self.alive = alive
+        self.terminated = 0
+
+    def poll(self):
+        return None if self.alive else 1
+
+    def terminate(self):
+        self.terminated += 1
+        self.alive = False
+
+    def wait(self, timeout=None):
+        self.alive = False
+        return 0
+
+    def kill(self):
+        self.alive = False
+
+
+def _topology_supervisor(*, initial_alive=None):
+    clock = {"now": 0.0}
+    created = {"yuki": [], "model_worker": []}
+    initial_alive = initial_alive or {}
+
+    def factory(cmd, env=None, creationflags=None):
+        name = cmd[0]
+        alive = initial_alive.get(name, True) if not created[name] else True
+        proc = _TopologyProc(name, alive=alive)
+        created[name].append(proc)
+        return proc
+
+    supervisor = Supervisor(
+        [("yuki", ["yuki"]), ("model_worker", ["model_worker"])],
+        popen_factory=factory,
+        restart_base_delay=0.0,
+        clock=lambda: clock["now"],
+        sleep=lambda _: None,
+        startup_grace_s=10.0,
+        bus_host="yuki",
+        bus_recovery_grace_s=20.0,
+    )
+    return supervisor, clock, created
+
+
+def test_bus_host_exit_does_not_probe_or_restart_model_worker():
+    probes = []
+
+    class Bus:
+        def request(self, service, payload, timeout_ms=2000):
+            probes.append(service)
+            raise AssertionError("bus must not be probed while its host is restarting")
+
+    supervisor, clock, created = _topology_supervisor(initial_alive={"yuki": False})
+    clock["now"] = 30.0
+
+    assert supervisor.tick(bus=Bus()) == ["yuki"]
+    assert probes == []
+    assert len(created["yuki"]) == 2
+    assert len(created["model_worker"]) == 1
+
+
+def test_bus_recovery_grace_tolerates_temporarily_missing_health_services():
+    class Bus:
+        def request(self, service, payload, timeout_ms=2000):
+            if service == "health/bus_server":
+                return {"healthy": True}
+            raise BusError("service not found")
+
+    supervisor, clock, created = _topology_supervisor()
+    clock["now"] = 30.0
+
+    assert supervisor.tick(bus=Bus()) == []
+    assert len(created["yuki"]) == 1
+    assert len(created["model_worker"]) == 1
+
+
+def test_model_worker_unhealthy_restarts_only_model_worker():
+    probes = []
+
+    class Bus:
+        def request(self, service, payload, timeout_ms=2000):
+            probes.append(service)
+            return {"healthy": service != "health/model_worker"}
+
+    supervisor, clock, created = _topology_supervisor()
+    clock["now"] = 30.0
+
+    assert supervisor.tick(bus=Bus()) == ["model_worker"]
+    assert probes == ["health/bus_server", "health/yuki", "health/model_worker"]
+    assert len(created["yuki"]) == 1
+    assert len(created["model_worker"]) == 2
+
+
+def test_yuki_unhealthy_restarts_bus_host_without_probing_model_worker():
+    probes = []
+
+    class Bus:
+        def request(self, service, payload, timeout_ms=2000):
+            probes.append(service)
+            return {"healthy": service != "health/yuki"}
+
+    supervisor, clock, created = _topology_supervisor()
+    clock["now"] = 30.0
+
+    assert supervisor.tick(bus=Bus()) == ["yuki"]
+    assert probes == ["health/bus_server", "health/yuki"]
+    assert len(created["yuki"]) == 2
+    assert len(created["model_worker"]) == 1
+
+
+def test_bus_hub_unhealthy_restarts_yuki_even_during_startup_grace():
+    probes = []
+
+    class Bus:
+        def request(self, service, payload, timeout_ms=2000):
+            probes.append(service)
+            return {"healthy": False}
+
+    supervisor, clock, created = _topology_supervisor()
+    clock["now"] = 1.0
+
+    assert supervisor.tick(bus=Bus()) == ["yuki"]
+    assert probes == ["health/bus_server"]
+    assert len(created["yuki"]) == 2
+    assert len(created["model_worker"]) == 1

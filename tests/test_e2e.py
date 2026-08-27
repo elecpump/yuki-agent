@@ -7,6 +7,8 @@ import time
 
 import pytest
 
+from yuki.bus import BusError, BusNode
+
 E2E_PORT = 6500
 
 
@@ -18,7 +20,7 @@ def _env(port: int):
 
 
 @pytest.mark.e2e
-def test_hotkey_trigger_flow_reaches_reply():
+def test_supervisor_two_processes_reach_healthy_state():
     port = E2E_PORT + 1
     env = _env(port)
     creationflags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
@@ -41,14 +43,23 @@ def test_hotkey_trigger_flow_reaches_reply():
                 break
 
     threading.Thread(target=reader, daemon=True).start()
+    bus = BusNode(base_port=port)
     try:
         deadline = time.time() + 12.0
         while time.time() < deadline:
-            if any("[yuki] 我在，你说。" in line for line in buffer):
-                return
-            time.sleep(0.1)
-        pytest.fail(f"did not receive reply, output so far: {''.join(buffer)!r}")
+            try:
+                yuki = bus.request("health/yuki", {}, timeout_ms=500)
+                worker = bus.request("health/model_worker", {}, timeout_ms=500)
+            except BusError:
+                time.sleep(0.1)
+                continue
+            assert not any("scheduling restart" in line for line in buffer)
+            assert yuki["healthy"] is True
+            assert worker["healthy"] is True
+            return
+        pytest.fail(f"processes did not become healthy, output so far: {''.join(buffer)!r}")
     finally:
+        bus.close()
         stop.set()
         if os.name == "nt":
             try:

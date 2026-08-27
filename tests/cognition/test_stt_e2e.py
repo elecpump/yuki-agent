@@ -35,7 +35,10 @@ def _find_example(model_dir: Path, name: str) -> Path | None:
 
 
 def _load_16k(path: Path) -> np.ndarray:
-    import soundfile as sf
+    sf = pytest.importorskip(
+        "soundfile",
+        reason="real STT e2e requires the optional soundfile package",
+    )
 
     samples, sr = sf.read(str(path), dtype="float32")
     samples = samples[:, 0] if samples.ndim > 1 else samples

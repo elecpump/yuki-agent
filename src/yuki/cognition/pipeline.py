@@ -29,9 +29,9 @@ from yuki.topics import Topics
 logger = get_logger("yuki.cognition.pipeline")
 
 
-def decode_png_b64(png_b64: str) -> Image.Image | None:
+def decode_png_b64(png_b64: str | bytes) -> Image.Image | None:
     try:
-        raw = base64.b64decode(png_b64)
+        raw = png_b64 if isinstance(png_b64, bytes) else base64.b64decode(png_b64)
         return Image.open(io.BytesIO(raw)).convert("RGB")
     except (ValueError, OSError):
         logger.warning("png decode failed")
@@ -392,16 +392,20 @@ class PerceptionPipeline:
             self._asr.add_frame(samples)
 
     def on_mic(self, topic: str, payload: dict) -> None:
-        pcm_b64 = payload.get("pcm", "")
-        if not pcm_b64:
-            return
         import numpy as np
-        try:
-            raw = base64.b64decode(pcm_b64)
-        except (TypeError, ValueError, binascii.Error):
-            logger.warning("mic frame decode failed")
-            return
-        samples = np.frombuffer(raw, dtype=np.float32)
+        native = payload.get("samples")
+        if native is not None:
+            samples = np.asarray(native, dtype=np.float32).reshape(-1)
+        else:
+            pcm_b64 = payload.get("pcm", "")
+            if not pcm_b64:
+                return
+            try:
+                raw = base64.b64decode(pcm_b64)
+            except (TypeError, ValueError, binascii.Error):
+                logger.warning("mic frame decode failed")
+                return
+            samples = np.frombuffer(raw, dtype=np.float32)
         self._asr.feed(samples)
 
     def on_tts_speaking(self, topic: str, payload: dict) -> None:

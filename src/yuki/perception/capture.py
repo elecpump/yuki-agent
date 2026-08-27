@@ -140,7 +140,7 @@ class FrameStore:
 
     def __init__(self) -> None:
         self._latest: dict = {
-            "png": "",
+            "png": b"",
             "width": 0,
             "height": 0,
             "ts": 0.0,
@@ -151,17 +151,20 @@ class FrameStore:
     def store(
         self,
         *,
-        png_b64: str,
+        png: bytes | None = None,
+        png_b64: str | None = None,
         width: int,
         height: int,
         ts: float,
         hwnd: int | None = None,
     ) -> dict:
+        if png is None:
+            png = base64.b64decode(png_b64 or "")
         with self._lock:
             self._next_frame_id += 1
             snapshot = {
                 "frame_id": self._next_frame_id,
-                "png": png_b64,
+                "png": bytes(png),
                 "width": width,
                 "height": height,
                 "ts": ts,
@@ -203,7 +206,7 @@ def make_frame_service(
             return
         frame_hwnd = meta.get("hwnd", hwnd or getattr(capture, "window_hwnd", None))
         snapshot = store.store(
-            png_b64=base64.b64encode(png).decode("ascii"),
+            png=png,
             width=meta["width"],
             height=meta["height"],
             ts=meta["ts"],

@@ -31,6 +31,17 @@ def test_request_respond_roundtrip(make_bus):
     assert bus.request("ping", {"msg": "hello"}, timeout_ms=1000) == {"echo": "hello"}
 
 
+def test_embedded_hub_exposes_health_snapshot_for_app_aggregation():
+    hub = BusHub(base_port=6109, hwm=10)
+    try:
+        snapshot = hub.health_snapshot()
+    finally:
+        hub.close()
+
+    assert snapshot["healthy"] is True
+    assert snapshot["components"]["proxy"]["ok"] is True
+
+
 def test_request_unregistered_service_raises_bus_error(make_bus):
     bus = make_bus(6120)
     time.sleep(0.1)
@@ -61,6 +72,91 @@ def test_request_raises_bus_error_on_failed_handler(make_bus):
     time.sleep(0.1)
     with pytest.raises(BusError, match="handler error"):
         bus.request("boom", {}, timeout_ms=1000)
+
+
+def test_responder_handler_can_make_nested_request_on_same_node(make_bus):
+    bus = make_bus(6122)
+    bus.respond("inner", lambda payload: {"value": payload["value"] + 1})
+    bus.respond(
+        "outer",
+        lambda payload: bus.request("inner", payload, timeout_ms=1000),
+    )
+    time.sleep(0.1)
+
+    assert bus.request("outer", {"value": 1}, timeout_ms=1500) == {"value": 2}
+
+
+def test_control_lane_remains_available_during_long_work_handler():
+    port = 6123
+    hub = BusHub(base_port=port, hwm=10)
+    bus = BusNode(base_port=port, hwm=10, work_workers=1)
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(payload):
+        del payload
+        started.set()
+        release.wait(2.0)
+        return {"ok": True}
+
+    bus.respond("slow", slow, lane="work")
+    bus.respond("health/test", lambda payload: {"healthy": True}, lane="control")
+    time.sleep(0.1)
+    caller = threading.Thread(
+        target=lambda: bus.request("slow", {}, timeout_ms=2000),
+        daemon=True,
+    )
+    caller.start()
+    try:
+        assert started.wait(1.0)
+        assert bus.request("health/test", {}, timeout_ms=500) == {"healthy": True}
+    finally:
+        release.set()
+        caller.join(timeout=2.0)
+        bus.close()
+        hub.close()
+
+
+def test_full_responder_lane_returns_server_busy():
+    port = 6124
+    hub = BusHub(base_port=port, hwm=20)
+    bus = BusNode(
+        base_port=port,
+        hwm=20,
+        work_workers=1,
+        responder_queue_size=1,
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(payload):
+        started.set()
+        release.wait(2.0)
+        return {"call": payload["call"]}
+
+    bus.respond("slow", slow)
+    time.sleep(0.1)
+    results = []
+
+    def request(call):
+        results.append(bus.request("slow", {"call": call}, timeout_ms=2000))
+
+    first = threading.Thread(target=request, args=(1,), daemon=True)
+    second = threading.Thread(target=request, args=(2,), daemon=True)
+    first.start()
+    try:
+        assert started.wait(1.0)
+        second.start()
+        time.sleep(0.1)
+        with pytest.raises(BusError, match="server busy"):
+            bus.request("slow", {"call": 3}, timeout_ms=500)
+    finally:
+        release.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+        bus.close()
+        hub.close()
+    assert sorted(item["call"] for item in results) == [1, 2]
 
 
 def test_respond_loop_survives_handler_exception(make_bus):
@@ -150,7 +246,7 @@ def test_services_reregister_after_hub_restart():
             if node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}:
                 registered = True
                 break
-        except (BusError, BusTimeoutError):
+        except BusError:
             time.sleep(0.1)
     assert registered, "initial registration did not take effect"
 
@@ -167,7 +263,7 @@ def test_services_reregister_after_hub_restart():
             try:
                 assert node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
                 return
-            except (BusError, BusTimeoutError) as exc:
+            except BusError as exc:
                 last_error = exc
         pytest.fail(f"service not re-registered after hub restart: {last_error}")
     finally:
@@ -262,7 +358,7 @@ def test_node_registers_with_version_frame(make_bus):
         try:
             assert bus.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
             return
-        except (BusError, BusTimeoutError):
+        except BusError:
             time.sleep(0.1)
     pytest.fail("versioned REGISTER was not accepted by hub")
 
@@ -352,7 +448,7 @@ def test_auth_token_authorized_request_and_wrong_token_rejected():
             try:
                 assert node.request("svc", {"msg": "hi"}, timeout_ms=1000) == {"echo": "hi"}
                 break
-            except (BusError, BusTimeoutError):
+            except BusError:
                 time.sleep(0.1)
         else:
             pytest.fail("authorized request did not complete")
@@ -399,14 +495,14 @@ def test_bus_hub_health_reflects_forwarding():
     hub = bus_mod.BusHub(base_port=port, hwm=10)
     node = bus_mod.BusNode(base_port=port, hwm=10)
     try:
-        old_stale = bus_mod.PROXY_STALE_S
-        bus_mod.PROXY_STALE_S = 0.05
         received = threading.Event()
         node.subscribe("event/", lambda t, p: received.set())
         time.sleep(0.1)
         health_before = hub._collect_health()
-        assert health_before["healthy"] is False  # 无真实转发 → 不健康
         assert "last_forwarded_s" in health_before["components"]["proxy"]
+        hub._last_proxy_forwarded = time.monotonic() - bus_mod.PROXY_STALE_S - 1.0
+        hub._last_proxy_activity = time.monotonic()
+        assert hub._collect_health()["healthy"] is False
         node.publish("event/x", {"x": 1})
         assert received.wait(timeout=2.0)
         deadline = time.monotonic() + 2.0
@@ -415,8 +511,6 @@ def test_bus_hub_health_reflects_forwarding():
                 break
             time.sleep(0.02)
         assert hub._collect_health()["healthy"] is True
-        bus_mod.PROXY_STALE_S = old_stale
     finally:
         node.close()
         hub.close()
-

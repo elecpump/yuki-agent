@@ -5,6 +5,7 @@ bus:
   hwm: 1000
   auth_token: ""
   max_msg_size: 10485760
+  register_interval_s: 10.0
 logging:
   level: INFO
 supervisor:
@@ -12,6 +13,29 @@ supervisor:
   restart_max_delay: 60.0
   restart_window: 600
   restart_max_per_window: 5
+  startup_grace_s: 20.0
+  bus_recovery_grace_s: 20.0
+models:
+  backend: remote
+  gpu_max_concurrency: 1
+  interactive_queue_size: 32
+  background_queue_size: 16
+  drain_timeout_s: 10.0
+  operation_ttl_s: 300.0
+  circuit_breaker_s: 30.0
+  oom_retry: 1
+  vram_safety_margin_mb: 512
+  vram_hysteresis_mb: 256
+  policies:
+    local_chat: {priority: 100, warmup: true, evictable: false, pinned: true}
+    stt: {priority: 90, warmup: true, evictable: false, pinned: true}
+    tts: {priority: 80, warmup: true, evictable: true, pinned: false}
+    vlm: {priority: 30, warmup: false, evictable: true, pinned: false}
+    embedding: {priority: 10, warmup: false, evictable: true, pinned: false}
+runtime_bus:
+  subscriber_queue_size: 256
+  mirror_queue_size: 1024
+  mirror_topic_prefixes: [""]
 health:
   timeout_ms: 2000
   heartbeat_interval_s: 5.0

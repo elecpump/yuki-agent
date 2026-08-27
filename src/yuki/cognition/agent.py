@@ -7,6 +7,8 @@ from yuki.functions.registry import FunctionRegistry
 from yuki.health import HealthStatus
 from yuki.logger import get_logger
 from yuki.memory.manager import MemoryManager
+from yuki.memory.embedding import EmbeddingProvider
+from yuki.model_client import LocalChatModelClient, RemoteModelRegistry
 from yuki.process import ProcessAgent
 
 logger = get_logger("yuki.cognition.agent")
@@ -20,7 +22,10 @@ class CognitionAgent(ProcessAgent):
                  frame_client=None, speech_buffer=None,
                  memory: MemoryManager | None = None,
                  registry: FunctionRegistry | None = None,
-                 model_registry: ModelRegistry | None = None) -> None:
+                 model_registry: ModelRegistry | RemoteModelRegistry | None = None,
+                 local_chat_model: LocalChatModelClient | None = None,
+                 embedding_provider: EmbeddingProvider | None = None,
+                 remote_models: bool = False) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
         self._pipeline = pipeline
         self._l1 = l1
@@ -31,6 +36,9 @@ class CognitionAgent(ProcessAgent):
         self._memory = memory
         self._registry = registry
         self._model_registry = model_registry
+        self._local_chat_model = local_chat_model
+        self._embedding_provider = embedding_provider
+        self._remote_models = remote_models
         self._hub = None
         self._bridge = None
         self._context = None
@@ -49,6 +57,9 @@ class CognitionAgent(ProcessAgent):
             memory=self._memory,
             registry=self._registry,
             model_registry=self._model_registry,
+            local_chat_model=self._local_chat_model,
+            embedding_provider=self._embedding_provider,
+            remote_models=self._remote_models,
         )
         assembled = runtime.assemble()
         self._pipeline = assembled.pipeline
@@ -66,7 +77,9 @@ class CognitionAgent(ProcessAgent):
             self._pipeline.close()
         if self._model_registry is not None:
             try:
-                self._model_registry.shutdown()
+                shutdown = getattr(self._model_registry, "shutdown", None)
+                if callable(shutdown):
+                    shutdown()
             except Exception:
                 logger.warning("model registry shutdown failed", exc_info=True)
             self._model_registry = None

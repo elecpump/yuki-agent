@@ -153,6 +153,7 @@ class TtsController:
             self._condition.notify()
 
         if stop_active:
+            self._cancel_model()
             self._player.stop()
         if grace_job is not None:
             self._stop_transition_after_grace(grace_job)
@@ -169,6 +170,7 @@ class TtsController:
                     job.cancelled.set()
                     should_stop = True
             if should_stop:
+                self._cancel_model()
                 self._player.stop()
 
         timer = threading.Timer(self._transition_grace_s, expire)
@@ -199,9 +201,11 @@ class TtsController:
                 stop_active = self._active_job is processing
             self._condition.notify()
         if stop_active:
+            self._cancel_model()
             self._player.stop()
 
     def stop(self) -> None:
+        should_cancel = False
         with self._condition:
             if self._stopping:
                 return
@@ -210,7 +214,18 @@ class TtsController:
             self._pending = None
             if self._processing_job is not None:
                 self._processing_job.cancelled.set()
-            self._player.stop()
+                should_cancel = True
+        if should_cancel:
+            self._cancel_model()
+        self._player.stop()
+
+    def _cancel_model(self) -> None:
+        cancel = getattr(self._model, "cancel", None)
+        if callable(cancel):
+            try:
+                cancel()
+            except Exception:
+                logger.debug("TTS model cancellation failed", exc_info=True)
 
     def _publish(self, topic: str, job: _SpeechJob) -> None:
         self._bus.publish(
@@ -353,6 +368,7 @@ class TtsController:
             self._active_job = None
             self._condition.notify_all()
         self._player.stop()
+        self._cancel_model()
         if active_job is not None:
             try:
                 self._publish(Topics.TTS_FINISHED, active_job)

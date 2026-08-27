@@ -19,6 +19,7 @@ class BusConfig(BaseModel):
     hwm: int = Field(1000, ge=1)
     auth_token: str = ""
     max_msg_size: int = Field(10 * 1024 * 1024, ge=1024)
+    register_interval_s: float = Field(10.0, ge=1.0)
 
 
 class LoggingConfig(BaseModel):
@@ -30,6 +31,72 @@ class SupervisorConfig(BaseModel):
     restart_max_delay: float = 60.0
     restart_window: int = 600
     restart_max_per_window: int = 5
+    startup_grace_s: float = Field(20.0, ge=1.0)
+    bus_recovery_grace_s: float = Field(20.0, ge=1.0)
+
+
+class ModelPolicyConfig(BaseModel):
+    priority: int = Field(50, ge=0, le=100)
+    warmup: bool = False
+    evictable: bool = True
+    pinned: bool = False
+    idle_unload_s: float = Field(0.0, ge=0.0)
+    min_residency_s: float = Field(30.0, ge=0.0)
+    estimated_vram_mb: int = Field(0, ge=0)
+
+
+def default_model_policies() -> dict[str, ModelPolicyConfig]:
+    return {
+        "local_chat": ModelPolicyConfig(
+            priority=100,
+            warmup=True,
+            evictable=False,
+            pinned=True,
+        ),
+        "stt": ModelPolicyConfig(
+            priority=90,
+            warmup=True,
+            evictable=False,
+            pinned=True,
+        ),
+        "tts": ModelPolicyConfig(priority=80, warmup=True),
+        "vlm": ModelPolicyConfig(priority=30),
+        "embedding": ModelPolicyConfig(priority=10),
+    }
+
+
+class ModelsConfig(BaseModel):
+    backend: Literal["local", "remote"] = "remote"
+    gpu_max_concurrency: int = Field(1, ge=1)
+    interactive_queue_size: int = Field(32, ge=1)
+    background_queue_size: int = Field(16, ge=1)
+    drain_timeout_s: float = Field(10.0, ge=0.1)
+    operation_ttl_s: float = Field(300.0, ge=1.0)
+    circuit_breaker_s: float = Field(30.0, ge=0.1)
+    oom_retry: int = Field(1, ge=0, le=2)
+    vram_safety_margin_mb: int = Field(512, ge=0)
+    vram_hysteresis_mb: int = Field(256, ge=0)
+    policies: dict[str, ModelPolicyConfig] = Field(default_factory=default_model_policies)
+
+    @field_validator("policies")
+    @classmethod
+    def validate_policy_names(
+        cls,
+        value: dict[str, ModelPolicyConfig],
+    ) -> dict[str, ModelPolicyConfig]:
+        allowed = {"vlm", "stt", "local_chat", "tts", "embedding"}
+        unknown = sorted(set(value) - allowed)
+        if unknown:
+            raise ValueError(f"unknown model policies: {unknown}")
+        defaults = default_model_policies()
+        defaults.update(value)
+        return defaults
+
+
+class RuntimeBusConfig(BaseModel):
+    subscriber_queue_size: int = Field(256, ge=1)
+    mirror_queue_size: int = Field(1024, ge=1)
+    mirror_topic_prefixes: list[str] = Field(default_factory=lambda: [""])
 
 
 class HealthConfig(BaseModel):
@@ -220,6 +287,8 @@ class Config(BaseModel):
     bus: BusConfig = Field(default_factory=BusConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     supervisor: SupervisorConfig = Field(default_factory=SupervisorConfig)
+    models: ModelsConfig = Field(default_factory=ModelsConfig)
+    runtime_bus: RuntimeBusConfig = Field(default_factory=RuntimeBusConfig)
     health: HealthConfig = Field(default_factory=HealthConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     text: TextConfig = Field(default_factory=TextConfig)
@@ -258,6 +327,8 @@ class Config(BaseModel):
             ("bus", BusConfig),
             ("logging", LoggingConfig),
             ("supervisor", SupervisorConfig),
+            ("models", ModelsConfig),
+            ("runtime_bus", RuntimeBusConfig),
             ("health", HealthConfig),
             ("memory", MemoryConfig),
             ("text", TextConfig),

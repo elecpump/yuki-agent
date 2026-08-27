@@ -526,6 +526,7 @@ def create_gateway_app(
 class GatewayServer:
     def __init__(self, config: Config, bus=None) -> None:
         self.config = config
+        self._owns_bus = bus is None
         self.bus = bus or BusNode(
             base_port=config.bus.base_port,
             hwm=config.bus.hwm,
@@ -558,5 +559,5 @@ class GatewayServer:
         if self._thread is not None and self._thread.is_alive():
             self._thread.join(timeout=5.0)
         self.runtime.stop()
-        if hasattr(self.bus, "close"):
+        if self._owns_bus and hasattr(self.bus, "close"):
             self.bus.close()

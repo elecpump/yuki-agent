@@ -179,6 +179,14 @@ class IndexTTSModel:
 
         threading.Thread(target=run, daemon=True, name="yuki-tts-warmup").start()
 
+    def load(self) -> None:
+        self._load()
+
+    def unload(self) -> None:
+        with self._load_lock:
+            self._model = None
+            self._gate.reset()
+
     @staticmethod
     def _tensor_to_pcm(chunk) -> bytes:
         value = chunk

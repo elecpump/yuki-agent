@@ -52,4 +52,6 @@ def test_capture_uses_fake_stream():
     topic, payload = bus.published[0]
     assert topic == "audio/mic"
     assert payload["sample_rate"] == 16000
-    assert payload["pcm"] != ""
+    assert payload["samples"].shape == (320,)
+    assert payload["samples"].dtype == np.float32
+    assert payload["samples"].flags.writeable is False

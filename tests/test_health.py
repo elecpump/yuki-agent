@@ -84,6 +84,19 @@ def test_start_registers_health_service_and_publishes_heartbeat():
     reporter.stop()
 
 
+def test_start_does_not_swallow_type_error_from_lane_capable_bus():
+    class BrokenLaneBus(FakeBus):
+        supports_response_lanes = True
+
+        def respond(self, service, handler, *, lane="work"):
+            raise TypeError("registration failed")
+
+    reporter = HealthReporter(BrokenLaneBus(), process="broken")
+
+    with pytest.raises(TypeError, match="registration failed"):
+        reporter.start()
+
+
 def test_health_service_returns_collect_result():
     bus = FakeBus()
     reporter = HealthReporter(bus, process="interaction")

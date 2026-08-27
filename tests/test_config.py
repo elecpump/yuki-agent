@@ -13,13 +13,33 @@ def test_defaults():
     assert config.bus.hwm == 1000
     assert config.bus.auth_token == ""
     assert config.bus.max_msg_size == 10 * 1024 * 1024
+    assert config.bus.register_interval_s == 10.0
     assert config.logging.level == "INFO"
     assert config.supervisor.restart_base_delay == 1.0
     assert config.supervisor.restart_max_delay == 60.0
     assert config.supervisor.restart_window == 600
     assert config.supervisor.restart_max_per_window == 5
+    assert config.supervisor.bus_recovery_grace_s == 20.0
     assert config.health.timeout_ms == 2000
     assert config.health.heartbeat_interval_s == 5.0
+    assert config.models.backend == "remote"
+    assert config.models.policies["local_chat"].priority == 100
+    assert config.models.policies["local_chat"].pinned is True
+    assert config.models.policies["stt"].evictable is False
+    assert config.models.policies["embedding"].priority == 10
+    assert config.runtime_bus.subscriber_queue_size == 256
+
+
+def test_model_policy_override_merges_with_catalog_defaults():
+    config = Config(models={"policies": {"vlm": {"priority": 40}}})
+
+    assert config.models.policies["vlm"].priority == 40
+    assert config.models.policies["stt"].priority == 90
+
+
+def test_unknown_model_policy_is_rejected():
+    with pytest.raises(ValidationError, match="unknown model policies"):
+        Config(models={"policies": {"unknown": {}}})
 
 
 def test_tts_defaults_and_language_validation():

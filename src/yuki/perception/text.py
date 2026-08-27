@@ -252,7 +252,7 @@ class OcrTextProvider:
             except TypeError:
                 self._ocr = PaddleOCR(lang="ch")
             self._available = True
-        raw = base64.b64decode(png_b64)
+        raw = png_b64 if isinstance(png_b64, bytes) else base64.b64decode(png_b64)
         import numpy as np
         from PIL import Image
 

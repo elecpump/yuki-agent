@@ -3,7 +3,7 @@ import sys
 import time
 from pathlib import Path
 
-from yuki.bus import BusError, BusTimeoutError
+from yuki.bus import BusError
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.config import Config
 from yuki.health import HealthStatus
@@ -61,11 +61,12 @@ class InteractionAgent(ProcessAgent):
     name = "interaction"
 
     def __init__(self, config: Config, *, bus=None, shutdown=None,
-                 hotkeys=None, tts=None, focus_manager=None, volume_controller=None) -> None:
+                 hotkeys=None, tts=None, tts_model=None,
+                 focus_manager=None, volume_controller=None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
         self._hotkeys = hotkeys or HotkeyManager()
         self._tts = tts or TtsController(
-            IndexTTSModel(config.tts),
+            tts_model or IndexTTSModel(config.tts),
             AudioPlayer(chunk_size=config.tts.chunk_size),
             self.bus,
             transition_grace_s=config.agent_loop.transition_grace_s,
@@ -104,7 +105,7 @@ class InteractionAgent(ProcessAgent):
                     {"source": "hotkey", "ts": time.time()},
                     timeout_ms=self.config.health.timeout_ms,
                 )
-            except (BusError, BusTimeoutError):
+            except BusError:
                 self._speak("我现在连接不上 cognition。", emotion="neutral")
                 return
             text = (reply or {}).get("text", "")

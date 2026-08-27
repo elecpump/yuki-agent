@@ -43,12 +43,18 @@ from yuki.functions.registry import FunctionRegistry
 from yuki.functions.service import register_function_services
 from yuki.functions.system import register_builtin_system
 from yuki.logger import get_logger
-from yuki.memory.embedding import build_embedding_indexer
+from yuki.memory.embedding import (
+    EmbeddingProvider,
+    MemoryEmbeddingIndexer,
+    build_embedding_indexer,
+)
 from yuki.memory.manager import MemoryManager
 from yuki.memory.privacy import MemoryAccess, MemoryPurpose
 from yuki.memory.service import register_memory_services
 from yuki.memory.store import MemoryStore
 from yuki.model_cache import ModelCacheManager
+from yuki.model_client import LocalChatModelClient, RemoteModelRegistry
+from yuki.runtime_bus import RuntimeBusProtocol
 from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.assembly")
@@ -59,7 +65,7 @@ class CognitionRuntime:
     pipeline: PerceptionPipeline
     memory: MemoryManager
     registry: FunctionRegistry
-    model_registry: ModelRegistry
+    model_registry: ModelRegistry | RemoteModelRegistry
     bridge: CloudBridge | None
     hub: DecisionHub
     context: WorkingContext
@@ -92,7 +98,7 @@ class CognitionAssembler:
     def __init__(
         self,
         config: Config,
-        bus,
+        bus: RuntimeBusProtocol,
         *,
         pipeline=None,
         vlm=None,
@@ -101,8 +107,11 @@ class CognitionAssembler:
         speech_buffer=None,
         memory: MemoryManager | None = None,
         registry: FunctionRegistry | None = None,
-        model_registry: ModelRegistry | None = None,
+        model_registry: ModelRegistry | RemoteModelRegistry | None = None,
         cache_manager: ModelCacheManager | None = None,
+        local_chat_model: LocalChatModel | LocalChatModelClient | None = None,
+        embedding_provider: EmbeddingProvider | None = None,
+        remote_models: bool = False,
     ) -> None:
         self.config = config
         self.bus = bus
@@ -115,6 +124,9 @@ class CognitionAssembler:
         self.registry = registry
         self.model_registry = model_registry
         self.cache_manager = cache_manager
+        self.local_chat_model = local_chat_model
+        self.embedding_provider = embedding_provider
+        self.remote_models = remote_models
 
     def assemble(self) -> CognitionRuntime:
         model_registry = self.model_registry or ModelRegistry(gpu_monitor=GpuMemoryMonitor())
@@ -143,15 +155,17 @@ class CognitionAssembler:
             stt = getattr(pipeline, "stt", getattr(pipeline, "_stt", None))
             speech_buffer = getattr(pipeline, "speech_buffer", self.speech_buffer)
         frame_client = getattr(pipeline, "frame_client", getattr(pipeline, "_frame_client", None))
-        self._register_runtime_models(model_registry, vlm, stt, speech_buffer, frame_client)
-        self._log_preflight(model_registry.preflight())
+        if not self.remote_models:
+            self._register_runtime_models(model_registry, vlm, stt, speech_buffer, frame_client)
+            self._log_preflight(model_registry.preflight())
         pipeline.warmup_vlm()
         if self.config.stt.warmup and hasattr(pipeline, "warmup_stt"):
             pipeline.warmup_stt()
 
         memory = self.memory or self._build_memory(cache_manager=cache_manager)
         register_memory_services(self.bus, memory)
-        register_model_services(self.bus, model_registry)
+        if not self.remote_models:
+            register_model_services(self.bus, model_registry)
 
         registry = self.registry or FunctionRegistry()
         if self.registry is None:
@@ -197,7 +211,8 @@ class CognitionAssembler:
             soul_store,
             local_composer,
         )
-        self._log_preflight(model_registry.preflight())
+        if not self.remote_models:
+            self._log_preflight(model_registry.preflight())
         hub = build_brain(
             self.bus,
             memory=memory,
@@ -246,15 +261,22 @@ class CognitionAssembler:
         store = MemoryStore(self.config.memory.db_path)
         embedding_indexer = None
         if self.config.memory.vector_enabled:
-            embedding_indexer = build_embedding_indexer(
-                store,
-                provider_name=self.config.memory.embedding_provider,
-                model=self.config.memory.embedding_model,
-                dimension=self.config.memory.embedding_dimension,
-                cache_dir=self.config.memory.embedding_cache_dir,
-                device=self.config.memory.embedding_device,
-                cache_manager=cache_manager,
-            )
+            if self.embedding_provider is not None:
+                embedding_indexer = MemoryEmbeddingIndexer(
+                    store,
+                    self.embedding_provider,
+                    cache_manager=cache_manager,
+                )
+            else:
+                embedding_indexer = build_embedding_indexer(
+                    store,
+                    provider_name=self.config.memory.embedding_provider,
+                    model=self.config.memory.embedding_model,
+                    dimension=self.config.memory.embedding_dimension,
+                    cache_dir=self.config.memory.embedding_cache_dir,
+                    device=self.config.memory.embedding_device,
+                    cache_manager=cache_manager,
+                )
         return MemoryManager(
             store,
             decay_base=self.config.memory.decay_base,
@@ -333,29 +355,31 @@ class CognitionAssembler:
         local_cfg = self.config.local_brain
         if not local_cfg.enabled:
             return None, None
-        model = LocalChatModel(
-            model_id=local_cfg.model_id,
-            cache_dir=local_cfg.cache_dir,
-            device=local_cfg.device,
-            enabled=local_cfg.enabled,
-            fp8_dequantize=local_cfg.fp8_dequantize,
-            local_files_only=local_cfg.local_files_only,
-        )
-        self._register_model_object(
-            model_registry,
-            "local_chat",
-            model,
-            priority=1,
-            critical=False,
-            vram_estimate_gb=2.0,
-        )
+        model = self.local_chat_model
+        if model is None:
+            model = LocalChatModel(
+                model_id=local_cfg.model_id,
+                cache_dir=local_cfg.cache_dir,
+                device=local_cfg.device,
+                enabled=local_cfg.enabled,
+                fp8_dequantize=local_cfg.fp8_dequantize,
+                local_files_only=local_cfg.local_files_only,
+            )
+            self._register_model_object(
+                model_registry,
+                "local_chat",
+                model,
+                priority=1,
+                critical=False,
+                vram_estimate_gb=2.0,
+            )
         router = LocalRouter(
             model,
             threshold=local_cfg.router_threshold,
             retry=local_cfg.retry,
             prompt_max_tokens=local_cfg.router_prompt_max_tokens,
             timeout_ms=local_cfg.router_timeout_ms,
-            model_registry=model_registry,
+            model_registry=None if self.remote_models else model_registry,
         )
         composer = LocalComposer(
             model,
@@ -363,7 +387,7 @@ class CognitionAssembler:
             view_builder=LocalViewBuilder(max_tokens=local_cfg.local_prompt_max_tokens),
             reply_max_tokens=local_cfg.reply_max_tokens,
             timeout_ms=local_cfg.local_reply_timeout_ms,
-            model_registry=model_registry,
+            model_registry=None if self.remote_models else model_registry,
         )
         router.warmup()
         return router, composer

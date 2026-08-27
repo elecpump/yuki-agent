@@ -136,7 +136,7 @@ def test_perception_agent_setup_wires_components():
     agent.setup()
     assert "frame" in bus.services
     assert bus.services["frame"]({}) == {
-        "png": "",
+        "png": b"",
         "width": 0,
         "height": 0,
         "ts": 0.0,
@@ -227,7 +227,7 @@ def test_perception_agent_default_strategy_gates_on_scroll():
     png = io.BytesIO()
     Image.new("RGB", (64, 48), color=(1, 2, 3)).save(png, format="PNG")
     capture.on_frame(png.getvalue(), {"width": 64, "height": 48, "ts": 1.0})
-    assert bus.services["frame"]({})["png"] == ""
+    assert bus.services["frame"]({})["png"] == b""
     agent.teardown()
 
 
@@ -277,7 +277,7 @@ def test_perception_agent_registers_frame_service_when_no_capture():
     agent.setup()
     assert "frame" in bus.services
     assert bus.services["frame"]({}) == {
-        "png": "",
+        "png": b"",
         "width": 0,
         "height": 0,
         "ts": 0.0,

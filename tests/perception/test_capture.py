@@ -70,7 +70,7 @@ def test_make_frame_service_registers_frame_and_returns_latest():
     handler = bus.services.get("frame")
     assert handler is not None
     assert handler({}) == {
-        "png": "",
+        "png": b"",
         "width": 0,
         "height": 0,
         "ts": 0.0,
@@ -80,7 +80,7 @@ def test_make_frame_service_registers_frame_and_returns_latest():
     capture.on_frame(png, {"width": 64, "height": 48, "ts": 1.5})
 
     result = handler({})
-    assert result["png"] == base64.b64encode(png).decode("ascii")
+    assert result["png"] == png
     assert result["width"] == 64
     assert result["height"] == 48
     assert result["ts"] == 1.5
@@ -97,7 +97,7 @@ def test_make_frame_service_stores_real_frame_when_normal():
     capture.on_frame(png, {"width": 64, "height": 48, "ts": 1.5})
 
     result = bus.services["frame"]({})
-    assert result["png"] == base64.b64encode(png).decode("ascii")
+    assert result["png"] == png
 
 
 def test_make_frame_service_notifies_when_frame_is_stored():
@@ -117,7 +117,7 @@ def test_make_frame_service_notifies_when_frame_is_stored():
 
     assert len(stored) == 1
     assert stored[0]["frame_id"] == 1
-    assert stored[0]["png"] == base64.b64encode(png).decode("ascii")
+    assert stored[0]["png"] == png
     assert stored[0]["width"] == 64
     assert stored[0]["height"] == 48
     assert stored[0]["ts"] == 1.5
@@ -132,13 +132,13 @@ def test_make_frame_service_keeps_latest_when_suppressed():
 
     first = _png_bytes(color=(1, 2, 3))
     capture.on_frame(first, {"width": 64, "height": 48, "ts": 1.0})
-    assert bus.services["frame"]({})["png"] == base64.b64encode(first).decode("ascii")
+    assert bus.services["frame"]({})["png"] == first
 
     second = _png_bytes(color=(9, 9, 9))
     capture.on_frame(second, {"width": 64, "height": 48, "ts": 2.0})
 
     result = bus.services["frame"]({})
-    assert result["png"] == base64.b64encode(first).decode("ascii")
+    assert result["png"] == first
     assert result["ts"] == 1.0
 
 

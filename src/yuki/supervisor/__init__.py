@@ -39,6 +39,8 @@ class Supervisor:
         restart_window: int = 600,
         restart_max_per_window: int = 5,
         startup_grace_s: float = 20.0,
+        bus_host: str | None = None,
+        bus_recovery_grace_s: float = 20.0,
         async_restarts: bool = False,
     ) -> None:
         self._popen = popen_factory
@@ -51,6 +53,9 @@ class Supervisor:
         self.restart_window = restart_window
         self.restart_max_per_window = restart_max_per_window
         self.startup_grace_s = startup_grace_s
+        self.bus_host = bus_host
+        self.bus_recovery_grace_s = bus_recovery_grace_s
+        self._bus_recovered_at: float | None = None
         self._async_restarts = async_restarts
         self._children: list[Child] = [
             Child(
@@ -87,6 +92,8 @@ class Supervisor:
             child.healthy_since = now
             restarted.append(child.name)
     def tick(self, bus: BusNode | None = None, health_timeout_ms: int = 2000) -> list[str]:
+        if self.bus_host is not None:
+            return self._tick_with_bus_host(bus, health_timeout_ms)
         restarted: list[str] = []
         now = self._clock()
         if self._async_restarts:
@@ -175,6 +182,104 @@ class Supervisor:
             restarted.append(child.name)
         if self._async_restarts:
             scheduled = {c.name for c in self._children if c.next_restart_at is not None}
+            restarted = [name for name in restarted if name not in scheduled]
+        return list(dict.fromkeys(restarted))
+
+    def _tick_with_bus_host(
+        self,
+        bus: BusNode | None,
+        health_timeout_ms: int,
+    ) -> list[str]:
+        restarted: list[str] = []
+        now = self._clock()
+        if self._async_restarts:
+            self._run_due_restarts(now, restarted)
+
+        host = next((child for child in self._children if child.name == self.bus_host), None)
+        if host is None:
+            raise ValueError(f"bus host child not found: {self.bus_host}")
+
+        restarted_this_tick: set[str] = set()
+        for child in self._children:
+            if child.proc.poll() is not None:
+                self._restart(child, now)
+                restarted.append(child.name)
+                restarted_this_tick.add(child.name)
+        if (
+            host.name in restarted_this_tick
+            or host.proc.poll() is not None
+            or host.next_restart_at is not None
+        ):
+            self._bus_recovered_at = None
+            return self._visible_restarts(restarted)
+        if bus is None:
+            return self._visible_restarts(restarted)
+
+        try:
+            bus_health = bus.request(
+                BUS_HEALTH_SERVICE,
+                {},
+                timeout_ms=health_timeout_ms,
+            )
+        except BusError:
+            if now - host.healthy_since > self.startup_grace_s:
+                self._restart(host, now)
+                restarted.append(host.name)
+            self._bus_recovered_at = None
+            return self._visible_restarts(restarted)
+        if bus_health.get("healthy") is False:
+            self._restart(host, now)
+            restarted.append(host.name)
+            self._bus_recovered_at = None
+            return self._visible_restarts(restarted)
+
+        if self._bus_recovered_at is None:
+            self._bus_recovered_at = now
+
+        for child in self._children:
+            if (
+                child.name in restarted_this_tick
+                or child.proc.poll() is not None
+                or child.next_restart_at is not None
+            ):
+                continue
+            service = f"health/{child.name}"
+            try:
+                result = bus.request(service, {}, timeout_ms=health_timeout_ms)
+                if result.get("healthy") is False:
+                    self._restart(child, now)
+                    restarted.append(child.name)
+                    if child is host:
+                        self._bus_recovered_at = None
+                        return self._visible_restarts(restarted)
+            except BusTimeoutError:
+                if now - child.healthy_since > self.startup_grace_s:
+                    self._restart(child, now)
+                    restarted.append(child.name)
+                    if child is host:
+                        self._bus_recovered_at = None
+                        return self._visible_restarts(restarted)
+            except BusError as exc:
+                within_recovery = (
+                    str(exc) == "service not found"
+                    and now - self._bus_recovered_at <= self.bus_recovery_grace_s
+                )
+                within_startup = now - child.healthy_since <= self.startup_grace_s
+                if not within_recovery and not within_startup:
+                    self._restart(child, now)
+                    restarted.append(child.name)
+                    if child is host:
+                        self._bus_recovered_at = None
+                        return self._visible_restarts(restarted)
+        return self._visible_restarts(restarted)
+
+    def _visible_restarts(self, restarted: list[str]) -> list[str]:
+        if self._async_restarts:
+            scheduled = {
+                child.name
+                for child in self._children
+                if child.next_restart_at is not None
+            }
             restarted = [name for name in restarted if name not in scheduled]
         return list(dict.fromkeys(restarted))
 

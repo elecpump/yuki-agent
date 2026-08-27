@@ -36,15 +36,19 @@ class WakeWordFrameAdapter:
                 sample_rate=payload.get("sample_rate"),
             )
             return []
-        pcm_b64 = payload.get("pcm", "")
-        if not pcm_b64:
-            return []
-        try:
-            raw = base64.b64decode(pcm_b64)
-        except (TypeError, ValueError, binascii.Error):
-            logger.warning("wake word frame decode failed")
-            return []
-        frame = np.frombuffer(raw, dtype=np.float32)
+        native = payload.get("samples")
+        if native is not None:
+            frame = np.asarray(native, dtype=np.float32).reshape(-1)
+        else:
+            pcm_b64 = payload.get("pcm", "")
+            if not pcm_b64:
+                return []
+            try:
+                raw = base64.b64decode(pcm_b64)
+            except (TypeError, ValueError, binascii.Error):
+                logger.warning("wake word frame decode failed")
+                return []
+            frame = np.frombuffer(raw, dtype=np.float32)
         if frame.size == 0:
             return []
         self._pending = np.concatenate([self._pending, frame])
