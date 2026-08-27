@@ -60,3 +60,24 @@ def test_unknown_operation_is_explicit():
             store.status("missing")
     finally:
         store.close()
+
+
+def test_close_cancels_queued_operations_and_rejects_new_submissions():
+    release = threading.Event()
+
+    def wait_for_release(action, model):
+        del action, model
+        release.wait(1.0)
+        return {}
+
+    store = ModelOperationStore(wait_for_release)
+    first = store.submit(idempotency_key="running", action="load", model="a")
+    _wait_for_state(store, first["operation_id"], "running")
+    queued = store.submit(idempotency_key="queued", action="load", model="b")
+
+    store.close()
+
+    assert store.status(queued["operation_id"])["state"] == "cancelled"
+    with pytest.raises(RuntimeError, match="operation_store_stopped"):
+        store.submit(idempotency_key="new", action="load", model="c")
+    release.set()

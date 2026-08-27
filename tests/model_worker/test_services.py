@@ -1,7 +1,9 @@
 import base64
 import io
+import threading
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from yuki.model_worker.controller import ManagedModelSpec
@@ -9,6 +11,7 @@ from yuki.model_worker.manager import ModelManager
 from yuki.model_worker.operations import ModelOperationStore
 from yuki.model_worker.scheduler import ModelInferenceScheduler
 from yuki.model_worker.services import (
+    TtsJobStore,
     operation_handler,
     register_inference_services,
     register_management_services,
@@ -111,4 +114,42 @@ def test_inference_services_decode_payloads_and_tts_replays_unacked_chunk():
     finally:
         if jobs is not None:
             jobs.close()
+        scheduler.close()
+
+
+def test_tts_jobs_are_cancelled_and_reaped_after_inactivity():
+    release = threading.Event()
+
+    class BlockingTts:
+        def synthesize_stream(self, text, **kwargs):
+            del text, kwargs
+            release.wait(1.0)
+            yield b"late"
+
+    manager = ModelManager(vram_safety_margin_mb=0)
+    _register(manager, "tts", BlockingTts(), 80)
+    scheduler = ModelInferenceScheduler(concurrency=1)
+    jobs = TtsJobStore(manager, scheduler, ttl_s=0.05)
+    try:
+        jobs.start({"job_id": "orphan", "text": "pcm"})
+        orphan = jobs._jobs["orphan"]
+        assert orphan.cancelled.wait(1.0), "background cleanup did not cancel the job"
+        with pytest.raises(KeyError, match="tts_job_not_found"):
+            jobs.next({"job_id": "orphan", "after_seq": 0, "wait_ms": 0})
+    finally:
+        release.set()
+        jobs.close()
+        scheduler.close()
+
+
+def test_closed_tts_job_store_rejects_new_jobs():
+    manager = ModelManager(vram_safety_margin_mb=0)
+    _register(manager, "tts", FakeTts(), 80)
+    scheduler = ModelInferenceScheduler(concurrency=1)
+    jobs = TtsJobStore(manager, scheduler)
+    jobs.close()
+    try:
+        with pytest.raises(RuntimeError, match="tts_job_store_stopped"):
+            jobs.start({"job_id": "late", "text": "pcm"})
+    finally:
         scheduler.close()

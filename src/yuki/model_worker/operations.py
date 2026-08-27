@@ -64,6 +64,8 @@ class ModelOperationStore:
             existing = self._idempotency.get(idempotency_key)
             if existing is not None:
                 return {"operation_id": existing, "accepted": True}
+            if self._stop.is_set():
+                raise RuntimeError("operation_store_stopped")
             operation = ModelOperation(
                 operation_id=uuid.uuid4().hex,
                 idempotency_key=idempotency_key,
@@ -133,7 +135,21 @@ class ModelOperationStore:
         }
 
     def close(self) -> None:
-        self._stop.set()
+        with self._lock:
+            if self._stop.is_set():
+                return
+            self._stop.set()
+            now = self._clock()
+            for operation in self._operations.values():
+                if operation.state == "queued":
+                    operation.cancel_requested = True
+                    operation.state = "cancelled"
+                    operation.finished_at = now
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
         try:
             self._queue.put_nowait(None)
         except queue.Full:
@@ -151,7 +167,11 @@ class ModelOperationStore:
                 return
             with self._lock:
                 operation = self._operations.get(operation_id)
-                if operation is None or operation.state == "cancelled":
+                if (
+                    operation is None
+                    or operation.state == "cancelled"
+                    or self._stop.is_set()
+                ):
                     continue
                 operation.state = "running"
                 operation.started_at = self._clock()

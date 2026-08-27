@@ -1,9 +1,22 @@
 # 单主进程 + 模型独立进程 架构设计
 
 > 日期：2026-08-27
-> 状态：实施中（双进程主链路、进程内 runtime、model worker、资源管理与 supervisor 拓扑已落地；
-> OOM/context-fatal 单元故障注入已覆盖，真实 GPU 显存压测及强杀恢复类 e2e 继续完善）
+> 状态：代码实施完成，目标硬件验收中（双进程主链路、进程内 runtime、model worker、资源管理、
+> supervisor 拓扑及双向强杀恢复 e2e 已落地；真实 GPU 显存压测仍需在部署硬件上完成）
 > 范围：进程拓扑（4 进程 → 2 进程）、本地通信、模型边界、兼容桥、模型调度与资源管理、supervisor 变更
+
+## 实施与验收状态（2026-08-28）
+
+- 迁移步骤 1—14 的代码、配置、兼容入口与文档均已完成；进程内实时链路不依赖 wire Bus，Bus 仅保留在
+  进程边界、健康探活和外部兼容访问。
+- operation 关闭会拒绝新提交并取消 queued 项；TTS job 会在无访问超时后由后台回收，并在 worker 关闭时
+  停止准入和唤醒等待方。
+- 自动化验证：默认测试集 `750 passed, 4 deselected`；e2e `3 passed, 1 skipped, 750 deselected`。
+  e2e 已覆盖双进程探活、`--trigger-after`、强杀 model worker 后仅重启 worker，以及强杀 yuki 后保持
+  worker PID 不变并完成 BusHub/服务重注册。
+- OOM 重试、驱逐、context-fatal → `worker_fatal` 与 supervisor 的 unhealthy 定向重启由故障注入测试覆盖。
+- 尚未完成的是部署环境验收，而非代码缺口：真实 GPU 峰值显存、碎片化、推理延迟与模型抖动需要在目标
+  显卡和模型文件齐备后压测校准；真实 STT e2e 还依赖可选的 `soundfile` 包。
 
 ## 背景与目标
 

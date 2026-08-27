@@ -175,6 +175,15 @@ class TtsJobStore:
         self._oom_retry = max(0, oom_retry)
         self._jobs: dict[str, _TtsJob] = {}
         self._lock = threading.Lock()
+        self._stop = threading.Event()
+        cleanup_interval_s = min(1.0, max(0.01, self._ttl_s / 2.0))
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop,
+            args=(cleanup_interval_s,),
+            daemon=True,
+            name="yuki-tts-job-cleanup",
+        )
+        self._cleanup_thread.start()
 
     def start(self, payload: dict) -> dict:
         job_id = str(payload.get("job_id") or "")
@@ -182,16 +191,22 @@ class TtsJobStore:
             raise ValueError("job_id_required")
         self._cleanup()
         with self._lock:
+            if self._stop.is_set():
+                raise RuntimeError("tts_job_store_stopped")
             if job_id in self._jobs:
                 raise ValueError("job_id_exists")
             job = _TtsJob(job_id)
             self._jobs[job_id] = job
 
         def produce() -> None:
+            if job.cancelled.is_set():
+                return
             invocation = 0
 
             def synthesize(model: Any) -> None:
                 nonlocal invocation
+                if job.cancelled.is_set():
+                    return
                 invocation += 1
                 if invocation > 1:
                     with job.condition:
@@ -244,7 +259,6 @@ class TtsJobStore:
         wait_s = min(max(float(payload.get("wait_ms") or 0) / 1000.0, 0.0), 5.0)
         deadline = time.monotonic() + wait_s
         with job.condition:
-            job.last_access = time.monotonic()
             job.acknowledged_seq = max(job.acknowledged_seq, after_seq)
             for sequence in [seq for seq in job.chunks if seq <= after_seq]:
                 job.chunks.pop(sequence, None)
@@ -278,18 +292,25 @@ class TtsJobStore:
         return {}
 
     def close(self) -> None:
+        if self._stop.is_set():
+            return
+        self._stop.set()
         with self._lock:
             jobs = list(self._jobs.values())
+            self._jobs.clear()
         for job in jobs:
             job.cancelled.set()
             with job.condition:
                 job.done = True
                 job.condition.notify_all()
+        self._cleanup_thread.join(timeout=2.0)
 
     def _job(self, job_id: str) -> _TtsJob:
         self._cleanup()
         with self._lock:
             job = self._jobs.get(job_id)
+            if job is not None:
+                job.last_access = time.monotonic()
         if job is None:
             raise KeyError("tts_job_not_found")
         return job
@@ -298,12 +319,21 @@ class TtsJobStore:
         now = time.monotonic()
         with self._lock:
             expired = [
-                job_id
-                for job_id, job in self._jobs.items()
-                if job.done and now - job.last_access >= self._ttl_s
+                job
+                for job in self._jobs.values()
+                if now - job.last_access >= self._ttl_s
             ]
-            for job_id in expired:
-                self._jobs.pop(job_id, None)
+            for job in expired:
+                self._jobs.pop(job.job_id, None)
+        for job in expired:
+            job.cancelled.set()
+            with job.condition:
+                job.done = True
+                job.condition.notify_all()
+
+    def _cleanup_loop(self, interval_s: float) -> None:
+        while not self._stop.wait(interval_s):
+            self._cleanup()
 
 
 def register_inference_services(
