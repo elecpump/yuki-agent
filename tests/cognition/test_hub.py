@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 
@@ -9,7 +10,6 @@ from yuki.cognition.brain.hub import (
     build_brain,
 )
 from yuki.cognition.brain.local.router import GateRoute, RouterDecision
-from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.context.snapshot import ContextProjector, ContextSnapshot
 from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
@@ -168,7 +168,7 @@ def test_non_finite_voice_probe_is_ignored_instead_of_poisoning_future_loops(tmp
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "ts": time.time()})
 
     assert _reply_text(bus) == "cloud reply"
-    assert hub._pending_input_ts == 0.0
+    assert math.isfinite(hub._pending_input_ts)
     memory.close()
 
 
@@ -415,21 +415,6 @@ def test_hub_writes_context_without_double_write(tmp_path):
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert ctx.users == ["你好"]
     assert ctx.agents == [L2_UNAVAILABLE_NOTICE]
-    memory.close()
-
-
-def test_situation_proactive_and_cooldown(tmp_path, monkeypatch):
-    bus = FakeBus()
-    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    hub = DecisionHub(bus, policy=DecisionPolicy(120.0), memory=memory)
-    monkeypatch.setattr("time.time", lambda: 0.0)
-    hub.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 0.0})
-    first = _reply_text(bus)
-    monkeypatch.setattr("time.time", lambda: 60.0)
-    before = len(bus.published)
-    hub.on_situation_update(Topics.SITUATION_UPDATE, {"topic": "量子计算", "ts": 60.0})
-    assert "量子计算" in first
-    assert len(bus.published) == before
     memory.close()
 
 

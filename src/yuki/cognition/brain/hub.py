@@ -1,16 +1,29 @@
+from __future__ import annotations
+
 import math
 import threading
 import time
 import uuid
 from collections.abc import Callable
+from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from yuki.cognition.brain.classifier import Emotion, detect_emotion
+from yuki.cognition.brain.cooldown import CooldownCalculator
+from yuki.cognition.brain.decision_contract import (
+    DecisionTrace,
+    final_reply_payload,
+    situation_provenance,
+)
 from yuki.cognition.brain.local.router import GateRoute, RouterDecision, is_crisis
-from yuki.cognition.brain.policy import DecisionPolicy, SituationAction, TriggerKind
-from yuki.cognition.brain.sink import DecisionSink, TunerSink
+from yuki.cognition.brain.proactive_controller import ProactiveController
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.logger import get_decision_logger, get_logger
 from yuki.topics import Topics
+
+if TYPE_CHECKING:
+    from yuki.cognition.brain.soul import SoulStore
+    from yuki.cognition.l2.proactive import ProactiveAgent
 
 logger = get_logger("yuki.cognition.brain.hub")
 
@@ -24,59 +37,10 @@ COGNITION_CHAT_SERVICE = "cognition.chat"
 SOUL_GET_SERVICE = "soul.get"
 
 
-def situation_provenance(situation: dict | None) -> dict:
-    if not situation:
-        return {}
-    keys = (
-        "situation_id",
-        "frame_id",
-        "source_id",
-        "scroll_band",
-        "observation_reason",
-        "frame_ts",
-    )
-    return {key: situation[key] for key in keys if key in situation}
-
-
-class DecisionTrace:
-    def __init__(
-        self,
-        *,
-        ts,
-        trigger,
-        emotion,
-        actions,
-        rendered,
-        reason,
-        route,
-        reply_id,
-        cooldown_state,
-        situation_provenance=None,
-    ) -> None:
-        self.ts = ts
-        self.trigger = trigger
-        self.emotion = emotion
-        self.actions = actions
-        self.rendered = rendered
-        self.reason = reason
-        self.route = route
-        self.reply_id = reply_id
-        self.cooldown_state = cooldown_state
-        self.situation_provenance = situation_provenance or {}
-
-    def to_dict(self) -> dict:
-        return {
-            "ts": self.ts,
-            "trigger": self.trigger,
-            "emotion": self.emotion,
-            "actions": [a.name if hasattr(a, "name") else str(a) for a in self.actions],
-            "rendered": self.rendered,
-            "reason": self.reason,
-            "route": self.route,
-            "reply_id": self.reply_id,
-            "cooldown_state": self.cooldown_state,
-            "situation_provenance": self.situation_provenance,
-        }
+class TriggerKind(StrEnum):
+    AWAKE = "awake"
+    UTTERANCE = "utterance"
+    SITUATION = "situation"
 
 
 class DecisionHub:
@@ -86,13 +50,11 @@ class DecisionHub:
         self,
         bus,
         *,
-        policy=None,
         memory=None,
         registry=None,
         trace_logger=None,
         bridge=None,
         loop=None,
-        tuner=None,
         context=None,
         projector=None,
         local_router=None,
@@ -102,18 +64,22 @@ class DecisionHub:
         periodic=None,
         periodic_interval: int = 0,
         utterance_observers: list[Callable[[str], None]] | None = None,
+        proactive_agent: ProactiveAgent | None = None,
+        cooldown_calculator: CooldownCalculator | None = None,
+        soul_store: SoulStore | None = None,
+        proactive_enabled: bool = True,
+        proactive_tick_s: float = 30.0,
+        activity_suppress_s: float = 30.0,
+        dedup_min_interval_s: float = 30.0,
+        silent_hold_s: float = 300.0,
+        clock: Callable[[], float] = time.time,
     ) -> None:
         self._bus = bus
-        self._policy = policy or DecisionPolicy(proactive_cooldown_s=120.0)
         self._memory = memory
         self._registry = registry
         self._trace_logger = trace_logger or get_decision_logger()
         self._bridge = bridge
         self._loop = loop or (getattr(bridge, "loop", None) if bridge is not None else None)
-        self._tuner = tuner
-        self._sinks: list[DecisionSink] = []
-        if tuner is not None:
-            self._sinks.append(TunerSink(tuner))
         self._local_router = local_router
         self._local_composer = local_composer
         self._local_enabled = local_enabled
@@ -131,19 +97,41 @@ class DecisionHub:
         self._context = None
         self._situation_fast = None
         self._situation_deep = None
-        self._last_open_ts = None
         self._context_wrapper = context
         self._projector = projector
-
-    def register_sink(self, sink: DecisionSink) -> None:
-        self._sinks.append(sink)
+        self._cooldown = cooldown_calculator or CooldownCalculator()
+        self._clock = clock
+        self._proactive = ProactiveController(
+            bus,
+            proactive_agent,
+            self._cooldown,
+            trace_logger=self._trace_logger,
+            context=context,
+            projector=projector,
+            soul_store=soul_store,
+            enabled=proactive_enabled,
+            tick_s=proactive_tick_s,
+            activity_suppress_s=activity_suppress_s,
+            dedup_min_interval_s=dedup_min_interval_s,
+            silent_hold_s=silent_hold_s,
+            clock=clock,
+        )
 
     def on_situation_update(self, topic: str, payload: dict) -> None:
         selected = self._select_situation(payload)
         if self._context_wrapper is not None:
             self._context_wrapper.update_situation(selected)
         self._context = selected
-        self._handle(TriggerKind.SITUATION, "", situation=selected, publish_reply=True)
+        self._proactive.schedule_situation(selected)
+
+    def start(self) -> None:
+        self._proactive.start()
+
+    def close(self, timeout_s: float = 1.0) -> None:
+        self._proactive.close(timeout_s)
+
+    def trigger_proactive_tick(self) -> None:
+        self._proactive.trigger_tick(self._context)
 
     def handle_awake_request(self, payload: dict) -> dict:
         return self._handle(TriggerKind.AWAKE, "", publish_reply=False)
@@ -169,6 +157,7 @@ class DecisionHub:
             return
         with self._probe_lock:
             self._pending_input_ts = max(self._pending_input_ts, float(ts))
+        self._proactive.on_input_probe(float(ts))
 
     def _handle(
         self,
@@ -178,6 +167,11 @@ class DecisionHub:
         *,
         publish_reply: bool,
     ) -> dict:
+        if trigger == TriggerKind.UTTERANCE:
+            now = self._clock()
+            with self._probe_lock:
+                self._pending_input_ts = max(self._pending_input_ts, now)
+            self._proactive.on_user_utterance(text, now)
         with self._decision_lock:
             result = self._handle_locked(
                 trigger,
@@ -222,8 +216,6 @@ class DecisionHub:
                 effective_situation,
                 publish_reply=publish_reply,
             )
-        elif trigger == TriggerKind.SITUATION:
-            result = self._handle_situation(trigger, effective_situation)
         else:
             result = self._result("", False, reason="silent", route="silent")
 
@@ -231,22 +223,15 @@ class DecisionHub:
         spoke = result["spoke"]
         emotion = result["emotion"]
         emotion_value = emotion.value if hasattr(emotion, "value") else str(emotion)
-        reply_ts = time.time()
+        reply_ts = self._clock()
         reply_id = result.get("reply_id")
         if spoke and reply_id is None:
             reply_id = uuid.uuid4().hex
         if spoke:
-            self._last_open_ts = reply_ts
             if publish_reply:
                 self._bus.publish(
                     Topics.REPLY,
-                    {
-                        "text": rendered,
-                        "ts": reply_ts,
-                        "emotion": emotion_value,
-                        "kind": "final",
-                        "reply_id": reply_id,
-                    },
+                    final_reply_payload(rendered, reply_ts, emotion_value, reply_id),
                 )
 
         if self._context_wrapper is not None:
@@ -255,12 +240,7 @@ class DecisionHub:
             if spoke:
                 self._context_wrapper.add_agent(rendered)
 
-        if trigger == TriggerKind.SITUATION and spoke:
-            for sink in self._sinks:
-                sink.on_proactive_open()
         if trigger == TriggerKind.UTTERANCE:
-            for sink in self._sinks:
-                sink.on_user_utterance(text)
             self._utterance_count += 1
             if self._periodic_interval > 0 and self._utterance_count % self._periodic_interval == 0:
                 self._run_periodic()
@@ -268,7 +248,7 @@ class DecisionHub:
         self._trace_logger.info(
             "decision",
             **DecisionTrace(
-                ts=time.time(),
+                ts=self._clock(),
                 trigger=trigger.value,
                 emotion=emotion_value,
                 actions=result["actions"],
@@ -276,7 +256,7 @@ class DecisionHub:
                 reason=result["reason"],
                 route=result["route"],
                 reply_id=reply_id,
-                cooldown_state={"last_open_ts": self._last_open_ts},
+                cooldown_state=self._cooldown.snapshot(self._clock()),
                 situation_provenance=situation_provenance(effective_situation),
             ).to_dict(),
         )
@@ -355,22 +335,6 @@ class DecisionHub:
             snapshot,
             decision,
             publish_reply=publish_reply,
-        )
-
-    def _handle_situation(self, trigger: TriggerKind, situation: dict | None) -> dict:
-        actions = self._policy.decide(
-            trigger,
-            situation=situation,
-            last_open_ts=self._last_open_ts,
-            now=time.time(),
-        )
-        rendered = self._render_situation_actions(actions, situation)
-        return self._result(
-            rendered,
-            bool(rendered),
-            reason="situation" if rendered else "silent",
-            route="situation",
-            actions=actions,
         )
 
     def _dispatch_local(
@@ -485,7 +449,7 @@ class DecisionHub:
         publish_reply: bool,
     ) -> dict:
         reply_id = uuid.uuid4().hex
-        started = time.time()
+        started = self._clock()
         transition_sent = False
 
         def on_transition(transition: str) -> None:
@@ -495,7 +459,7 @@ class DecisionHub:
                 Topics.REPLY,
                 {
                     "text": transition,
-                    "ts": time.time(),
+                    "ts": self._clock(),
                     "emotion": "neutral",
                     "kind": "transition",
                     "reply_id": reply_id,
@@ -532,7 +496,7 @@ class DecisionHub:
                     Topics.REPLY,
                     {
                         "text": "",
-                        "ts": time.time(),
+                        "ts": self._clock(),
                         "emotion": "neutral",
                         "kind": "cancel",
                         "reply_id": reply_id,
@@ -567,22 +531,6 @@ class DecisionHub:
         if not reply:
             return "", False, True
         return reply, True, False
-
-    def _render_situation_actions(
-        self,
-        actions: list[SituationAction],
-        situation: dict | None,
-    ) -> str:
-        fragments = []
-        for action in actions:
-            if action.name == "acknowledge":
-                topic = (action.params or {}).get("topic") or (situation or {}).get("topic")
-                if topic:
-                    fragments.append(f"嗯，你正在看{topic}。")
-            elif action.name == "ask":
-                topic = (situation or {}).get("topic")
-                fragments.append(f"关于{topic}，你想聊哪一块？" if topic else "想聊聊吗？")
-        return " ".join(fragments)
 
     def _result(
         self,
@@ -635,9 +583,7 @@ def build_brain(
     memory=None,
     registry=None,
     config=None,
-    policy=None,
     bridge=None,
-    tuner=None,
     context=None,
     projector=None,
     periodic=None,
@@ -645,31 +591,19 @@ def build_brain(
     utterance_observers: list[Callable[[str], None]] | None = None,
     local_router=None,
     local_composer=None,
+    proactive_agent: ProactiveAgent | None = None,
+    cooldown_calculator: CooldownCalculator | None = None,
+    soul_store: SoulStore | None = None,
     register_awake_service: bool = True,
 ) -> DecisionHub:
-    from yuki.cognition.brain.soul import SoulStore
     from yuki.config import Config
 
     cfg = config or Config.from_env()
-    if policy is None:
-        soul = SoulStore(
-            cfg.soul.path,
-            cfg.persona_name,
-            default_description=cfg.persona.prompt.format(persona=cfg.persona_name),
-            tuner_state_path=cfg.soul.tuner_state_path,
-        )
-        policy = DecisionPolicy(
-            proactive_cooldown_s=cfg.brain.proactive_cooldown_s,
-            proactive_enabled=cfg.brain.proactive_enabled,
-            binding_core_values=soul.binding_core_values(),
-        )
     hub = DecisionHub(
         bus,
-        policy=policy,
         memory=memory,
         registry=registry,
         bridge=bridge,
-        tuner=tuner,
         context=context,
         projector=projector,
         local_router=local_router,
@@ -679,6 +613,14 @@ def build_brain(
         periodic=periodic,
         periodic_interval=periodic_interval,
         utterance_observers=utterance_observers,
+        proactive_agent=proactive_agent,
+        cooldown_calculator=cooldown_calculator,
+        soul_store=soul_store,
+        proactive_enabled=cfg.brain.proactive_enabled,
+        proactive_tick_s=cfg.brain.proactive_tick_s,
+        activity_suppress_s=cfg.brain.activity_suppress_s,
+        dedup_min_interval_s=cfg.brain.dedup_min_interval_s,
+        silent_hold_s=cfg.brain.silent_hold_s,
     )
     if register_awake_service:
         bus.respond(COGNITION_AWAKE_SERVICE, hub.handle_awake_request)

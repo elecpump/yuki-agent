@@ -359,7 +359,7 @@ def test_model_device_accepts_cuda_index():
 def test_soul_defaults():
     config = Config()
     assert config.soul.path == "data/soul.json"
-    assert config.soul.tuner_state_path == "data/tuner_state.json"
+    assert config.soul.cooldown_state_path == "data/cooldown_state.json"
     assert config.soul.snapshots_dir == "data/soul_snapshots"
     assert config.soul.max_versions == 50
     assert config.soul.min_snapshot_interval_s == 60.0
@@ -377,7 +377,8 @@ def test_soul_env_override(monkeypatch):
     monkeypatch.setenv("YUKI_SOUL_TUNER_STATE_PATH", "tmp/tuner_state.json")
     config = Config.load(None)
     assert config.soul.path == "tmp/soul.json"
-    assert config.soul.tuner_state_path == "tmp/tuner_state.json"
+    assert config.soul.cooldown_state_path == "tmp/cooldown_state.json"
+    assert config.soul.legacy_tuner_state_path == "tmp/tuner_state.json"
 
 
 def test_perception_defaults():

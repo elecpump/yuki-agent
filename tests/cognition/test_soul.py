@@ -2,10 +2,10 @@ import json
 
 import pytest
 
+from yuki.cognition.brain.cooldown import CooldownCalculator
 from yuki.cognition.brain.soul import (
-    COOLDOWN_KEY,
+    LEGACY_COOLDOWN_KEY,
     SoulStore,
-    TunerStateStore,
 )
 
 
@@ -96,24 +96,54 @@ def test_reset_keeps_default_kernel_file(tmp_path):
     assert loaded["core_values"]
 
 
-def test_legacy_params_shape_migrates_cooldown_to_tuner_state(tmp_path):
+def test_legacy_params_shape_migrates_cooldown_state(tmp_path):
     soul_path = tmp_path / "soul.json"
-    state_path = tmp_path / "tuner_state.json"
+    state_path = tmp_path / "cooldown_state.json"
     soul_path.write_text(
         json.dumps({
             "persona_name": "yuki",
             "persona_version": 1,
-            "params": {COOLDOWN_KEY: 240.0},
+            "params": {LEGACY_COOLDOWN_KEY: 240.0},
         }),
         encoding="utf-8",
     )
-    loaded = SoulStore(soul_path, "yuki", tuner_state_path=state_path).load()
+    loaded = SoulStore(soul_path, "yuki", cooldown_state_path=state_path).load()
     assert loaded["personality_traits"]["warmth"] == 0.5
-    assert TunerStateStore(state_path, "yuki").load()[COOLDOWN_KEY] == pytest.approx(240.0)
+    assert json.loads(state_path.read_text(encoding="utf-8"))["cooldown_s"] == pytest.approx(240.0)
     assert "persona_version" not in json.loads(soul_path.read_text(encoding="utf-8"))
 
 
-def test_tuner_state_roundtrip(tmp_path):
-    state = TunerStateStore(tmp_path / "tuner_state.json", "yuki")
-    state.save({COOLDOWN_KEY: 180.0})
-    assert state.load()[COOLDOWN_KEY] == pytest.approx(180.0)
+def test_legacy_soul_does_not_mask_custom_tuner_floor(tmp_path):
+    soul_path = tmp_path / "soul.json"
+    state_path = tmp_path / "runtime" / "cooldown_state.json"
+    legacy_path = tmp_path / "custom" / "old_tuner.json"
+    legacy_path.parent.mkdir()
+    legacy_path.write_text(
+        json.dumps(
+            {
+                "persona_name": "yuki",
+                "proactive_cooldown_s": 240.0,
+                "cooldown_floor_s": 90.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    soul_path.write_text(
+        json.dumps(
+            {
+                "persona_name": "yuki",
+                "persona_version": 1,
+                "params": {LEGACY_COOLDOWN_KEY: 180.0},
+            }
+        ),
+        encoding="utf-8",
+    )
+    SoulStore(
+        soul_path,
+        "yuki",
+        cooldown_state_path=state_path,
+        legacy_tuner_state_path=legacy_path,
+    ).load()
+    cooldown = CooldownCalculator(path=state_path, legacy_path=legacy_path)
+    assert cooldown.cooldown_s == 240.0
+    assert cooldown.floor_s == 90.0

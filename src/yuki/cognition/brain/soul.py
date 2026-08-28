@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
+from yuki.cognition.brain.cooldown import DEFAULT_FLOOR_S, DEFAULT_SILENT_STREAK
 from yuki.cognition.brain.soul_contract import (
     SoulConflictError,
     SoulRestoreError,
@@ -15,12 +16,11 @@ from yuki.cognition.brain.soul_contract import (
     validate_traits_patch,
 )
 from yuki.cognition.brain.soul_versions import SoulVersionStore
-from yuki.cognition.brain.tuner_state import COOLDOWN_KEY, FLOOR_KEY, TunerStateStore
-
 from yuki.logger import get_audit_logger, get_logger
 from yuki.persistence import atomic_write_json
 
 logger = get_logger("yuki.cognition.brain.soul")
+LEGACY_COOLDOWN_KEY = "proactive_cooldown_s"
 
 DEFAULT_TRAITS = {
     "warmth": 0.5,
@@ -76,7 +76,8 @@ class SoulStore:
         persona_version: int | None = None,
         *,
         default_description: str | None = None,
-        tuner_state_path: str | Path | None = None,
+        cooldown_state_path: str | Path | None = None,
+        legacy_tuner_state_path: str | Path | None = None,
         snapshots_dir: str | Path | None = None,
         max_versions: int = 50,
         min_snapshot_interval_s: float = 60.0,
@@ -88,9 +89,11 @@ class SoulStore:
         self._default_description = default_description or INITIAL_PERSONALITY_DESCRIPTION.format(
             persona=persona_name
         )
-        self._tuner_state = TunerStateStore(
-            tuner_state_path or self._path.with_name("tuner_state.json"),
-            persona_name,
+        self._cooldown_state_path = Path(
+            cooldown_state_path or self._path.with_name("cooldown_state.json")
+        )
+        self._legacy_tuner_state_path = Path(
+            legacy_tuner_state_path or self._cooldown_state_path.with_name("tuner_state.json")
         )
         self._ignored_persona_version = persona_version
         self._versions = SoulVersionStore(
@@ -111,10 +114,6 @@ class SoulStore:
             "revision": 0,
             "updated_at": _now_iso(),
         }
-
-    @property
-    def tuner_state(self) -> TunerStateStore:
-        return self._tuner_state
 
     def load(self) -> dict | None:
         with self._lock:
@@ -309,15 +308,28 @@ class SoulStore:
 
     def _is_legacy_params_shape(self, data: dict) -> bool:
         return isinstance(data.get("params"), dict) and (
-            "persona_version" in data or COOLDOWN_KEY in data.get("params", {})
+            "persona_version" in data or LEGACY_COOLDOWN_KEY in data.get("params", {})
         )
 
     def _migrate_legacy_params(self, data: dict) -> dict | None:
         if data.get("persona_name") != self._persona_name:
             return None
         params = data.get("params") or {}
-        if isinstance(params.get(COOLDOWN_KEY), (int, float)):
-            self._tuner_state.save({COOLDOWN_KEY: float(params[COOLDOWN_KEY])})
+        if (
+            isinstance(params.get(LEGACY_COOLDOWN_KEY), (int, float))
+            and not self._cooldown_state_path.exists()
+            and not self._legacy_tuner_state_path.exists()
+        ):
+            atomic_write_json(
+                self._cooldown_state_path,
+                {
+                    "persona_name": self._persona_name,
+                    "cooldown_s": float(params[LEGACY_COOLDOWN_KEY]),
+                    "floor_s": DEFAULT_FLOOR_S,
+                    "silent_streak": DEFAULT_SILENT_STREAK,
+                    "updated_at": _now_iso(),
+                },
+            )
         soul = self.default_soul()
         self.save(soul)
         return soul

@@ -200,7 +200,7 @@ def test_gateway_config_redacts_bus_auth_token():
     config = Config(
         bus={"auth_token": "secret"},
         memory={"db_path": "C:/Users/me/yuki.db"},
-        soul={"path": "C:/Users/me/soul.json", "tuner_state_path": "C:/Users/me/tuner.json"},
+        soul={"path": "C:/Users/me/soul.json", "cooldown_state_path": "C:/Users/me/cooldown.json"},
         gateway={"history_dir": "C:/Users/me/recordings"},
     )
     runtime, client = _client(config=config)
@@ -211,7 +211,7 @@ def test_gateway_config_redacts_bus_auth_token():
     assert body["bus"]["auth_token"] == "<redacted>"
     assert body["memory"]["db_path"] == "<redacted>"
     assert body["soul"]["path"] == "<redacted>"
-    assert body["soul"]["tuner_state_path"] == "<redacted>"
+    assert body["soul"]["cooldown_state_path"] == "<redacted>"
     assert body["gateway"]["history_dir"] == "<redacted>"
 
 

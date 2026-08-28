@@ -75,6 +75,13 @@ text:
 brain:
   proactive_cooldown_s: 120.0
   proactive_enabled: true
+  proactive_timeout_s: 5.0
+  proactive_tick_s: 30.0
+  proactive_max_chars: 200
+  activity_suppress_s: 30.0
+  dedup_min_interval_s: 30.0
+  silent_hold_s: 300.0
+  max_cooldown_s: 600.0
 local_brain:
   enabled: false
   model_id: Qwen/Qwen3-1.7B-FP8
@@ -129,7 +136,7 @@ agent_loop:
   interrupt_enabled: true
 soul:
   path: data/soul.json
-  tuner_state_path: data/tuner_state.json
+  cooldown_state_path: data/cooldown_state.json
 perception:
   dwell_s: 2.0
 wake_word:

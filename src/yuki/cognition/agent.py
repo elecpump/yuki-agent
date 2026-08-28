@@ -70,10 +70,14 @@ class CognitionAgent(ProcessAgent):
         self._persona_store = assembled.persona_store
         self._persona_refresh = assembled.persona_refresh
         self._soul_reflection_scheduler = assembled.soul_reflection_scheduler
+        self._hub.start()
         if self._soul_reflection_scheduler is not None:
             self._soul_reflection_scheduler.start()
 
     def teardown(self) -> None:
+        if self._hub is not None:
+            self._hub.close(timeout_s=SOUL_REFLECTION_CLOSE_TIMEOUT_S)
+            self._hub = None
         if self._soul_reflection_scheduler is not None:
             self._soul_reflection_scheduler.close(
                 timeout_s=SOUL_REFLECTION_CLOSE_TIMEOUT_S

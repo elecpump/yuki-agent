@@ -3,6 +3,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from yuki.cognition.brain.hub import (
     COGNITION_AWAKE_SERVICE,
@@ -11,6 +12,7 @@ from yuki.cognition.brain.hub import (
     DecisionHub,
     build_brain,
 )
+from yuki.cognition.brain.cooldown import CooldownCalculator
 from yuki.cognition.brain.local import (
     LocalComposer,
     LocalRouter,
@@ -19,17 +21,16 @@ from yuki.cognition.brain.local import (
 from yuki.cognition.brain.persona import (
     generate as generate_persona,
 )
-from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.brain.snapshots import PersonaStore
-from yuki.cognition.brain.soul import SoulStore, TunerStateStore
+from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.soul_reflector import SoulReflector
 from yuki.cognition.brain.soul_scheduler import SoulReflectionScheduler
-from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
+from yuki.cognition.l2.proactive import ProactiveAgent
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.vad import FsmnVadBackend
@@ -170,23 +171,33 @@ class CognitionAssembler:
             self.config.soul.path,
             self.config.persona_name,
             default_description=self.config.persona.prompt.format(persona=self.config.persona_name),
-            tuner_state_path=self.config.soul.tuner_state_path,
+            cooldown_state_path=self.config.soul.cooldown_state_path,
+            legacy_tuner_state_path=self.config.soul.legacy_tuner_state_path,
             snapshots_dir=self.config.soul.snapshots_dir,
             max_versions=self.config.soul.max_versions,
             min_snapshot_interval_s=self.config.soul.min_snapshot_interval_s,
             max_description_chars=self.config.soul.max_description_chars,
         )
         soul_store.ensure()
-        policy = DecisionPolicy(
-            proactive_cooldown_s=self.config.brain.proactive_cooldown_s,
-            proactive_enabled=self.config.brain.proactive_enabled,
-            binding_core_values=soul_store.binding_core_values(),
+        legacy_tuner_state_path = self.config.soul.legacy_tuner_state_path or Path(
+            self.config.soul.cooldown_state_path
+        ).with_name("tuner_state.json")
+        cooldown = CooldownCalculator(
+            self.config.brain.proactive_cooldown_s,
+            path=self.config.soul.cooldown_state_path,
+            legacy_path=legacy_tuner_state_path,
+            persona_name=self.config.persona_name,
+            max_cooldown_s=self.config.brain.max_cooldown_s,
         )
-        tuner = FeedbackTuner(
-            policy,
-            TunerStateStore(self.config.soul.tuner_state_path, self.config.persona_name),
+        proactive_agent = (
+            ProactiveAgent(
+                cloud_client,
+                timeout_s=self.config.brain.proactive_timeout_s,
+                max_chars=self.config.brain.proactive_max_chars,
+            )
+            if cloud_client is not None
+            else None
         )
-        tuner.load_soul()
         context = WorkingContext(
             ShortTermTurnStore(memory),
             snapshot_path=self.config.context.snapshot_path or None,
@@ -226,11 +237,12 @@ class CognitionAssembler:
             memory=memory,
             registry=registry,
             config=self.config,
-            policy=policy,
             bridge=bridge,
-            tuner=tuner,
             context=context,
             projector=projector,
+            proactive_agent=proactive_agent,
+            cooldown_calculator=cooldown,
+            soul_store=soul_store,
             local_router=local_router,
             local_composer=local_composer,
             periodic=[persona_refresh],

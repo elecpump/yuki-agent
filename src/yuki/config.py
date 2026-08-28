@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 def _validate_model_device(value: str) -> str:
@@ -139,6 +139,13 @@ class TextConfig(BaseModel):
 class BrainConfig(BaseModel):
     proactive_cooldown_s: float = Field(120.0, ge=0.0)
     proactive_enabled: bool = True
+    proactive_timeout_s: float = Field(5.0, ge=0.1)
+    proactive_tick_s: float = Field(30.0, ge=0.0)
+    proactive_max_chars: int = Field(200, ge=1)
+    activity_suppress_s: float = Field(30.0, ge=0.0)
+    dedup_min_interval_s: float = Field(30.0, ge=0.0)
+    silent_hold_s: float = Field(300.0, ge=0.0)
+    max_cooldown_s: float = Field(600.0, ge=0.0)
 
 
 class LocalBrainConfig(BaseModel):
@@ -228,13 +235,28 @@ class AgentLoopConfig(BaseModel):
 
 class SoulConfig(BaseModel):
     path: str = "data/soul.json"
-    tuner_state_path: str = "data/tuner_state.json"
+    cooldown_state_path: str = "data/cooldown_state.json"
+    legacy_tuner_state_path: str | None = Field(None, exclude=True)
     snapshots_dir: str = "data/soul_snapshots"
     max_versions: int = Field(50, ge=1)
     min_snapshot_interval_s: float = Field(60.0, ge=0.0)
     reflect_every_utterances: int = Field(30, ge=1)
     reflect_interval_s: float = Field(3600.0, ge=60.0)
     max_description_chars: int = Field(2000, ge=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_tuner_path(cls, data: object) -> object:
+        if isinstance(data, dict) and "tuner_state_path" in data:
+            migrated = dict(data)
+            old_path = Path(str(migrated.pop("tuner_state_path")))
+            migrated.setdefault("legacy_tuner_state_path", old_path.as_posix())
+            migrated.setdefault(
+                "cooldown_state_path",
+                old_path.with_name("cooldown_state.json").as_posix(),
+            )
+            return migrated
+        return data
 
 
 class PerceptionConfig(BaseModel):
@@ -328,6 +350,10 @@ class Config(BaseModel):
                 with open(local, "r", encoding="utf-8") as fh:
                     data = _deep_merge(data, yaml.safe_load(fh) or {})
         cls._apply_env("persona_name", "PERSONA_NAME", data)
+        legacy_cooldown_path = os.environ.get("YUKI_SOUL_TUNER_STATE_PATH")
+        if legacy_cooldown_path and "YUKI_SOUL_COOLDOWN_STATE_PATH" not in os.environ:
+            soul_section = data.setdefault("soul", {})
+            soul_section.setdefault("tuner_state_path", legacy_cooldown_path)
         for section_name, section_cls in (
             ("bus", BusConfig),
             ("logging", LoggingConfig),

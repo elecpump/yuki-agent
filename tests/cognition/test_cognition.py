@@ -265,7 +265,7 @@ def test_cognition_agent_teardown_continues_after_model_shutdown_error(tmp_path)
     assert agent._memory is None
 
 
-def test_cognition_agent_builds_tuner(tmp_path):
+def test_cognition_agent_builds_cooldown_calculator(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
@@ -275,8 +275,7 @@ def test_cognition_agent_builds_tuner(tmp_path):
     )
     agent.setup()
     try:
-        assert agent._hub._tuner is not None
-        assert agent._hub._policy is agent._hub._tuner._policy
+        assert agent._hub._cooldown is not None
     finally:
         agent.teardown()
 
