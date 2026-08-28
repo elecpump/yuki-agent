@@ -42,6 +42,8 @@ def register_soul_functions(
     """Register the model-facing Soul mutation tool with a fixed realtime source."""
     if "soul.update" in registry.names():
         return
+    if on_updated is not None:
+        store.set_on_updated(on_updated)
 
     def on_update(params: SoulUpdateParams) -> dict:
         try:
@@ -57,8 +59,6 @@ def register_soul_functions(
             )
         except SoulValidationError as exc:
             raise ArgumentValidationError(str(exc)) from exc
-        if result["changed"] and on_updated is not None:
-            on_updated()
         return {"updated": bool(result["changed"])}
 
     registry.tool(

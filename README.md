@@ -55,6 +55,7 @@ python -m yuki.supervisor            # 推荐：启动 yuki + model_worker 并�
 python -m yuki.app                   # 仅启动主进程（需要另行启动 model_worker）
 python -m yuki.model_worker          # 仅启动模型进程
 python -m yuki.memory list           # 记忆管理 CLI
+python -m yuki.soul_cli list         # Soul 可恢复版本
 ```
 
 启用唤醒词：`config.yaml` 中 `wake_word.enabled: true` 并配置 `model_path`（自训的
@@ -65,6 +66,34 @@ python -m yuki.memory list           # 记忆管理 CLI
 复制 `config.example.yaml` 为 `config.yaml`。主要分区：`bus`、`runtime_bus`、`models`、`supervisor`、
 `memory`、`vlm`、`cloud`、`wake_word`、`gateway`、`persona` 等。密钥走环境变量，
 如 `YUKI_CLOUD_API_KEY`；不要提交本地 `data/`、`logs/`。
+
+### Soul 手动恢复
+
+恢复前先停止 `yuki`/supervisor，避免运行进程与 CLI 同时写 `soul.json`。建议先备份
+`data/soul.json` 和 `data/soul_snapshots/`，然后执行：
+
+```bash
+python -m yuki.soul_cli show          # 查看当前 Soul 和 revision
+python -m yuki.soul_cli list          # 列出已提交且可恢复的 revision
+python -m yuki.soul_cli restore 3     # 将 r3 内容恢复为一个新的 revision
+python -m yuki.soul_cli show          # 核对结果后再重启 Yuki
+```
+
+自定义配置使用 `--config path/to/config.yaml`；也可用 `--path`、`--snapshots-dir`
+覆盖存储位置。`restore` 默认要求输入 `yes` 确认，自动化恢复可显式添加 `--yes`。
+恢复不会让 revision 倒退，因此恢复操作本身仍可审计和再次回滚。
+
+快照文件名为 `soul_snapshot_rNNNNNN.json`，内容是
+`{"saved_at": <Unix 时间>, "soul": <完整 Soul 对象>}`；整个快照文件不能直接替换
+`soul.json`。CLI 无法启动时的紧急文件级恢复步骤如下：
+
+1. 保持 Yuki 停止，并备份主文件与整个快照目录。
+2. 从目标快照中只取 `soul` 对象，把其 `revision` 改为当前主文件 revision + 1，
+   同时更新 `updated_at`。
+3. 先将该对象包装为上述快照格式，写入对应的新 revision 快照文件；再把未包装的
+   Soul 对象写入同目录临时文件，并用原子重命名替换 `soul.json`。
+4. 运行 `python -m yuki.soul_cli show` 核验后再启动。手工恢复不会自动写审计事件，
+   因此只作为 CLI 不可用时的应急方式。
 
 `models.policies` 由 `model_worker` 统一托管本地模型（VLM / STT / 本地脑 / TTS / embedding）：
 模型 ID、device、enabled 等来自 `vlm`/`stt`/`tts`/`local_brain`/`memory` 分区，运行策略

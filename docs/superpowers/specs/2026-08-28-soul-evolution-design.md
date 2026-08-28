@@ -1,7 +1,7 @@
 # Soul 演化与工具接口统一 设计
 
 > 日期：2026-08-28
-> 状态：已评审（方案可行；评审问题已修订，分阶段实施中）
+> 状态：已实施（2026-08-28）
 > 范围：三职责架构定位、Soul 演化机制、旧组件清理清单、实施顺序
 > 依赖：`docs/superpowers/specs/2026-08-26-proactive-opening-redesign.md`（ProactiveAgent/CooldownCalculator 草案，本设计的前置）
 
@@ -11,9 +11,9 @@
 
 | 职责 | 负责组件 | 状态 |
 |---|---|---|
-| 频率控制 | `ProactiveAgent` + `CooldownCalculator` | 已设计（草案，**未实现**，本设计的前置依赖） |
+| 频率控制 | `ProactiveAgent` + `CooldownCalculator` | 已实现 |
 | 偏好沉淀 | L1 Agent Loop 的 `memory.*` 工具 | 已实现（`functions/memory_tools.py`） |
-| 人格演化 | `soul.update` 工具 + 定期反思任务 | 本次设计 |
+| 人格演化 | `soul.update` 工具 + 定期反思任务 | 已实现 |
 
 三职责共用同一原则：**模型只负责"决策与内容"，规则与存储由代码侧提供**。人格演化中模型产出新的人格内容，但写入、校验、快照、审计全部由代码侧完成。
 
@@ -128,14 +128,19 @@ class SoulConfig(BaseModel):
 5. **定期反思任务**：新增独立 `SoulReflectionScheduler`（轮次通知 + 墙钟 timer + 单任务在途去重），产出走同一 `update(expected_revision=...)`。
 6. **测试与文档**：soul 单测（update/diff/快照/回滚/并发）、工具契约测试、定期任务测试；README 与本文档归档。
 
-### 首批实施状态（2026-08-28）
+### 实施状态（2026-08-28）
 
 - 已完成：`SoulStore.update()` 的 RLock、revision/CAS 与存储协调；严格 patch/replace 校验拆至 `soul_contract.py`，版本暂存/节流/剪枝/恢复拆至 `soul_versions.py`；`prefs_since_regen` 已从新格式移除。
 - 已完成：`soul.update` 工具注册，`source=realtime` 由 wrapper 固定；工具仅返回 `{updated: bool}`，内部 revision/diff 不暴露；成功提交后执行无 LLM refine 的轻量 prompt refresh，下一次请求生效。
 - 已完成：persona prompt 同时注入 description、core values 与 traits；description 中已有的派生段按段落标题识别，内容相同则保持、内容陈旧则原位替换，避免重复标题或子串误判。
 - 已完成：`SoulReflector` 使用有界 `ContextSnapshot` 与 `MemoryPurpose.PERSONA_REFINE_CLOUD` 公开偏好生成候选；无 tools，严格 JSON 解析，提交使用 revision/CAS，失败、取消和 stale 均静默跳过。
 - 已完成：独立 `SoulReflectionScheduler` 按轮次或墙钟先到者触发，单任务在途并合并重复触发；通过 Hub utterance observer 接收轮次，并由 `CognitionAgent` 负责 start/close 生命周期。
-- 待实施：ProactiveAgent 前置与旧 tuner/sink/policy 清理；restore CLI/手动恢复文档。
+- 已完成：ProactiveAgent/CooldownCalculator、硬门/异步 worker/tick，以及旧
+  tuner/sink/policy 清理和 cooldown 状态迁移。
+- 已完成：`python -m yuki.soul_cli` 的 `show/list/restore` 命令；README 记录停机、
+  备份、恢复与核验流程。`restore` 复用 `SoulStore.restore()` 并生成新 revision。
+- 已完成：运行时 persona refresh 在 `SoulStore` 统一注册；成功的 `update()` 与
+  `restore()` 均在存储锁外触发同一刷新回调，离线 CLI 不注册运行时回调。
 
 ## 测试计划
 

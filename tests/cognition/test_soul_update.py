@@ -115,6 +115,37 @@ def test_snapshots_coalesce_and_restore_creates_new_revision(tmp_path):
     )
 
 
+def test_list_revisions_exposes_only_restorable_committed_versions(tmp_path):
+    store = SoulStore(
+        tmp_path / "soul.json",
+        "yuki",
+        snapshots_dir=tmp_path / "snapshots",
+        min_snapshot_interval_s=0,
+    )
+    store.ensure()
+    assert store.list_revisions() == []
+    store.update(traits={"warmth": 0.8}, source="realtime")
+    assert store.list_revisions() == [0, 1]
+
+
+def test_update_and_restore_notify_runtime_prompt_refresh(tmp_path):
+    refreshed = []
+    store = SoulStore(
+        tmp_path / "soul.json",
+        "yuki",
+        snapshots_dir=tmp_path / "snapshots",
+        min_snapshot_interval_s=0,
+    )
+    store.set_on_updated(lambda: refreshed.append(store.load_or_default()["revision"]))
+    store.ensure()
+
+    store.update(traits={"warmth": 0.8}, source="realtime")
+    store.update(traits={"warmth": 0.8}, source="realtime")
+    store.restore(0)
+
+    assert refreshed == [1, 2]
+
+
 def test_description_limit_is_enforced(tmp_path):
     store = SoulStore(tmp_path / "soul.json", "yuki", max_description_chars=5)
     with pytest.raises(SoulValidationError, match="exceeds"):

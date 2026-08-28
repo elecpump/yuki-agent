@@ -76,6 +76,23 @@ class SoulVersionStore:
             raise SoulRestoreError(f"invalid soul snapshot: {revision}")
         return copy.deepcopy(restored)
 
+    def list_revisions(self, *, current_revision: int) -> list[int]:
+        revisions = []
+        for path in self._paths():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                soul = payload.get("soul") if isinstance(payload, dict) else None
+                if not isinstance(soul, dict):
+                    continue
+                revision = int(soul.get("revision"))
+                path_revision = int(path.stem.removeprefix("soul_snapshot_r"))
+            except (OSError, TypeError, ValueError):
+                continue
+            if revision != path_revision or not 0 <= revision <= current_revision:
+                continue
+            revisions.append(revision)
+        return sorted(set(revisions))
+
     def _path(self, revision: int) -> Path:
         return self._directory / f"soul_snapshot_r{revision:06d}.json"
 

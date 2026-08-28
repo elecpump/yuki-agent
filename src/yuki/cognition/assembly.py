@@ -212,11 +212,8 @@ class CognitionAssembler:
             soul_store,
             local_composer,
         )
-        register_soul_functions(
-            registry,
-            soul_store,
-            on_updated=lambda: persona_refresh(refine=False),
-        )
+        soul_store.set_on_updated(lambda: persona_refresh(refine=False))
+        register_soul_functions(registry, soul_store)
         soul_reflection_scheduler = None
         if cloud_client is not None:
             reflector = SoulReflector(
@@ -224,7 +221,6 @@ class CognitionAssembler:
                 soul_store,
                 memory,
                 snapshot_provider=lambda: projector.build(context),
-                on_updated=lambda: persona_refresh(refine=False),
                 timeout_s=self.config.cloud.timeout_s,
             )
             soul_reflection_scheduler = SoulReflectionScheduler(

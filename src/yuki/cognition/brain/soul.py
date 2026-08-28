@@ -104,6 +104,11 @@ class SoulStore:
         )
         self._max_description_chars = max(1, int(max_description_chars))
         self._lock = threading.RLock()
+        self._on_updated: Callable[[], None] | None = None
+
+    def set_on_updated(self, callback: Callable[[], None] | None) -> None:
+        with self._lock:
+            self._on_updated = callback
 
     def default_soul(self) -> dict:
         return {
@@ -269,11 +274,13 @@ class SoulStore:
                 previous_revision=revision,
                 changed_fields=changed_fields,
             )
-            return {
+            result = {
                 "changed": True,
                 "revision": updated["revision"],
                 "changed_fields": changed_fields,
             }
+        self._notify_updated()
+        return result
 
     def restore(self, revision: int) -> dict:
         with self._lock:
@@ -300,11 +307,30 @@ class SoulStore:
                 revision=normalized["revision"],
                 previous_revision=current_revision,
             )
-            return {
+            result = {
                 "changed": True,
                 "revision": normalized["revision"],
                 "restored_revision": revision,
             }
+        self._notify_updated()
+        return result
+
+    def list_revisions(self) -> list[int]:
+        with self._lock:
+            current = self._load_unlocked() or self.default_soul()
+            return self._versions.list_revisions(
+                current_revision=int(current.get("revision", 0))
+            )
+
+    def _notify_updated(self) -> None:
+        with self._lock:
+            callback = self._on_updated
+        if callback is None:
+            return
+        try:
+            callback()
+        except Exception:
+            logger.warning("soul prompt refresh failed", exc_info=True)
 
     def _is_legacy_params_shape(self, data: dict) -> bool:
         return isinstance(data.get("params"), dict) and (
