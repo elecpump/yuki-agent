@@ -360,6 +360,16 @@ def test_soul_defaults():
     config = Config()
     assert config.soul.path == "data/soul.json"
     assert config.soul.tuner_state_path == "data/tuner_state.json"
+    assert config.soul.snapshots_dir == "data/soul_snapshots"
+    assert config.soul.max_versions == 50
+    assert config.soul.min_snapshot_interval_s == 60.0
+    assert config.soul.max_description_chars == 2000
+    assert not hasattr(config.soul, "reflect_every_utterances")
+    assert not hasattr(config.soul, "reflect_interval_s")
+
+
+def test_soul_allows_single_retained_version():
+    assert Config(soul={"max_versions": 1}).soul.max_versions == 1
 
 
 def test_soul_env_override(monkeypatch):

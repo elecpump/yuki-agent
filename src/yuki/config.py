@@ -229,6 +229,10 @@ class AgentLoopConfig(BaseModel):
 class SoulConfig(BaseModel):
     path: str = "data/soul.json"
     tuner_state_path: str = "data/tuner_state.json"
+    snapshots_dir: str = "data/soul_snapshots"
+    max_versions: int = Field(50, ge=1)
+    min_snapshot_interval_s: float = Field(60.0, ge=0.0)
+    max_description_chars: int = Field(2000, ge=100)
 
 
 class PerceptionConfig(BaseModel):

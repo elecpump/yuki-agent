@@ -16,18 +16,18 @@ def test_default_soul_shape_has_no_persona_version(tmp_path):
     assert "persona_version" not in soul
     assert soul["core_values"]
     assert soul["personality_traits"]["warmth"] == 0.5
-    assert soul["prefs_since_regen"] == 0
+    assert soul["revision"] == 0
+    assert "prefs_since_regen" not in soul
 
 
 def test_save_then_load_roundtrip_kernel(tmp_path):
     store = SoulStore(tmp_path / "soul.json", "yuki")
     soul = store.default_soul()
     soul["personality_traits"]["warmth"] = 0.7
-    soul["prefs_since_regen"] = 2
     store.save(soul)
     loaded = SoulStore(tmp_path / "soul.json", "yuki").load()
     assert loaded["personality_traits"]["warmth"] == pytest.approx(0.7)
-    assert loaded["prefs_since_regen"] == 2
+    assert "prefs_since_regen" not in loaded
 
 
 def test_soul_save_writes_audit(tmp_path, monkeypatch):
@@ -87,11 +87,12 @@ def test_save_creates_parent_dirs(tmp_path):
 def test_reset_keeps_default_kernel_file(tmp_path):
     store = SoulStore(tmp_path / "s.json", "yuki")
     soul = store.default_soul()
-    soul["prefs_since_regen"] = 3
+    soul["personality_traits"]["warmth"] = 0.9
     store.save(soul)
     store.reset()
     loaded = store.load()
-    assert loaded["prefs_since_regen"] == 0
+    assert loaded["personality_traits"]["warmth"] == pytest.approx(0.5)
+    assert loaded["revision"] == 0
     assert loaded["core_values"]
 
 

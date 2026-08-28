@@ -184,6 +184,11 @@ class ToolManager:
             }
         try:
             result = tool.handler(validated)
+        except ArgumentValidationError as exc:
+            return {
+                "ok": False,
+                "error": {"code": "invalid_arguments", "message": str(exc)},
+            }
         except Exception as exc:
             return {"ok": False, "error": {"code": "handler_error", "message": str(exc)}}
         return {"ok": True, "result": result}

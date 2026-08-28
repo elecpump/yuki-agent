@@ -330,6 +330,40 @@ def test_cognition_agent_assembles_persona(tmp_path):
         agent.teardown()
 
 
+def test_cognition_agent_registers_soul_update_and_refreshes_persona(tmp_path):
+    bus = FakeBus()
+    agent = CognitionAgent(
+        Config(
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+            soul={
+                "path": str(tmp_path / "soul.json"),
+                "snapshots_dir": str(tmp_path / "soul_snapshots"),
+            },
+            context={"snapshot_path": str(tmp_path / "ctx.json")},
+        ),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    try:
+        assert "soul.update" in agent._registry.names()
+        result = agent._registry.dispatch({
+            "name": "soul.update",
+            "arguments": {
+                "traits": {"warmth": 0.9},
+                "description": "下一次请求使用的新描述",
+            },
+        })
+        assert result["ok"] is True
+        active = agent._persona_store.active()
+        assert active is not None
+        assert active.persona_prompt.startswith("下一次请求使用的新描述")
+        assert "表达温暖" in active.persona_prompt
+    finally:
+        agent.teardown()
+
+
 def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
     class FakeCloudClient:
         def __init__(self, **kwargs):

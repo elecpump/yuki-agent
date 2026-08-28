@@ -1,4 +1,5 @@
 import os
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -35,6 +36,7 @@ from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.perception_tools import register_perception_tools
 from yuki.functions.registry import FunctionRegistry
 from yuki.functions.service import register_function_services
+from yuki.functions.soul_tools import register_soul_functions
 from yuki.functions.system import register_builtin_system
 from yuki.logger import get_logger
 from yuki.memory.embedding import (
@@ -165,6 +167,10 @@ class CognitionAssembler:
             self.config.persona_name,
             default_description=self.config.persona.prompt.format(persona=self.config.persona_name),
             tuner_state_path=self.config.soul.tuner_state_path,
+            snapshots_dir=self.config.soul.snapshots_dir,
+            max_versions=self.config.soul.max_versions,
+            min_snapshot_interval_s=self.config.soul.min_snapshot_interval_s,
+            max_description_chars=self.config.soul.max_description_chars,
         )
         soul_store.ensure()
         policy = DecisionPolicy(
@@ -190,6 +196,11 @@ class CognitionAssembler:
             persona_store,
             soul_store,
             local_composer,
+        )
+        register_soul_functions(
+            registry,
+            soul_store,
+            on_updated=lambda: persona_refresh(refine=False),
         )
         hub = build_brain(
             self.bus,
@@ -361,26 +372,33 @@ class CognitionAssembler:
         soul_store: SoulStore,
         local_composer,
     ) -> Callable[[], None]:
-        def persona_refresh() -> None:
-            soul = soul_store.load_or_default()
-            prefs = MemoryAccess(memory).list(
-                purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
-                memory_type="preference",
-            )
-            refine = bridge.refine_persona if self.config.persona.enable_llm_refine and bridge else None
-            prompt = generate_persona(
-                self.config.persona_name,
-                prefs,
-                {},
-                base_prompt=self.config.persona.prompt,
-                refine=refine,
-                soul=soul,
-            )
-            snap = persona_store.save(prompt, {}, soul=soul_store.snapshot())
-            effective_prompt = snap.persona_prompt if snap is not None else prompt
-            if bridge is not None:
-                bridge.set_system_prompt(effective_prompt)
-            if local_composer is not None:
-                local_composer.set_system_prompt(effective_prompt)
+        refresh_lock = threading.Lock()
+
+        def persona_refresh(*, refine: bool = True) -> None:
+            with refresh_lock:
+                soul = soul_store.load_or_default()
+                prefs = MemoryAccess(memory).list(
+                    purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
+                    memory_type="preference",
+                )
+                refine_fn = (
+                    bridge.refine_persona
+                    if refine and self.config.persona.enable_llm_refine and bridge
+                    else None
+                )
+                prompt = generate_persona(
+                    self.config.persona_name,
+                    prefs,
+                    {},
+                    base_prompt=self.config.persona.prompt,
+                    refine=refine_fn,
+                    soul=soul,
+                )
+                snap = persona_store.save(prompt, {}, soul=soul_store.snapshot())
+                effective_prompt = snap.persona_prompt if snap is not None else prompt
+                if bridge is not None:
+                    bridge.set_system_prompt(effective_prompt)
+                if local_composer is not None:
+                    local_composer.set_system_prompt(effective_prompt)
 
         return persona_refresh

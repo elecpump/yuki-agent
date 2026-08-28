@@ -1,3 +1,4 @@
+import re
 from typing import Callable
 
 DEFAULT_BASE_PROMPT = (
@@ -67,16 +68,28 @@ def format_soul(soul: dict | None) -> str:
     if not soul:
         return ""
     description = (soul.get("personality_description") or "").strip()
-    if description:
-        return description
-    sections = []
+    sections = [part.strip() for part in re.split(r"\n\s*\n", description) if part.strip()]
     core = format_core_values(soul.get("core_values") or [])
-    if core:
-        sections.append(core)
+    _replace_or_append_section(sections, "人格内核：", core)
     traits = format_personality_traits(soul.get("personality_traits") or {})
-    if traits:
-        sections.append(traits)
+    _replace_or_append_section(sections, "性格参数：", traits)
     return "\n\n".join(sections)
+
+
+def _replace_or_append_section(sections: list[str], heading: str, derived: str) -> None:
+    if not derived:
+        return
+    matches = [
+        index
+        for index, section in enumerate(sections)
+        if section.splitlines()[0].strip().startswith(heading)
+    ]
+    if not matches:
+        sections.append(derived)
+        return
+    sections[matches[0]] = derived
+    for index in reversed(matches[1:]):
+        del sections[index]
 
 
 def compose_personality_description(

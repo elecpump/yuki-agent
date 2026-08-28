@@ -52,6 +52,54 @@ def test_generate_does_not_duplicate_baked_soul_sections():
     assert out.count("性格参数") == 1
 
 
+def test_generate_injects_core_values_and_traits_beside_plain_description():
+    soul = {
+        "personality_description": "你是 yuki。",
+        "core_values": [{"role": "guiding", "text": "尊重用户节奏。"}],
+        "personality_traits": {"warmth": 0.9, "directness": 0.1},
+    }
+
+    out = generate("yuki", [], {}, soul=soul)
+
+    assert out.startswith("你是 yuki。")
+    assert "[guiding] 尊重用户节奏。" in out
+    assert "表达温暖" in out
+    assert "更委婉铺垫" in out
+
+
+def test_generate_replaces_stale_derived_sections_in_description():
+    soul = {
+        "personality_description": (
+            "你是 yuki。\n\n"
+            "人格内核：\n- [guiding] 旧价值观。\n\n"
+            "性格参数：旧性格。"
+        ),
+        "core_values": [{"role": "guiding", "text": "新价值观。"}],
+        "personality_traits": {"warmth": 0.9},
+    }
+
+    out = generate("yuki", [], {}, soul=soul)
+
+    assert out.count("人格内核：") == 1
+    assert out.count("性格参数：") == 1
+    assert "旧价值观" not in out
+    assert "[guiding] 新价值观。" in out
+    assert "表达温暖" in out
+
+
+def test_generate_does_not_treat_heading_text_inside_prose_as_derived_section():
+    soul = {
+        "personality_description": "请把“人格内核：”当作普通术语解释。",
+        "core_values": [{"role": "guiding", "text": "尊重用户。"}],
+        "personality_traits": {},
+    }
+
+    out = generate("yuki", [], {}, soul=soul)
+
+    assert out.startswith("请把“人格内核：”当作普通术语解释。")
+    assert "\n\n人格内核：\n- [guiding] 尊重用户。" in out
+
+
 def test_generate_refine_success():
     out = generate("yuki", [], {}, base_prompt="base", refine=lambda text: "精修后的文本")
     assert out == "精修后的文本"
