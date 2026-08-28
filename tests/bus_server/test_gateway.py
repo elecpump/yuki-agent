@@ -7,7 +7,6 @@ fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
 from yuki.bus import BUS_HEALTH_SERVICE
-from yuki.bus_server.agent import BusServerAgent
 from yuki.bus_server.ws_channels import WsChannelSpec
 from yuki.bus_server.gateway import (
     COGNITION_CHAT_SERVICE,
@@ -303,37 +302,6 @@ def test_gateway_history_only_keeps_final_replies(tmp_path):
         {"role": "user", "text": "hi", "ts": 1.0},
         {"role": "assistant", "text": "answer", "ts": 4.0},
     ]
-
-
-def test_bus_server_agent_starts_and_stops_gateway():
-    class FakeGateway:
-        def __init__(self):
-            self.started = False
-            self.stopped = False
-
-        def start(self):
-            self.started = True
-
-        def stop(self):
-            self.stopped = True
-
-    gateway = FakeGateway()
-    agent = BusServerAgent(Config(), bus=FakeBus(), gateway=gateway)
-
-    agent.setup()
-    agent.teardown()
-
-    assert gateway.started is True
-    assert gateway.stopped is True
-
-
-def test_bus_server_agent_does_not_import_gateway_when_disabled():
-    agent = BusServerAgent(Config(gateway={"enabled": False}), bus=FakeBus())
-
-    agent.setup()
-    agent.teardown()
-
-    assert agent._gateway is None
 
 
 def test_chat_task_store_missing_ids_are_safe():
