@@ -232,6 +232,8 @@ class SoulConfig(BaseModel):
     snapshots_dir: str = "data/soul_snapshots"
     max_versions: int = Field(50, ge=1)
     min_snapshot_interval_s: float = Field(60.0, ge=0.0)
+    reflect_every_utterances: int = Field(30, ge=1)
+    reflect_interval_s: float = Field(3600.0, ge=60.0)
     max_description_chars: int = Field(2000, ge=100)
 
 

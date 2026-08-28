@@ -11,6 +11,7 @@ from yuki.model_client import LocalChatModelClient, RemoteModelRegistry
 from yuki.process import ProcessAgent
 
 logger = get_logger("yuki.cognition.agent")
+SOUL_REFLECTION_CLOSE_TIMEOUT_S = 1.0
 
 
 class CognitionAgent(ProcessAgent):
@@ -41,6 +42,7 @@ class CognitionAgent(ProcessAgent):
         self._context = None
         self._persona_store = None
         self._persona_refresh = None
+        self._soul_reflection_scheduler = None
 
     def setup(self) -> None:
         runtime = CognitionAssembler(
@@ -67,8 +69,16 @@ class CognitionAgent(ProcessAgent):
         self._context = assembled.context
         self._persona_store = assembled.persona_store
         self._persona_refresh = assembled.persona_refresh
+        self._soul_reflection_scheduler = assembled.soul_reflection_scheduler
+        if self._soul_reflection_scheduler is not None:
+            self._soul_reflection_scheduler.start()
 
     def teardown(self) -> None:
+        if self._soul_reflection_scheduler is not None:
+            self._soul_reflection_scheduler.close(
+                timeout_s=SOUL_REFLECTION_CLOSE_TIMEOUT_S
+            )
+            self._soul_reflection_scheduler = None
         if self._pipeline is not None and hasattr(self._pipeline, "close"):
             self._pipeline.close()
         if self._model_registry is not None:

@@ -22,6 +22,8 @@ from yuki.cognition.brain.persona import (
 from yuki.cognition.brain.policy import DecisionPolicy
 from yuki.cognition.brain.snapshots import PersonaStore
 from yuki.cognition.brain.soul import SoulStore, TunerStateStore
+from yuki.cognition.brain.soul_reflector import SoulReflector
+from yuki.cognition.brain.soul_scheduler import SoulReflectionScheduler
 from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
@@ -68,6 +70,7 @@ class CognitionRuntime:
     soul_store: SoulStore
     persona_store: PersonaStore
     persona_refresh: Callable[..., None]
+    soul_reflection_scheduler: SoulReflectionScheduler | None
     cache_manager: ModelCacheManager
 
     def handle_awake_request(self, payload: dict) -> dict:
@@ -156,7 +159,8 @@ class CognitionAssembler:
         self._register_perception_functions(registry, pipeline)
         register_function_services(self.bus, registry)
 
-        bridge = self._build_bridge(registry)
+        cloud_client = self._build_cloud_client()
+        bridge = self._build_bridge(registry, client=cloud_client)
         persona_store = PersonaStore(
             self.config.persona.snapshots_path,
             max_versions=self.config.persona.max_versions,
@@ -202,6 +206,21 @@ class CognitionAssembler:
             soul_store,
             on_updated=lambda: persona_refresh(refine=False),
         )
+        soul_reflection_scheduler = None
+        if cloud_client is not None:
+            reflector = SoulReflector(
+                cloud_client,
+                soul_store,
+                memory,
+                snapshot_provider=lambda: projector.build(context),
+                on_updated=lambda: persona_refresh(refine=False),
+                timeout_s=self.config.cloud.timeout_s,
+            )
+            soul_reflection_scheduler = SoulReflectionScheduler(
+                reflector,
+                every_utterances=self.config.soul.reflect_every_utterances,
+                interval_s=self.config.soul.reflect_interval_s,
+            )
         hub = build_brain(
             self.bus,
             memory=memory,
@@ -216,6 +235,11 @@ class CognitionAssembler:
             local_composer=local_composer,
             periodic=[persona_refresh],
             periodic_interval=self.config.persona.refresh_every_utterances,
+            utterance_observers=(
+                [soul_reflection_scheduler.on_utterance]
+                if soul_reflection_scheduler is not None
+                else []
+            ),
             register_awake_service=False,
         )
 
@@ -239,6 +263,7 @@ class CognitionAssembler:
             soul_store=soul_store,
             persona_store=persona_store,
             persona_refresh=persona_refresh,
+            soul_reflection_scheduler=soul_reflection_scheduler,
             cache_manager=cache_manager,
         )
         self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
@@ -291,16 +316,27 @@ class CognitionAssembler:
             max_utterance_s=vad_cfg.max_utterance_s,
         )
 
-    def _build_bridge(self, registry: FunctionRegistry) -> CloudBridge | None:
+    def _build_cloud_client(self) -> CloudClient | None:
         if not self.config.cloud.enabled:
             return None
+        return CloudClient(
+            base_url=self.config.cloud.base_url,
+            model=self.config.cloud.model,
+            api_key=os.environ.get(self.config.cloud.api_key_env),
+            timeout_s=self.config.cloud.timeout_s,
+        )
+
+    def _build_bridge(
+        self,
+        registry: FunctionRegistry,
+        *,
+        client: CloudClient | None = None,
+    ) -> CloudBridge | None:
+        client = client or self._build_cloud_client()
+        if client is None:
+            return None
         return CloudBridge(
-            CloudClient(
-                base_url=self.config.cloud.base_url,
-                model=self.config.cloud.model,
-                api_key=os.environ.get(self.config.cloud.api_key_env),
-                timeout_s=self.config.cloud.timeout_s,
-            ),
+            client,
             registry=registry,
             max_turns=(
                 self.config.agent_loop.max_steps

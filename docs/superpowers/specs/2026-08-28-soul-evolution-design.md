@@ -57,13 +57,15 @@ soul.update(traits?, core_values?, description?)
 ### 触发机制
 
 1. **实时路径**：`soul.update` 注册为 `functions/registry` 工具（`functions/soul_tools.py`，仿 `register_memory_functions` 模式），由 L1 Agent Loop 的工具 dispatch 执行。
-   - **生效范围限制（评审补充 2）**：本地脑（`LocalComposer`）不执行工具，实时路径**仅对云端 loop 与 Gateway chat 生效**；定期路径不受限。
+   - **生效范围限制（评审补充 2）**：本地脑（`LocalComposer`）不执行工具，实时路径**仅对云端 loop 与 Gateway chat 生效**；定期路径不依赖本地脑的工具能力，但需要 `cloud.enabled=true`。云端关闭时不构建 scheduler，避免无意义后台线程；云端临时不可用时本轮静默跳过。
    - 工具成功提交后在存储锁外触发轻量 prompt refresh（不调用 LLM refine）。工具所在的当前 Agent Loop 已固定 system message，因此更新保证从**下一次用户请求**起对 CloudBridge 和 LocalComposer 同时生效。
 2. **定期路径**：后台反思任务，触发条件为**每 N 轮对话**（`soul.reflect_every_utterances`，默认 30）**或固定时间间隔**（`soul.reflect_interval_s`，默认 3600，二者取先到者）。
    - 不直接复用 hub 现有的单一 `periodic_interval`：它只有轮次触发，且所有 callback 共用同一间隔。新增独立 `SoulReflectionScheduler`，同时维护 `utterances_since_reflect` 和 `next_due_at`，由 utterance 通知与可停止的墙钟 timer 共同唤醒；同一时刻只允许一个反思任务在途，两个条件同时到期只提交一次。
    - 反思任务用 `CloudClient` 生成候选更新（prompt：当前 soul + 近期对话/偏好摘要 + 要求输出严格 JSON 的 `{traits?, core_values?, description?}`），解析失败/超时/云端不可用 → 本轮跳过（记 trace，不报错、不打扰）。
    - 反思输入只使用有界 `ContextSnapshot` 和经 `MemoryPurpose.PERSONA_REFINE_CLOUD` 过滤的公开偏好；用户内容作为不可信数据分隔，不接受其中要求绕过 schema/护栏的指令。
    - 反思产出与实时调用走同一 `SoulStore.update(expected_revision=...)`；陈旧候选不重放、不覆盖。
+   - 定期反思实际提交后同样在存储锁外执行 `persona_refresh(refine=False)`，保证下一次请求使用新 Soul；无变化、失败、取消或 stale 时不刷新。
+   - `CognitionAgent.teardown` 最多等待 scheduler worker 1 秒；超时后 worker 仍为 daemon，但 stop/cancel 门控保证迟到的云端结果不得提交或刷新 prompt。
 
 ### 并发与线程安全（评审补充 3）
 
@@ -96,10 +98,10 @@ class SoulConfig(BaseModel):
     snapshots_dir: str = "data/soul_snapshots"
     max_versions: int = Field(50, ge=1)
     min_snapshot_interval_s: float = Field(60.0, ge=0.0)
+    reflect_every_utterances: int = Field(30, ge=1)
+    reflect_interval_s: float = Field(3600.0, ge=60.0)
     max_description_chars: int = Field(2000, ge=100)
 ```
-
-`reflect_every_utterances`/`reflect_interval_s` 在 `SoulReflectionScheduler` 实施时与调度器一并加入，首批实现不提前落死配置。
 
 - `SoulConfig.tuner_state_path` → `cooldown_state_path`（proactive 草案 §11/§12 已规划；`CooldownCalculator` 启动时迁移旧 `tuner_state.json` 一次）。
 - `soul.json` 遗留字段 `prefs_since_regen`（已删 Sedimenter 的遗留）在下次 `SoulStore.save` 时移除（`default_soul`/`_normalize` 不再产出该字段；已存在文件由 `_normalize` 丢弃）。
@@ -131,13 +133,16 @@ class SoulConfig(BaseModel):
 - 已完成：`SoulStore.update()` 的 RLock、revision/CAS 与存储协调；严格 patch/replace 校验拆至 `soul_contract.py`，版本暂存/节流/剪枝/恢复拆至 `soul_versions.py`；`prefs_since_regen` 已从新格式移除。
 - 已完成：`soul.update` 工具注册，`source=realtime` 由 wrapper 固定；工具仅返回 `{updated: bool}`，内部 revision/diff 不暴露；成功提交后执行无 LLM refine 的轻量 prompt refresh，下一次请求生效。
 - 已完成：persona prompt 同时注入 description、core values 与 traits；description 中已有的派生段按段落标题识别，内容相同则保持、内容陈旧则原位替换，避免重复标题或子串误判。
-- 待实施：ProactiveAgent 前置与旧 tuner/sink/policy 清理；独立 `SoulReflectionScheduler`、反思 CloudClient 调用及生命周期接线；restore CLI/手动恢复文档。
+- 已完成：`SoulReflector` 使用有界 `ContextSnapshot` 与 `MemoryPurpose.PERSONA_REFINE_CLOUD` 公开偏好生成候选；无 tools，严格 JSON 解析，提交使用 revision/CAS，失败、取消和 stale 均静默跳过。
+- 已完成：独立 `SoulReflectionScheduler` 按轮次或墙钟先到者触发，单任务在途并合并重复触发；通过 Hub utterance observer 接收轮次，并由 `CognitionAgent` 负责 start/close 生命周期。
+- 待实施：ProactiveAgent 前置与旧 tuner/sink/policy 清理；restore CLI/手动恢复文档。
 
 ## 测试计划
 
 - `tests/cognition/test_soul_update.py`：traits 非法键拒绝/clamp；core_values 原子全量校验（缺/重复 id、缺 text、role 非法、空列表拒绝）；description 空/超长拒绝；diff 无变化不写不快照；revision/CAS 拒绝陈旧反思；快照节流合并；`restore()` 生成新 revision；全部读写路径串行；`prefs_since_regen` 不再产出。
 - `tests/functions/test_soul_tools.py`：工具 schema；payload 校验；审计事件；来源标记（realtime/periodic）。
-- `tests/cognition/test_soul_reflect.py`：独立调度器按轮次/时间取先到者且同时到期只执行一次；生命周期停止；`CloudClient` 失败/超时/非法 JSON → 跳过不报错；慢速反思期间实时更新 → stale 候选丢弃；云端输入经过长度限制和隐私过滤。
+- `tests/cognition/test_soul_reflector.py`：`CloudClient` 失败/显式超时/非法 JSON → 跳过不报错；慢速反思期间实时更新 → stale 候选丢弃；云端输入经过长度限制和隐私过滤；成功提交刷新 prompt。
+- `tests/cognition/test_soul_scheduler.py`：独立调度器按轮次/时间取先到者且同时到期只执行一次；start 前不触发；single-flight + 重复触发合并；close 取消在途提交并停止 timer。
 - 回归：`test_policy.py`/tuner/sink 相关测试删除后全仓 `pytest` 全绿；`is_crisis` 分流与 `CRISIS_FALLBACK_REPLY` 测试必须保留；e2e 断言不变（REPLY/订阅主题无协议变更）。
 - proactive 草案 §13 的 cooldown/proactive/hub 测试作为第 1 步验收。
 

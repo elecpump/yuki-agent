@@ -2,6 +2,7 @@ import math
 import threading
 import time
 import uuid
+from collections.abc import Callable
 
 from yuki.cognition.brain.classifier import Emotion, detect_emotion
 from yuki.cognition.brain.local.router import GateRoute, RouterDecision, is_crisis
@@ -100,6 +101,7 @@ class DecisionHub:
         transition_enabled: bool = True,
         periodic=None,
         periodic_interval: int = 0,
+        utterance_observers: list[Callable[[str], None]] | None = None,
     ) -> None:
         self._bus = bus
         self._policy = policy or DecisionPolicy(proactive_cooldown_s=120.0)
@@ -125,6 +127,7 @@ class DecisionHub:
         self._periodic_running = False
         self._periodic_pending = 0
         self._periodic_lock = threading.Lock()
+        self._utterance_observers = list(utterance_observers or [])
         self._context = None
         self._situation_fast = None
         self._situation_deep = None
@@ -176,7 +179,22 @@ class DecisionHub:
         publish_reply: bool,
     ) -> dict:
         with self._decision_lock:
-            return self._handle_locked(trigger, text, situation, publish_reply=publish_reply)
+            result = self._handle_locked(
+                trigger,
+                text,
+                situation,
+                publish_reply=publish_reply,
+            )
+        if trigger == TriggerKind.UTTERANCE:
+            self._notify_utterance_observers(text)
+        return result
+
+    def _notify_utterance_observers(self, text: str) -> None:
+        for observer in self._utterance_observers:
+            try:
+                observer(text)
+            except Exception:
+                logger.warning("utterance observer failed", exc_info=True)
 
     def _handle_locked(
         self,
@@ -624,6 +642,7 @@ def build_brain(
     projector=None,
     periodic=None,
     periodic_interval: int = 0,
+    utterance_observers: list[Callable[[str], None]] | None = None,
     local_router=None,
     local_composer=None,
     register_awake_service: bool = True,
@@ -659,6 +678,7 @@ def build_brain(
         transition_enabled=cfg.agent_loop.transition_enabled,
         periodic=periodic,
         periodic_interval=periodic_interval,
+        utterance_observers=utterance_observers,
     )
     if register_awake_service:
         bus.respond(COGNITION_AWAKE_SERVICE, hub.handle_awake_request)

@@ -10,7 +10,7 @@ from yuki.cognition.brain.hub import (
 )
 from yuki.cognition.brain.local.router import GateRoute, RouterDecision
 from yuki.cognition.brain.policy import DecisionPolicy
-from yuki.cognition.context.snapshot import ContextSnapshot
+from yuki.cognition.context.snapshot import ContextProjector, ContextSnapshot
 from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.client import CloudError
@@ -240,6 +240,27 @@ def test_periodic_callback_does_not_drop_trigger_while_running(tmp_path):
 
     assert second_finished.wait(1.0)
     assert len(fired) == 2
+    memory.close()
+
+
+def test_utterance_observer_runs_after_context_is_updated(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    observed = []
+    context = WorkingContext(ShortTermTurnStore(memory))
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        loop=FakeLoop(),
+        local_enabled=False,
+        context=context,
+        projector=ContextProjector(),
+        utterance_observers=[lambda text: observed.append((text, context.turn_count()))],
+    )
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "ts": 1.0})
+
+    assert observed == [("你好", 2)]
     memory.close()
 
 

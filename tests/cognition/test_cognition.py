@@ -326,6 +326,7 @@ def test_cognition_agent_assembles_persona(tmp_path):
     try:
         assert agent._persona_store is not None
         assert agent._hub._periodic == [agent._persona_refresh]
+        assert agent._soul_reflection_scheduler is None
     finally:
         agent.teardown()
 
@@ -362,6 +363,43 @@ def test_cognition_agent_registers_soul_update_and_refreshes_persona(tmp_path):
         assert "表达温暖" in active.persona_prompt
     finally:
         agent.teardown()
+
+
+def test_cognition_agent_starts_and_stops_soul_reflection_scheduler(
+    tmp_path,
+    monkeypatch,
+):
+    class FakeCloudClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def chat(self, messages, tools=None, timeout_s=None):
+            return {"choices": [{"message": {"content": "{}"}}]}
+
+    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", FakeCloudClient)
+    agent = CognitionAgent(
+        Config(
+            cloud={"enabled": True, "base_url": "http://x", "model": "m"},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+            soul={
+                "path": str(tmp_path / "soul.json"),
+                "snapshots_dir": str(tmp_path / "soul_snapshots"),
+            },
+            context={"snapshot_path": str(tmp_path / "ctx.json")},
+        ),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+
+    agent.setup()
+    scheduler = agent._soul_reflection_scheduler
+    assert scheduler is not None
+    assert scheduler._timer_thread.is_alive()
+
+    agent.teardown()
+    assert agent._soul_reflection_scheduler is None
+    assert scheduler._timer_thread.is_alive() is False
 
 
 def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):

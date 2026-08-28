@@ -364,8 +364,8 @@ def test_soul_defaults():
     assert config.soul.max_versions == 50
     assert config.soul.min_snapshot_interval_s == 60.0
     assert config.soul.max_description_chars == 2000
-    assert not hasattr(config.soul, "reflect_every_utterances")
-    assert not hasattr(config.soul, "reflect_interval_s")
+    assert config.soul.reflect_every_utterances == 30
+    assert config.soul.reflect_interval_s == 3600.0
 
 
 def test_soul_allows_single_retained_version():
