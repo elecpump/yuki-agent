@@ -66,7 +66,6 @@ def default_model_policies() -> dict[str, ModelPolicyConfig]:
 
 
 class ModelsConfig(BaseModel):
-    backend: Literal["local", "remote"] = "remote"
     gpu_max_concurrency: int = Field(1, ge=1)
     interactive_queue_size: int = Field(32, ge=1)
     background_queue_size: int = Field(16, ge=1)

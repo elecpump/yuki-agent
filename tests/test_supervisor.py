@@ -39,6 +39,7 @@ def test_supervisor_restarts_dead_process():
         [("dead", ["dead"]), ("ok", ["ok"])],
         popen_factory=_fake_factory({"dead": dead, "ok": ok}),
         restart_base_delay=0.0,
+        bus_host="dead",
     )
     restarted = sup.tick()
     assert restarted == ["dead"]
@@ -53,6 +54,7 @@ def test_supervisor_gives_up_after_max_restarts():
         [("dead", ["dead"])],
         popen_factory=_fake_factory({"dead": dead, "ok": None}),
         restart_base_delay=0.0,
+        bus_host="dead",
         clock=lambda: clock["now"],
         sleep=lambda s: None,
         restart_window=100,
@@ -221,6 +223,7 @@ def test_backoff_increases_with_attempts():
         sleep=lambda s: None,
         restart_window=600,
         restart_max_per_window=5,
+        bus_host="a",
     )
     clock["now"] = 101.0
     sup.tick()
@@ -254,6 +257,7 @@ def test_window_limit_stops_restarting():
         sleep=lambda s: None,
         restart_window=100,
         restart_max_per_window=2,
+        bus_host="a",
     )
     for _ in range(5):
         clock["now"] += 1
@@ -301,6 +305,8 @@ def test_health_probe_failure_counts_as_restart():
         env=None,
         clock=lambda: 0.0,
         sleep=lambda s: None,
+        bus_host="a",
+        startup_grace_s=-1.0,
     )
     sup.tick(bus=ProbeBus(), health_timeout_ms=200)
     assert created == ["a", "a"]  # 初始 + 探活失败重启
@@ -342,13 +348,15 @@ def test_probe_restart_terminates_live_child():
         env=None,
         clock=lambda: 0.0,
         sleep=lambda s: None,
+        bus_host="a",
+        startup_grace_s=-1.0,
     )
     sup.tick(bus=ProbeBus(), health_timeout_ms=200)
     assert len(procs) == 2  # 初始 + 探活失败重启
     assert procs[0].terminated == 1  # 旧存活进程被终止，不留孤儿
 
 
-def test_probe_skipped_when_bus_server_down():
+def test_probe_skipped_when_bus_host_down():
     created = []
     probes = []
 
@@ -358,7 +366,7 @@ def test_probe_skipped_when_bus_server_down():
             self.terminated = 0
 
         def poll(self):
-            return 1 if self.name == "bus_server" else None
+            return 1 if self.name == "yuki" else None
 
         def terminate(self):
             self.terminated += 1
@@ -374,16 +382,17 @@ def test_probe_skipped_when_bus_server_down():
         return p
 
     sup = Supervisor(
-        [("bus_server", ["bus_server"]), ("cognition", ["cognition"])],
+        [("yuki", ["yuki"]), ("model_worker", ["model_worker"])],
         popen_factory=factory,
         restart_delay=0.0,
         env=None,
         clock=lambda: 0.0,
         sleep=lambda s: None,
+        bus_host="yuki",
     )
     sup.tick(bus=ProbeBus(), health_timeout_ms=200)
-    assert probes == []  # bus_server 未存活时跳过所有探活
-    assert created[1].terminated == 0  # cognition 未被误重启
+    assert probes == []  # bus host 未存活时跳过所有探活
+    assert created[1].terminated == 0  # model_worker 未被误重启
 
 
 def test_probe_service_not_found_does_not_restart():
@@ -415,6 +424,7 @@ def test_probe_service_not_found_does_not_restart():
         env=None,
         clock=lambda: 0.0,
         sleep=lambda s: None,
+        bus_host="a",
     )
     sup.tick(bus=ProbeBus(), health_timeout_ms=200)
     assert len(procs) == 1  # 服务未注册属瞬时状态，不重启
@@ -455,6 +465,7 @@ def test_unhealthy_health_result_restarts_process():
         env=None,
         clock=lambda: 0.0,
         sleep=lambda s: None,
+        bus_host="a",
     )
     restarted = sup.tick(bus=ProbeBus(), health_timeout_ms=200)
     assert restarted == ["a"]
@@ -486,6 +497,7 @@ def test_async_restart_schedules_then_spawns_at_due_time():
         clock=lambda: clock["now"],
         sleep=lambda s: None,
         async_restarts=True,
+        bus_host="a",
     )
     created[0].alive = False
     assert sup.tick() == []
@@ -524,6 +536,7 @@ def test_async_restart_gives_up_once_without_thrashing():
         restart_window=100,
         restart_max_per_window=2,
         async_restarts=True,
+        bus_host="a",
     )
     try:
         for _ in range(15):

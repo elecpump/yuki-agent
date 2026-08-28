@@ -1,8 +1,8 @@
 from contextlib import nullcontext
 
 from yuki.cognition.brain.local.router import CRISIS_KEYWORDS, is_crisis
-from yuki.cognition.model_registry import ModelRegistry
 from yuki.cognition.brain.persona import DEFAULT_BASE_PROMPT
+from yuki.cognition.call_tracker import CallTracker
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.view import estimate_tokens
 from yuki.memory.privacy import MemoryAccess, MemoryPurpose
@@ -101,7 +101,7 @@ class LocalComposer:
         view_builder: LocalViewBuilder | None = None,
         reply_max_tokens: int = 256,
         timeout_ms: int = 700,
-        model_registry: ModelRegistry | None = None,
+        model_registry: CallTracker | None = None,
         model_name: str = "local_chat",
     ) -> None:
         self._model = model

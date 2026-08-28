@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from yuki.bus import BusNode
 from yuki.config import Config
 from yuki.health import HealthStatus
 from yuki.model_worker.assembly import ModelWorkerRuntime, assemble_model_worker
@@ -26,15 +25,6 @@ class ModelWorkerAgent(ProcessAgent):
 
     def setup(self) -> None:
         self.runtime = assemble_model_worker(self.config, self.bus)
-
-    def _make_bus(self) -> RuntimeBusProtocol:
-        return BusNode(
-            base_port=self.config.bus.base_port,
-            hwm=self.config.bus.hwm,
-            auth_token=self.config.bus.auth_token,
-            max_msg_size=self.config.bus.max_msg_size,
-            register_interval=self.config.bus.register_interval_s,
-        )
 
     def teardown(self) -> None:
         if self.runtime is not None:

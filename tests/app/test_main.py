@@ -1,5 +1,3 @@
-import pytest
-
 from yuki.app.main import YukiApp
 from yuki.config import Config
 from yuki.health import HealthStatus
@@ -80,8 +78,3 @@ def test_app_coordinates_shared_agents_and_reverse_teardown():
     assert events[-3:] == ["teardown:c", "teardown:b", "teardown:a"]
     assert "health/yuki" in remote.services
     assert remote.closed is True
-
-
-def test_app_rejects_local_model_backend():
-    with pytest.raises(ValueError, match="requires models.backend=remote"):
-        YukiApp(Config(models={"backend": "local"}))

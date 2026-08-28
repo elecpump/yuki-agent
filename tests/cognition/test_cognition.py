@@ -36,26 +36,6 @@ class FakeVlm:
         self._loaded = loaded
 
 
-class FakeManagedModel:
-    def __init__(self, *, degraded=False, unload_error=None):
-        self.loaded = True
-        self.degraded = degraded
-        self.unload_error = unload_error
-        self.unloaded = 0
-
-    def load(self):
-        self.loaded = True
-
-    def unload(self):
-        if self.unload_error is not None:
-            raise self.unload_error
-        self.loaded = False
-        self.unloaded += 1
-
-    def health(self):
-        return {"loaded": self.loaded, "degraded": self.degraded}
-
-
 def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
@@ -212,14 +192,21 @@ def test_cognition_agent_registers_memory_functions_and_l2_health(tmp_path):
 
 def test_cognition_agent_health_includes_model_registry(tmp_path):
     bus = FakeBus()
-    pipeline = FakePipeline()
-    pipeline._vlm = FakeManagedModel()
-    pipeline._stt = FakeManagedModel(degraded=True)
+
+    class StubRemoteRegistry:
+        def get_overall_status(self):
+            return {
+                "status": "degraded",
+                "healthy": True,
+                "models": {"vlm": {}, "stt": {}},
+            }
+
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
         bus=bus,
-        pipeline=pipeline,
+        pipeline=FakePipeline(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+        model_registry=StubRemoteRegistry(),
     )
     agent.setup()
     try:
@@ -234,30 +221,40 @@ def test_cognition_agent_health_includes_model_registry(tmp_path):
 
 def test_cognition_agent_teardown_shuts_down_model_registry(tmp_path):
     bus = FakeBus()
-    pipeline = FakePipeline()
-    pipeline._vlm = FakeManagedModel()
+    calls = []
+
+    class StubRemoteRegistry:
+        def shutdown(self):
+            calls.append("shutdown")
+
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
         bus=bus,
-        pipeline=pipeline,
+        pipeline=FakePipeline(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+        model_registry=StubRemoteRegistry(),
     )
     agent.setup()
 
     agent.teardown()
 
-    assert pipeline._vlm.unloaded == 1
+    assert calls == ["shutdown"]
+    assert agent._model_registry is None
 
 
 def test_cognition_agent_teardown_continues_after_model_shutdown_error(tmp_path):
     bus = FakeBus()
-    pipeline = FakePipeline()
-    pipeline._vlm = FakeManagedModel(unload_error=RuntimeError("boom"))
+
+    class BoomRegistry:
+        def shutdown(self):
+            raise RuntimeError("boom")
+
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
         bus=bus,
-        pipeline=pipeline,
+        pipeline=FakePipeline(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+        model_registry=BoomRegistry(),
     )
     agent.setup()
 

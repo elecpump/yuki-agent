@@ -16,7 +16,6 @@ supervisor:
   startup_grace_s: 20.0
   bus_recovery_grace_s: 20.0
 models:
-  backend: remote
   gpu_max_concurrency: 1
   interactive_queue_size: 32
   background_queue_size: 16

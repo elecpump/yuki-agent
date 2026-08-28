@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 
-from yuki.bus_bridge import BusCompatibilityBridge, WireCodec, WireRuntimeBusAdapter
+from yuki.bus_bridge import BusCompatibilityBridge, WireCodec
 from yuki.runtime_bus import LocalRuntimeBus
 from yuki.topics import Topics
 
@@ -53,13 +53,6 @@ def test_wire_codec_converts_native_audio_at_boundary():
     decoded = codec.decode_event(Topics.MIC, encoded)
     assert decoded["samples"].tolist() == samples.tolist()
     assert decoded["samples"].flags.writeable is False
-
-
-def test_wire_adapter_round_trips_frame_bytes():
-    remote = FakeRemoteBus()
-    remote.respond("frame", lambda payload: {"png": base64.b64encode(b"png").decode()})
-    adapter = WireRuntimeBusAdapter(remote)
-    assert adapter.request("frame", {})["png"] == b"png"
 
 
 def test_bridge_proxies_services_and_mirrors_events():

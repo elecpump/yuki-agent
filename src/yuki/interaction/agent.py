@@ -9,7 +9,6 @@ from yuki.config import Config
 from yuki.health import HealthStatus
 from yuki.interaction.audio_output import AudioPlayer
 from yuki.interaction.hotkey import HotkeyManager
-from yuki.interaction.tts import IndexTTSModel
 from yuki.interaction.tts_controller import TtsController
 from yuki.payloads import ReplyPayload
 from yuki.process import ProcessAgent
@@ -64,9 +63,11 @@ class InteractionAgent(ProcessAgent):
                  hotkeys=None, tts=None, tts_model=None,
                  focus_manager=None, volume_controller=None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
+        if tts is None and tts_model is None:
+            raise ValueError("InteractionAgent requires tts or tts_model")
         self._hotkeys = hotkeys or HotkeyManager()
         self._tts = tts or TtsController(
-            tts_model or IndexTTSModel(config.tts),
+            tts_model,
             AudioPlayer(chunk_size=config.tts.chunk_size),
             self.bus,
             transition_grace_s=config.agent_loop.transition_grace_s,

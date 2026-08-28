@@ -5,8 +5,9 @@ import types
 
 import numpy as np
 
-from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.cognition.stt import SpeechRecognizer
+
+from tests.fakes import RecordingCallTracker
 
 
 def _install_funasr(monkeypatch, auto_model, postprocess=None):
@@ -56,39 +57,34 @@ def test_recognize_handles_empty_text_result():
     assert stt.recognize_base64(base64.b64encode(pcm).decode("ascii")) == ""
 
 
-def test_recognize_records_model_registry_metrics():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="stt", loader=lambda: object()))
+def test_recognize_records_call_tracker_metrics():
+    tracker = RecordingCallTracker()
 
     class FakeModel:
         def generate(self, **kwargs):
             return [{"text": "ok"}]
 
-    stt = SpeechRecognizer(model=FakeModel(), model_registry=registry)
+    stt = SpeechRecognizer(model=FakeModel(), model_registry=tracker)
 
     assert stt.recognize(np.zeros(320, dtype=np.float32)) == "ok"
 
-    health = registry.get_model_health("stt")
-    assert health["success_count"] == 1
-    assert health["failure_count"] == 0
+    assert tracker.success == 1
+    assert tracker.failure == 0
 
 
-def test_recognize_records_model_registry_failures():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="stt", loader=lambda: object()))
+def test_recognize_records_call_tracker_failures():
+    tracker = RecordingCallTracker()
 
     class FakeModel:
         def generate(self, **kwargs):
             raise RuntimeError("timeout")
 
-    stt = SpeechRecognizer(model=FakeModel(), model_registry=registry)
+    stt = SpeechRecognizer(model=FakeModel(), model_registry=tracker)
 
     assert stt.recognize(np.zeros(320, dtype=np.float32)) == ""
 
-    health = registry.get_model_health("stt")
-    assert health["success_count"] == 0
-    assert health["failure_count"] == 1
-    assert registry.get_overall_status()["recent_incidents"][0]["kind"] == "timeout"
+    assert tracker.success == 0
+    assert tracker.failure == 1
 
 
 def test_load_uses_configured_model_and_device(monkeypatch):

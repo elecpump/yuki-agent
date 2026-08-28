@@ -38,3 +38,31 @@ class FakeBus:
 
     def close(self):
         self.closed = True
+
+
+class RecordingCallTracker:
+    """Stand-in for the worker-side call tracker on model objects.
+
+    Records track_call success/failure so model-object metric wiring can be
+    tested without the full ModelManager; worker-side accounting itself is
+    covered by tests/model_worker/test_manager.py.
+    """
+
+    def __init__(self):
+        self.success = 0
+        self.failure = 0
+
+    def track_call(self, model):
+        from contextlib import contextmanager
+
+        @contextmanager
+        def _cm():
+            try:
+                yield
+            except Exception:
+                self.failure += 1
+                raise
+            else:
+                self.success += 1
+
+        return _cm()

@@ -1,5 +1,6 @@
 from yuki.cognition.brain.local.router import GateRoute, LocalRouter
-from yuki.cognition.model_registry import ModelRegistry, ModelSpec
+
+from tests.fakes import RecordingCallTracker
 
 
 class FakeModel:
@@ -85,27 +86,23 @@ def test_router_prompt_only_requests_binary_gate_fields():
     assert "intent" not in prompt
 
 
-def test_router_records_model_registry_metrics():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
+def test_router_records_call_tracker_metrics():
+    tracker = RecordingCallTracker()
     model = FakeModel('{"route":"local","confidence":0.91}')
-    router = LocalRouter(model, threshold=0.7, model_registry=registry)
+    router = LocalRouter(model, threshold=0.7, model_registry=tracker)
 
     assert router.route("hi").route == GateRoute.LOCAL
 
-    health = registry.get_model_health("local_chat")
-    assert health["success_count"] == 1
-    assert health["failure_count"] == 0
+    assert tracker.success == 1
+    assert tracker.failure == 0
 
 
 def test_router_records_invalid_model_output_as_failure():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
+    tracker = RecordingCallTracker()
     model = FakeModel("not json")
-    router = LocalRouter(model, retry=0, model_registry=registry)
+    router = LocalRouter(model, retry=0, model_registry=tracker)
 
     assert router.route("hi").route == GateRoute.CLOUD
 
-    health = registry.get_model_health("local_chat")
-    assert health["success_count"] == 0
-    assert health["failure_count"] == 1
+    assert tracker.success == 0
+    assert tracker.failure == 1

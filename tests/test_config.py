@@ -22,7 +22,7 @@ def test_defaults():
     assert config.supervisor.bus_recovery_grace_s == 20.0
     assert config.health.timeout_ms == 2000
     assert config.health.heartbeat_interval_s == 5.0
-    assert config.models.backend == "remote"
+    assert config.models.gpu_max_concurrency == 1
     assert config.models.policies["local_chat"].priority == 100
     assert config.models.policies["local_chat"].pinned is True
     assert config.models.policies["stt"].evictable is False

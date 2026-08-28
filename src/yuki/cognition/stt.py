@@ -6,8 +6,8 @@ from contextlib import nullcontext
 
 import numpy as np
 
+from yuki.cognition.call_tracker import CallTracker
 from yuki.cognition.load_gate import LoadGate
-from yuki.cognition.model_registry import ModelRegistry
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.stt")
@@ -29,7 +29,7 @@ class SpeechRecognizer:
         use_itn: bool = True,
         retry_window_s: float = 60.0,
         clock: Callable[[], float] | None = None,
-        model_registry: ModelRegistry | None = None,
+        model_registry: CallTracker | None = None,
         model_name: str = "stt",
     ) -> None:
         self._model = model
@@ -79,7 +79,7 @@ class SpeechRecognizer:
         self.unload()
         self.load()
 
-    def set_model_registry(self, registry: ModelRegistry | None, model_name: str = "stt") -> None:
+    def set_model_registry(self, registry: CallTracker | None, model_name: str = "stt") -> None:
         self._model_registry = registry
         self._model_name = model_name
 

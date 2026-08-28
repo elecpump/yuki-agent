@@ -1,7 +1,6 @@
 import os
 
 from yuki.cognition.assembly import CognitionAssembler
-from yuki.cognition.model_registry import ModelRegistry
 from yuki.config import Config
 from yuki.functions.registry import FunctionRegistry
 from yuki.health import HealthStatus
@@ -22,10 +21,9 @@ class CognitionAgent(ProcessAgent):
                  frame_client=None, speech_buffer=None,
                  memory: MemoryManager | None = None,
                  registry: FunctionRegistry | None = None,
-                 model_registry: ModelRegistry | RemoteModelRegistry | None = None,
+                 model_registry: RemoteModelRegistry | None = None,
                  local_chat_model: LocalChatModelClient | None = None,
-                 embedding_provider: EmbeddingProvider | None = None,
-                 remote_models: bool = False) -> None:
+                 embedding_provider: EmbeddingProvider | None = None) -> None:
         super().__init__(config, bus=bus, shutdown=shutdown)
         self._pipeline = pipeline
         self._l1 = l1
@@ -38,7 +36,6 @@ class CognitionAgent(ProcessAgent):
         self._model_registry = model_registry
         self._local_chat_model = local_chat_model
         self._embedding_provider = embedding_provider
-        self._remote_models = remote_models
         self._hub = None
         self._bridge = None
         self._context = None
@@ -59,7 +56,6 @@ class CognitionAgent(ProcessAgent):
             model_registry=self._model_registry,
             local_chat_model=self._local_chat_model,
             embedding_provider=self._embedding_provider,
-            remote_models=self._remote_models,
         )
         assembled = runtime.assemble()
         self._pipeline = assembled.pipeline

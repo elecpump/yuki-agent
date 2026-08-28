@@ -185,9 +185,21 @@ def test_hub_transition_cancel_flow_reaches_interaction_controller():
     agent.teardown()
 
 
-def test_default_disabled_tts_falls_back_without_optional_dependencies(capsys):
+def test_unavailable_tts_falls_back_to_console(capsys):
+    class UnavailableTts:
+        def synthesize_stream(self, text, emotion_vector=None, ref_audio=None, lang=None):
+            raise RuntimeError("model_worker_unavailable")
+
+        def health(self):
+            return {"degraded": True}
+
     bus = FakeBus()
-    agent = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys())
+    agent = InteractionAgent(
+        Config(),
+        bus=bus,
+        hotkeys=FakeHotkeys(),
+        tts_model=UnavailableTts(),
+    )
     agent.setup()
     bus.subscriptions[Topics.REPLY][0](
         Topics.REPLY,

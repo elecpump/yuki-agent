@@ -2,7 +2,6 @@ from abc import ABC, abstractmethod
 from typing import Callable
 
 from yuki.bus import BusNode
-from yuki.bus_bridge import WireRuntimeBusAdapter
 from yuki.config import Config
 from yuki.health import HealthReporter, HealthStatus
 from yuki.logger import configure_logging
@@ -33,14 +32,12 @@ class ProcessAgent(ABC):
         )
 
     def _make_bus(self) -> RuntimeBusProtocol:
-        return WireRuntimeBusAdapter(
-            BusNode(
-                base_port=self.config.bus.base_port,
-                hwm=self.config.bus.hwm,
-                auth_token=self.config.bus.auth_token,
-                max_msg_size=self.config.bus.max_msg_size,
-                register_interval=self.config.bus.register_interval_s,
-            )
+        return BusNode(
+            base_port=self.config.bus.base_port,
+            hwm=self.config.bus.hwm,
+            auth_token=self.config.bus.auth_token,
+            max_msg_size=self.config.bus.max_msg_size,
+            register_interval=self.config.bus.register_interval_s,
         )
 
     @abstractmethod
@@ -64,12 +61,10 @@ class ProcessAgent(ABC):
             for comp_name, check in self.health_components().items():
                 self.health.register_component(comp_name, check)
             self.health.start()
-        if hasattr(self.bus, "pause_subscriptions"):
-            self.bus.pause_subscriptions()
+        self.bus.pause_subscriptions()
         try:
             self.setup()
-            if hasattr(self.bus, "resume_subscriptions"):
-                self.bus.resume_subscriptions()
+            self.bus.resume_subscriptions()
             self.loop()
         finally:
             try:

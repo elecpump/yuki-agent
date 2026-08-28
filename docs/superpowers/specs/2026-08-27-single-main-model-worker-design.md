@@ -17,6 +17,11 @@
 - OOM 重试、驱逐、context-fatal → `worker_fatal` 与 supervisor 的 unhealthy 定向重启由故障注入测试覆盖。
 - 尚未完成的是部署环境验收，而非代码缺口：真实 GPU 峰值显存、碎片化、推理延迟与模型抖动需要在目标
   显卡和模型文件齐备后压测校准；真实 STT e2e 还依赖可选的 `soundfile` 包。
+- **后续决定（评审清理）**：`models.backend=local` 模式、三层旧独立入口（`python -m
+  yuki.cognition/perception/interaction`）、`cognition/model_registry.py` + `model_service.py`、
+  `WireRuntimeBusAdapter` 与 supervisor 旧 tick 回退路径已全部移除，代码收敛为纯 remote 双进程形态；
+  模型对象的调用统计钩子改为挂载 `ModelManager`（`cognition/call_tracker.py::CallTracker`）。
+  本节的 "local 模式"、"旧入口保留" 等表述仅作为历史决策记录。
 
 ## 背景与目标
 

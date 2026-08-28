@@ -36,8 +36,6 @@ class YukiApp:
         agents: list[ProcessAgent] | None = None,
         gateway: GatewayServer | None = None,
     ) -> None:
-        if config.models.backend != "remote":
-            raise ValueError("yuki.app requires models.backend=remote")
         self.config = config
         self.shutdown = shutdown or ShutdownManager()
         self.hub = hub or BusHub(
@@ -100,7 +98,6 @@ class YukiApp:
                 model_registry=registry,
                 local_chat_model=local_chat,
                 embedding_provider=embedding,
-                remote_models=True,
             ),
             InteractionAgent(
                 self.config,

@@ -54,9 +54,6 @@ cp config.example.yaml config.yaml   # 按需调整，环境变量 YUKI_<SECTION
 python -m yuki.supervisor            # 推荐：启动 yuki + model_worker 并负责探活/重启
 python -m yuki.app                   # 仅启动主进程（需要另行启动 model_worker）
 python -m yuki.model_worker          # 仅启动模型进程
-# 或单独调试：
-python -m yuki.cognition
-python -m yuki.interaction --trigger-after 2
 python -m yuki.memory list           # 记忆管理 CLI
 ```
 
@@ -69,8 +66,9 @@ python -m yuki.memory list           # 记忆管理 CLI
 `memory`、`vlm`、`cloud`、`wake_word`、`gateway`、`persona` 等。密钥走环境变量，
 如 `YUKI_CLOUD_API_KEY`；不要提交本地 `data/`、`logs/`。
 
-`models.backend` 默认是 `remote`，由 `model_worker` 统一托管本地模型。旧的单模块入口仍保留，
-需要在单独调试时使用 `models.backend: local`。
+`models.policies` 由 `model_worker` 统一托管本地模型（VLM / STT / 本地脑 / TTS / embedding）：
+模型 ID、device、enabled 等来自 `vlm`/`stt`/`tts`/`local_brain`/`memory` 分区，运行策略
+（优先级、warmup、可驱逐、固定常驻、空闲卸载、显存估算）来自 `models.policies`。
 
 ## 测试
 

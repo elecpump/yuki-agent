@@ -39,7 +39,7 @@ class Supervisor:
         restart_window: int = 600,
         restart_max_per_window: int = 5,
         startup_grace_s: float = 20.0,
-        bus_host: str | None = None,
+        bus_host: str = "yuki",
         bus_recovery_grace_s: float = 20.0,
         async_restarts: bool = False,
     ) -> None:
@@ -92,98 +92,8 @@ class Supervisor:
             child.healthy_since = now
             restarted.append(child.name)
     def tick(self, bus: BusNode | None = None, health_timeout_ms: int = 2000) -> list[str]:
-        if self.bus_host is not None:
-            return self._tick_with_bus_host(bus, health_timeout_ms)
-        restarted: list[str] = []
-        now = self._clock()
-        if self._async_restarts:
-            self._run_due_restarts(now, restarted)
-        bus_server = next((c for c in self._children if c.name == "bus_server"), None)
-        bus_up = bus_server is None or bus_server.proc.poll() is None
-        for child in self._children:
-            if child.proc.poll() is None:
-                # 存活：超过窗口无重启则清 attempts
-                if now - child.healthy_since >= self.restart_window:
-                    child.attempts = 0
-                    child.gave_up = False
-                    child.restart_times = []
-                    child.healthy_since = now
-                # 健康探活：bus_server 走内置 health/bus_server；未存活时跳过其余探活
-                if bus is not None:
-                    if not bus_up:
-                        logger.info(
-                            "health probes skipped (bus_server not alive)",
-                            process=child.name,
-                        )
-                    else:
-                        try:
-                            result = bus.request(
-                                BUS_HEALTH_SERVICE
-                                if child.name == "bus_server"
-                                else f"health/{child.name}",
-                                {},
-                                timeout_ms=health_timeout_ms,
-                            )
-                            if result.get("healthy") is False:
-                                logger.warning(
-                                    "health probe reported unhealthy",
-                                    process=child.name,
-                                    result=result,
-                                )
-                                self._restart(child, now)
-                                restarted.append(child.name)
-                                if child.name == "bus_server":
-                                    bus_up = False
-                                continue
-                        except BusTimeoutError:
-
-                            if (
-                                child.name == "bus_server"
-                                and now - child.healthy_since <= self.startup_grace_s
-                            ):
-                                logger.info(
-                                    "health probe pending (bus_server starting)",
-                                    process=child.name,
-                                )
-                                continue
-                            logger.warning("health probe failed", process=child.name)
-                            self._restart(child, now)
-                            restarted.append(child.name)
-
-                            if child.name == "bus_server":
-                                bus_up = False
-                        except BusError as exc:
-                            if str(exc) == "service not found":
-                                # 子进程仍在启动/注册：hub 就绪但服务未注册属瞬时状态，不重启
-                                logger.info(
-                                    "health probe pending (service not registered)",
-                                    process=child.name,
-                                )
-
-                                if now - child.healthy_since > self.startup_grace_s:
-                                    logger.warning(
-                                        "health probe pending too long, restarting",
-                                        process=child.name,
-                                        pending_s=round(now - child.healthy_since, 2),
-                                    )
-                                    self._restart(child, now)
-                                    restarted.append(child.name)
-                                    if child.name == "bus_server":
-                                        bus_up = False
-                            else:
-                                logger.warning("health probe failed", process=child.name)
-                                self._restart(child, now)
-                                restarted.append(child.name)
-
-                                if child.name == "bus_server":
-                                    bus_up = False
-                continue
-            self._restart(child, now)
-            restarted.append(child.name)
-        if self._async_restarts:
-            scheduled = {c.name for c in self._children if c.next_restart_at is not None}
-            restarted = [name for name in restarted if name not in scheduled]
-        return list(dict.fromkeys(restarted))
+        """Probe the bus host first, then dependent children in dependency order."""
+        return self._tick_with_bus_host(bus, health_timeout_ms)
 
     def _tick_with_bus_host(
         self,
@@ -227,7 +137,7 @@ class Supervisor:
                 restarted.append(host.name)
             self._bus_recovered_at = None
             return self._visible_restarts(restarted)
-        if bus_health.get("healthy") is False:
+        if not isinstance(bus_health, dict) or bus_health.get("healthy") is False:
             self._restart(host, now)
             restarted.append(host.name)
             self._bus_recovered_at = None
@@ -246,7 +156,7 @@ class Supervisor:
             service = f"health/{child.name}"
             try:
                 result = bus.request(service, {}, timeout_ms=health_timeout_ms)
-                if result.get("healthy") is False:
+                if not isinstance(result, dict) or result.get("healthy") is False:
                     self._restart(child, now)
                     restarted.append(child.name)
                     if child is host:

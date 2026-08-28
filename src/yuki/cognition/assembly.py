@@ -11,7 +11,6 @@ from yuki.cognition.brain.hub import (
     build_brain,
 )
 from yuki.cognition.brain.local import (
-    LocalChatModel,
     LocalComposer,
     LocalRouter,
     LocalViewBuilder,
@@ -26,16 +25,11 @@ from yuki.cognition.brain.tuner import FeedbackTuner
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ShortTermTurnStore
 from yuki.cognition.context.working import WorkingContext
-from yuki.cognition.gpu_monitor import GpuMemoryMonitor
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
-from yuki.cognition.model_registry import ModelRegistry, ModelSpec
-from yuki.cognition.model_service import register_model_services
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.speech_buffer import SpeechBuffer
-from yuki.cognition.stt import SpeechRecognizer
 from yuki.cognition.vad import FsmnVadBackend
-from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.memory_tools import register_memory_functions
 from yuki.functions.perception_tools import register_perception_tools
@@ -65,7 +59,7 @@ class CognitionRuntime:
     pipeline: PerceptionPipeline
     memory: MemoryManager
     registry: FunctionRegistry
-    model_registry: ModelRegistry | RemoteModelRegistry
+    model_registry: RemoteModelRegistry | None
     bridge: CloudBridge | None
     hub: DecisionHub
     context: WorkingContext
@@ -107,11 +101,10 @@ class CognitionAssembler:
         speech_buffer=None,
         memory: MemoryManager | None = None,
         registry: FunctionRegistry | None = None,
-        model_registry: ModelRegistry | RemoteModelRegistry | None = None,
+        model_registry: RemoteModelRegistry | None = None,
         cache_manager: ModelCacheManager | None = None,
-        local_chat_model: LocalChatModel | LocalChatModelClient | None = None,
+        local_chat_model: LocalChatModelClient | None = None,
         embedding_provider: EmbeddingProvider | None = None,
-        remote_models: bool = False,
     ) -> None:
         self.config = config
         self.bus = bus
@@ -126,19 +119,15 @@ class CognitionAssembler:
         self.cache_manager = cache_manager
         self.local_chat_model = local_chat_model
         self.embedding_provider = embedding_provider
-        self.remote_models = remote_models
 
     def assemble(self) -> CognitionRuntime:
-        model_registry = self.model_registry or ModelRegistry(gpu_monitor=GpuMemoryMonitor())
         cache_manager = self.cache_manager or ModelCacheManager(max_entries=256)
         if self.pipeline is None:
-            vlm = self.vlm or self._build_vlm(cache_manager=cache_manager)
-            stt = self.stt or self._build_stt()
             speech_buffer = self.speech_buffer or self._build_speech_buffer()
             pipeline = build_pipeline(
                 self.bus,
-                vlm=vlm,
-                stt=stt,
+                vlm=self.vlm,
+                stt=self.stt,
                 frame_client=self.frame_client,
                 speech_buffer=speech_buffer,
                 text_summary_chars=self.config.text.summary_chars,
@@ -151,21 +140,12 @@ class CognitionAssembler:
             )
         else:
             pipeline = self.pipeline
-            vlm = getattr(pipeline, "vlm", getattr(pipeline, "_vlm", None))
-            stt = getattr(pipeline, "stt", getattr(pipeline, "_stt", None))
-            speech_buffer = getattr(pipeline, "speech_buffer", self.speech_buffer)
-        frame_client = getattr(pipeline, "frame_client", getattr(pipeline, "_frame_client", None))
-        if not self.remote_models:
-            self._register_runtime_models(model_registry, vlm, stt, speech_buffer, frame_client)
-            self._log_preflight(model_registry.preflight())
         pipeline.warmup_vlm()
         if self.config.stt.warmup and hasattr(pipeline, "warmup_stt"):
             pipeline.warmup_stt()
 
         memory = self.memory or self._build_memory(cache_manager=cache_manager)
         register_memory_services(self.bus, memory)
-        if not self.remote_models:
-            register_model_services(self.bus, model_registry)
 
         registry = self.registry or FunctionRegistry()
         if self.registry is None:
@@ -203,7 +183,7 @@ class CognitionAssembler:
         )
         context.restore()
         projector = ContextProjector(max_turns=self.config.context.max_turns)
-        local_router, local_composer = self._build_local_brain(model_registry)
+        local_router, local_composer = self._build_local_brain()
         persona_refresh = self._build_persona_refresh(
             memory,
             bridge,
@@ -211,8 +191,6 @@ class CognitionAssembler:
             soul_store,
             local_composer,
         )
-        if not self.remote_models:
-            self._log_preflight(model_registry.preflight())
         hub = build_brain(
             self.bus,
             memory=memory,
@@ -243,7 +221,7 @@ class CognitionAssembler:
             pipeline=pipeline,
             memory=memory,
             registry=registry,
-            model_registry=model_registry,
+            model_registry=self.model_registry,
             bridge=bridge,
             hub=hub,
             context=context,
@@ -292,27 +270,6 @@ class CognitionAssembler:
             confidence_weight=self.config.memory.confidence_weight,
         )
 
-    def _build_vlm(self, *, cache_manager: ModelCacheManager | None = None) -> VisualUnderstander:
-        vlm_cfg = self.config.vlm
-        return VisualUnderstander(
-            model_id=vlm_cfg.model,
-            cache_dir=vlm_cfg.cache_dir,
-            enabled=vlm_cfg.enabled,
-            cache_manager=cache_manager,
-        )
-
-    def _build_stt(self) -> SpeechRecognizer:
-        stt_cfg = self.config.stt
-        return SpeechRecognizer(
-            enabled=stt_cfg.enabled,
-            model_id=stt_cfg.model,
-            model_dir=stt_cfg.model_dir,
-            device=stt_cfg.device,
-            language=stt_cfg.language,
-            use_itn=stt_cfg.use_itn,
-            retry_window_s=stt_cfg.retry_window_s,
-        )
-
     def _build_speech_buffer(self) -> SpeechBuffer:
         stt_cfg = self.config.stt
         vad_cfg = stt_cfg.vad
@@ -350,28 +307,14 @@ class CognitionAssembler:
 
     def _build_local_brain(
         self,
-        model_registry: ModelRegistry,
     ) -> tuple[LocalRouter | None, LocalComposer | None]:
         local_cfg = self.config.local_brain
         if not local_cfg.enabled:
             return None, None
         model = self.local_chat_model
         if model is None:
-            model = LocalChatModel(
-                model_id=local_cfg.model_id,
-                cache_dir=local_cfg.cache_dir,
-                device=local_cfg.device,
-                enabled=local_cfg.enabled,
-                fp8_dequantize=local_cfg.fp8_dequantize,
-                local_files_only=local_cfg.local_files_only,
-            )
-            self._register_model_object(
-                model_registry,
-                "local_chat",
-                model,
-                priority=1,
-                critical=False,
-                vram_estimate_gb=2.0,
+            raise ValueError(
+                "local_chat_model client is required when local_brain is enabled"
             )
         router = LocalRouter(
             model,
@@ -379,7 +322,6 @@ class CognitionAssembler:
             retry=local_cfg.retry,
             prompt_max_tokens=local_cfg.router_prompt_max_tokens,
             timeout_ms=local_cfg.router_timeout_ms,
-            model_registry=None if self.remote_models else model_registry,
         )
         composer = LocalComposer(
             model,
@@ -387,127 +329,9 @@ class CognitionAssembler:
             view_builder=LocalViewBuilder(max_tokens=local_cfg.local_prompt_max_tokens),
             reply_max_tokens=local_cfg.reply_max_tokens,
             timeout_ms=local_cfg.local_reply_timeout_ms,
-            model_registry=None if self.remote_models else model_registry,
         )
         router.warmup()
         return router, composer
-
-    def _register_runtime_models(
-        self,
-        model_registry: ModelRegistry,
-        vlm,
-        stt,
-        speech_buffer,
-        frame_client,
-    ) -> None:
-        if frame_client is not None:
-            self._register_static_component(
-                model_registry,
-                "frame_client",
-                frame_client,
-                priority=0,
-                critical=False,
-                health_check=lambda frame_client=frame_client: {
-                    "loaded": callable(getattr(frame_client, "get_latest", None)),
-                    "degraded": not callable(getattr(frame_client, "get_latest", None)),
-                },
-            )
-        if vlm is not None:
-            self._register_model_object(
-                model_registry,
-                "vlm",
-                vlm,
-                priority=2,
-                critical=False,
-                vram_estimate_gb=5.0,
-            )
-        if stt is not None:
-            self._register_model_object(
-                model_registry,
-                "stt",
-                stt,
-                priority=1,
-                critical=False,
-                vram_estimate_gb=1.5,
-            )
-        vad = getattr(speech_buffer, "_vad", None)
-        if vad is not None:
-            self._register_model_object(
-                model_registry,
-                "vad",
-                vad,
-                priority=1,
-                critical=False,
-                vram_estimate_gb=0.5,
-            )
-
-    def _register_model_object(
-        self,
-        model_registry: ModelRegistry,
-        name: str,
-        model,
-        *,
-        priority: int,
-        critical: bool,
-        vram_estimate_gb: float = 0.0,
-    ) -> None:
-        load = getattr(model, "load", None)
-        unload = getattr(model, "unload", None)
-        health = getattr(model, "health", None)
-        if not callable(load) or not callable(health):
-            return
-        attach = getattr(model, "set_model_registry", None)
-        if callable(attach):
-            attach(model_registry, name)
-        try:
-            model_registry.register(
-                ModelSpec(
-                    name=name,
-                    loader=lambda model=model: (model.load(), model)[1],
-                    unloader=(lambda handle, model=model: model.unload())
-                    if callable(unload)
-                    else None,
-                    health_check=health,
-                    priority=priority,
-                    critical=critical,
-                    vram_estimate_gb=vram_estimate_gb,
-                )
-            )
-        except ValueError:
-            logger.debug("model already registered", model=name)
-
-    def _register_static_component(
-        self,
-        model_registry: ModelRegistry,
-        name: str,
-        component,
-        *,
-        priority: int,
-        critical: bool,
-        dependencies: list[str] | None = None,
-        health_check: Callable[[], dict] | None = None,
-    ) -> None:
-        health = health_check or (lambda: {"loaded": True, "degraded": False})
-        try:
-            model_registry.register(
-                ModelSpec(
-                    name=name,
-                    loader=lambda component=component: component,
-                    health_check=health,
-                    priority=priority,
-                    critical=critical,
-                    dependencies=list(dependencies or []),
-                    allow_unload=False,
-                )
-            )
-        except ValueError:
-            logger.debug("model already registered", model=name)
-
-    def _log_preflight(self, result: dict) -> None:
-        if not result["ok"]:
-            logger.warning("model preflight failed", result=result)
-        elif result["status"] == "warning":
-            logger.info("model preflight warning", result=result)
 
     def _active_persona_prompt(self, active, soul_store: SoulStore) -> str:
         return (

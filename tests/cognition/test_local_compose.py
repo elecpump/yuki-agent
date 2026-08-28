@@ -1,8 +1,9 @@
 from yuki.cognition.brain.local.compose import LocalComposer, LocalViewBuilder
 from yuki.cognition.context.snapshot import ContextSnapshot
-from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
+
+from tests.fakes import RecordingCallTracker
 
 
 class FakeModel:
@@ -25,16 +26,14 @@ def test_local_composer_generates_short_reply(tmp_path):
     memory.close()
 
 
-def test_local_composer_records_model_registry_metrics(tmp_path):
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="local_chat", loader=lambda: object()))
-    composer = LocalComposer(FakeModel(), model_registry=registry)
+def test_local_composer_records_call_tracker_metrics(tmp_path):
+    tracker = RecordingCallTracker()
+    composer = LocalComposer(FakeModel(), model_registry=tracker)
 
     assert composer.generate("hi", ContextSnapshot(), None)
 
-    health = registry.get_model_health("local_chat")
-    assert health["success_count"] == 1
-    assert health["failure_count"] == 0
+    assert tracker.success == 1
+    assert tracker.failure == 0
 
 
 def test_local_view_builder_drops_crisis_history_turn():

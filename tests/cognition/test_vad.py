@@ -3,8 +3,9 @@ import types
 
 import numpy as np
 
-from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.cognition.vad import FsmnVadBackend
+
+from tests.fakes import RecordingCallTracker
 
 
 def _install_funasr(monkeypatch, auto_model):
@@ -52,38 +53,34 @@ def test_segments_returns_empty_on_failure(monkeypatch):
     assert vad.health()["degraded"] is True
 
 
-def test_segments_records_model_registry_metrics():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="vad", loader=lambda: object()))
+def test_segments_records_call_tracker_metrics():
+    tracker = RecordingCallTracker()
 
     class FakeModel:
         def generate(self, **kwargs):
             return [{"value": [[0, 20]]}]
 
-    vad = FsmnVadBackend(model_instance=FakeModel(), model_registry=registry)
+    vad = FsmnVadBackend(model_instance=FakeModel(), model_registry=tracker)
 
     assert vad.segments(np.zeros(320, dtype=np.float32)) == [[0, 20]]
 
-    health = registry.get_model_health("vad")
-    assert health["success_count"] == 1
-    assert health["failure_count"] == 0
+    assert tracker.success == 1
+    assert tracker.failure == 0
 
 
-def test_segments_records_model_registry_failures():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="vad", loader=lambda: object()))
+def test_segments_records_call_tracker_failures():
+    tracker = RecordingCallTracker()
 
     class FakeModel:
         def generate(self, **kwargs):
             raise RuntimeError("vad timeout")
 
-    vad = FsmnVadBackend(model_instance=FakeModel(), model_registry=registry)
+    vad = FsmnVadBackend(model_instance=FakeModel(), model_registry=tracker)
 
     assert vad.segments(np.zeros(320, dtype=np.float32)) == []
 
-    health = registry.get_model_health("vad")
-    assert health["success_count"] == 0
-    assert health["failure_count"] == 1
+    assert tracker.success == 0
+    assert tracker.failure == 1
 
 
 def test_auto_device_prefers_cpu_when_torch_missing(monkeypatch):

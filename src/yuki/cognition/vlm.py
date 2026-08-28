@@ -4,9 +4,9 @@ import time
 from collections.abc import Callable
 from contextlib import nullcontext
 
+from yuki.cognition.call_tracker import CallTracker
 from yuki.cognition.context_cache import ContextCache
 from yuki.cognition.load_gate import LoadGate
-from yuki.cognition.model_registry import ModelRegistry
 from yuki.logger import get_logger
 from yuki.model_cache import ModelCacheManager
 
@@ -40,7 +40,7 @@ class VisualUnderstander:
         enabled: bool = True,
         retry_window_s: float = 60.0,
         clock: Callable[[], float] | None = None,
-        model_registry: ModelRegistry | None = None,
+        model_registry: CallTracker | None = None,
         model_name: str = "vlm",
         cache_manager: ModelCacheManager | None = None,
         cache_ttl_s: float | None = None,
@@ -124,7 +124,7 @@ class VisualUnderstander:
         self.unload()
         self.load()
 
-    def set_model_registry(self, registry: ModelRegistry | None, model_name: str = "vlm") -> None:
+    def set_model_registry(self, registry: CallTracker | None, model_name: str = "vlm") -> None:
         self._model_registry = registry
         self._model_name = model_name
 

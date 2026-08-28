@@ -2,8 +2,9 @@ import pytest
 import types
 
 from yuki.cognition.context_cache import ContextCache
-from yuki.cognition.model_registry import ModelRegistry, ModelSpec
 from yuki.cognition.vlm import VisualUnderstander
+
+from tests.fakes import RecordingCallTracker
 
 
 def test_context_cache_hit_and_miss():
@@ -160,23 +161,20 @@ def test_understand_does_not_cache_degraded_result():
     assert vlm._cache.get("k1") is None
 
 
-def test_vlm_records_model_registry_metrics():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="vlm", loader=lambda: object()))
-    vlm = VisualUnderstander(model=object(), processor=object(), model_registry=registry)
+def test_vlm_records_call_tracker_metrics():
+    tracker = RecordingCallTracker()
+    vlm = VisualUnderstander(model=object(), processor=object(), model_registry=tracker)
     vlm._infer = lambda image: {"topic": "t", "summary": "s", "content_type": "web", "key_points": []}
 
     assert vlm.understand(None)["topic"] == "t"
 
-    health = registry.get_model_health("vlm")
-    assert health["success_count"] == 1
-    assert health["failure_count"] == 0
+    assert tracker.success == 1
+    assert tracker.failure == 0
 
 
-def test_vlm_records_model_registry_failures():
-    registry = ModelRegistry()
-    registry.register(ModelSpec(name="vlm", loader=lambda: object()))
-    vlm = VisualUnderstander(model=object(), processor=object(), model_registry=registry)
+def test_vlm_records_call_tracker_failures():
+    tracker = RecordingCallTracker()
+    vlm = VisualUnderstander(model=object(), processor=object(), model_registry=tracker)
 
     def boom(image):
         raise RuntimeError("cuda oom")
@@ -185,10 +183,8 @@ def test_vlm_records_model_registry_failures():
 
     assert vlm.understand(None)["degraded"] is True
 
-    health = registry.get_model_health("vlm")
-    assert health["success_count"] == 0
-    assert health["failure_count"] == 1
-    assert registry.get_overall_status()["recent_incidents"][0]["kind"] == "gpu_oom"
+    assert tracker.success == 0
+    assert tracker.failure == 1
 
 
 def test_load_uses_model_id_cache_dir_and_quant_config(monkeypatch):

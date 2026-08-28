@@ -3,7 +3,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 
-from yuki.cognition.model_registry import ModelRegistry
+from yuki.cognition.call_tracker import CallTracker
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.brain.local.router")
@@ -51,7 +51,7 @@ class LocalRouter:
         retry: int = 1,
         prompt_max_tokens: int = 1200,
         timeout_ms: int = 150,
-        model_registry: ModelRegistry | None = None,
+        model_registry: CallTracker | None = None,
         model_name: str = "local_chat",
     ) -> None:
         self._model = model
