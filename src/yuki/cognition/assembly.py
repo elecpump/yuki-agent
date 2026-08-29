@@ -25,6 +25,7 @@ from yuki.cognition.brain.snapshots import PersonaStore
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.soul_reflector import SoulReflector
 from yuki.cognition.brain.soul_scheduler import SoulReflectionScheduler
+from yuki.cognition.context.maintenance import SegmentSummarizer, ThreadMaintenanceScheduler
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
@@ -72,6 +73,7 @@ class CognitionRuntime:
     persona_store: PersonaStore
     persona_refresh: Callable[..., None]
     soul_reflection_scheduler: SoulReflectionScheduler | None
+    thread_maintenance_scheduler: ThreadMaintenanceScheduler | None
     cache_manager: ModelCacheManager
 
     def handle_awake_request(self, payload: dict) -> dict:
@@ -199,16 +201,17 @@ class CognitionAssembler:
             else None
         )
         thread_db_path = memory.db_path or Path(self.config.memory.db_path)
-        context = WorkingContext(
-            ThreadTurnStore(
-                thread_db_path,
-                segment_max_turns=self.config.thread.segment_max_turns,
-                episode_idle_s=self.config.thread.episode_idle_s,
-            )
+        thread_store = ThreadTurnStore(
+            thread_db_path,
+            segment_max_turns=self.config.thread.segment_max_turns,
+            episode_idle_s=self.config.thread.episode_idle_s,
         )
+        context = WorkingContext(thread_store)
         projector = ContextProjector(
             max_turns=self.config.thread.segment_verbatim_max,
             fallback_turns=self.config.thread.fallback_turns,
+            max_summaries=self.config.thread.history_summary_max_segments,
+            summary_max_tokens=self.config.thread.history_summary_max_tokens,
         )
         local_router, local_composer = self._build_local_brain()
         persona_refresh = self._build_persona_refresh(
@@ -221,7 +224,18 @@ class CognitionAssembler:
         soul_store.set_on_updated(lambda: persona_refresh(refine=False))
         register_soul_functions(registry, soul_store)
         soul_reflection_scheduler = None
+        thread_maintenance_scheduler = None
         if cloud_client is not None:
+            thread_maintenance_scheduler = ThreadMaintenanceScheduler(
+                thread_store,
+                SegmentSummarizer(
+                    cloud_client,
+                    model=self.config.cloud.model,
+                    timeout_s=self.config.cloud.timeout_s,
+                ),
+                summary_failures_max=self.config.thread.summary_failures_max,
+                tick_s=self.config.thread.maintenance_tick_s,
+            )
             reflector = SoulReflector(
                 cloud_client,
                 soul_store,
@@ -278,6 +292,7 @@ class CognitionAssembler:
             persona_store=persona_store,
             persona_refresh=persona_refresh,
             soul_reflection_scheduler=soul_reflection_scheduler,
+            thread_maintenance_scheduler=thread_maintenance_scheduler,
             cache_manager=cache_manager,
         )
         self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
@@ -330,10 +345,13 @@ class CognitionAssembler:
     def _build_cloud_client(self) -> CloudClient | None:
         if not self.config.cloud.enabled:
             return None
+        api_key = os.environ.get(self.config.cloud.api_key_env)
+        if not api_key:
+            return None
         return CloudClient(
             base_url=self.config.cloud.base_url,
             model=self.config.cloud.model,
-            api_key=os.environ.get(self.config.cloud.api_key_env),
+            api_key=api_key,
             timeout_s=self.config.cloud.timeout_s,
         )
 

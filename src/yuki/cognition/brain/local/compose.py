@@ -59,6 +59,12 @@ class LocalViewBuilder:
                 continue
             add(f"[{turn.get('kind', 'turn')}] ", content[:1200])
 
+        for turn in list(snapshot.recent_turns or ())[self._verbatim_turns :]:
+            content = str(turn.get("content", ""))
+            if self._contains_crisis(content):
+                continue
+            add(f"[{turn.get('kind', 'turn')}] ", content[:1200])
+
         for memory_item in self._memories(memory, utterance):
             add("- 记忆：", str(memory_item.get("content", ""))[:800])
 

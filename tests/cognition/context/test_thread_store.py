@@ -1,6 +1,9 @@
 import sqlite3
 
+import pytest
+
 from yuki.cognition.context.store import ThreadTurnStore
+from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.working import WorkingContext
 
 
@@ -118,9 +121,9 @@ def test_restart_recovers_expired_maintenance_leases(tmp_path):
         )
         connection.execute(
             """
-            INSERT INTO consolidation_runs (
-                episode_id, state, lease_until, updated_at
-            ) VALUES (1, 'leased', 0, 200.0)
+            UPDATE consolidation_runs
+            SET state = 'leased', lease_until = 0, updated_at = 200.0
+            WHERE episode_id = 1
             """
         )
 
@@ -141,3 +144,80 @@ def test_restart_recovers_expired_maintenance_leases(tmp_path):
     assert episode_state == "closed"
     assert run_state == "pending"
     assert lease_until is None
+
+
+def test_closed_segment_can_be_claimed_and_completed_with_persistent_summary(tmp_path):
+    store = ThreadTurnStore(tmp_path / "memory.db", segment_max_turns=2)
+    context = WorkingContext(store)
+    user_turn_id = store.add_user("第一问", at=100.0)
+    store.add_agent("第一答", at=101.0, reply_to_turn_id=user_turn_id)
+
+    job = store.claim_segment_summary()
+    assert job is not None
+    assert [turn["content"] for turn in job.turns] == ["第一问", "第一答"]
+
+    store.complete_segment_summary(
+        job.segment_id,
+        "用户提出第一问，agent 已回答。",
+        model="test-model",
+        prompt_version="segment-summary-v1",
+        attempt=job.attempt,
+    )
+
+    snapshot = ContextProjector().build(context)
+    assert snapshot.summaries == ("用户提出第一问，agent 已回答。",)
+    assert snapshot.fallback_turns == ()
+    context.close()
+
+
+def test_segment_summary_failures_retry_then_keep_raw_placeholder_fallback(tmp_path):
+    store = ThreadTurnStore(tmp_path / "memory.db", segment_max_turns=1)
+    context = WorkingContext(store)
+    store.add_user("必须保留的原文", at=100.0)
+
+    first_job = store.claim_segment_summary()
+    store.fail_segment_summary(
+        first_job.segment_id,
+        attempt=first_job.attempt,
+        max_failures=2,
+    )
+    second_job = store.claim_segment_summary()
+    assert second_job.attempt == 2
+
+    store.fail_segment_summary(
+        second_job.segment_id,
+        attempt=second_job.attempt,
+        max_failures=2,
+    )
+
+    assert store.claim_segment_summary() is None
+    snapshot = ContextProjector().build(context)
+    assert snapshot.summaries == ()
+    assert [turn["content"] for turn in snapshot.fallback_turns] == ["必须保留的原文"]
+    context.close()
+
+
+def test_segment_summary_claim_uses_database_lease_and_reclaims_after_expiry(tmp_path):
+    path = tmp_path / "memory.db"
+    first_store = ThreadTurnStore(path, segment_max_turns=1)
+    second_store = ThreadTurnStore(path, segment_max_turns=1)
+    first_store.add_user("需要租约", at=100.0)
+
+    first_job = first_store.claim_segment_summary(at=100.0, lease_s=10.0)
+
+    assert first_job is not None
+    assert second_store.claim_segment_summary(at=105.0, lease_s=10.0) is None
+    reclaimed = second_store.claim_segment_summary(at=111.0, lease_s=10.0)
+    assert reclaimed is not None
+    assert reclaimed.segment_id == first_job.segment_id
+    assert reclaimed.attempt == 2
+    with pytest.raises(ValueError, match="segment lease is stale"):
+        first_store.complete_segment_summary(
+            first_job.segment_id,
+            "旧工作者的结果",
+            model="test",
+            prompt_version="v1",
+            attempt=first_job.attempt,
+        )
+    first_store.close()
+    second_store.close()

@@ -4,7 +4,6 @@ from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.view import (
     MAX_UTTERANCE_CHARS,
     SITUATION_TOKENS,
-    SUMMARIZE_MAX_FAILURES,
     CloudViewBuilder,
     estimate_tokens,
 )
@@ -42,62 +41,6 @@ def test_estimate_tokens():
     assert estimate_tokens("a" * 30) == 20
 
 
-def test_enrich_short_conversation_no_summarize():
-    calls = []
-    builder = CloudViewBuilder(summarize=lambda texts: calls.append(texts) or "摘要")
-    snap = make_snapshot(turns=[turn("t0"), turn("t1"), turn("t2"), turn("t3"), turn("t4")])
-    out = builder.enrich(snap, None, "你好")
-    assert out.summaries == ()          # 预算足够 → 不折叠
-    assert calls == []
-
-
-def test_enrich_long_conversation_folds_and_caches():
-    calls = []
-
-    def fake_summarize(texts):
-        calls.append(texts)
-        return "旧轮摘要"
-
-    builder = CloudViewBuilder(summarize=fake_summarize, max_tokens=250)
-    # 30 轮 → 超出逐字预算 → 折叠（base≈238 > 逐字预算，max_tokens=250 介于两者之间）
-    turns = [turn(f"第{i}轮内容内容内容内容内容") for i in range(30)]
-    snap = make_snapshot(turns=turns)
-    out1 = builder.enrich(snap, None, "你好")
-    assert calls  # 调了摘要
-    assert any("摘要" in s for s in out1.summaries)
-    # 缓存复用：再 enrich 不调摘要
-    n_calls = len(calls)
-    out2 = builder.enrich(snap, None, "你好")
-    assert len(calls) == n_calls
-    assert out2.summaries == out1.summaries
-
-
-def test_enrich_summarize_failure_placeholder_and_circuit_breaker():
-    def boom(texts):
-        raise RuntimeError("summarize down")
-
-    builder = CloudViewBuilder(summarize=boom, max_tokens=250)
-    # 12 轮 → 折叠 8 轮 → 恰好 2 个折叠段（6+2），一次 enrich 触发 2 次失败（<3，不熔断）
-    turns = [turn(f"第{i}轮内容内容内容内容内容") for i in range(12)]
-    snap = make_snapshot(turns=turns)
-    out = builder.enrich(snap, None, "x")
-    assert builder._summarize_failures == 2
-    assert builder._summarize_broken is False
-    assert "之前聊了" in out.summaries[0]
-    # 失败结果不缓存 → 第二次 enrich 再失败 2 次，累计 4 >= 3 → 熔断
-    builder.enrich(snap, None, "x")
-    assert builder._summarize_failures >= SUMMARIZE_MAX_FAILURES
-    assert builder._summarize_broken is True
-
-
-def test_enrich_summarize_none_placeholder():
-    builder = CloudViewBuilder(summarize=None, max_tokens=250)
-    turns = [turn(f"第{i}轮内容内容内容内容内容") for i in range(30)]
-    snap = make_snapshot(turns=turns)
-    out = builder.enrich(snap, None, "x")
-    assert out.summaries and "之前聊了" in out.summaries[0]
-
-
 def test_enrich_memory_filters_private_and_high_sensitivity(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
     manager.write("preference", "喜欢安静", sensitivity=0)
@@ -119,7 +62,7 @@ def test_format_order_and_quota():
         turns=[turn("逐字轮1", "user"), turn("逐字轮2", "agent")],
     )
     text = builder.format(snap, "你好呀" * 200)  # 超长 utterance → 截断
-    assert text.startswith("用户说：")
+    assert text.splitlines()[-1].startswith("用户说：")
     assert "量子计算" in text
     assert "逐字轮1" in text
     assert "你好呀" in text  # 截断但保留开头
@@ -137,3 +80,11 @@ def test_format_includes_pending_summary_fallback_turns():
     text = CloudViewBuilder().format(snapshot, "当前问题")
 
     assert "上一段原文" in text
+
+
+def test_format_uses_remaining_budget_for_active_segment_candidates():
+    snapshot = make_snapshot(turns=[turn(f"活跃轮次{i}") for i in range(6)])
+
+    text = CloudViewBuilder(max_tokens=1000, verbatim_turns=4).format(snapshot, "继续")
+
+    assert "活跃轮次5" in text

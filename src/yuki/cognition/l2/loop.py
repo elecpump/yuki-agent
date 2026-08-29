@@ -7,7 +7,7 @@ from typing import Any
 
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.client import CloudClient, CloudError
-from yuki.cognition.l2.view import SUMMARIZE_TIMEOUT_S, CloudViewBuilder, estimate_tokens
+from yuki.cognition.l2.view import CloudViewBuilder, estimate_tokens
 from yuki.functions.registry import FunctionRegistry
 from yuki.memory.manager import MemoryManager
 
@@ -28,6 +28,7 @@ SUMMARIZE_PROMPT = (
     "请把以下内容压缩成 1-3 句简短中文摘要，保留关键事实与用户偏好，"
     "不要遗漏重要信息。"
 )
+SUMMARIZE_TIMEOUT_S = 2.0
 
 
 def make_summarize(client: CloudClient) -> Callable[[list[str]], str]:
@@ -70,7 +71,7 @@ class AgentLoop:
         self._registry = registry
         self._system = system_prompt
         self._summarize = summarize or make_summarize(client)
-        self._view_builder = view_builder or CloudViewBuilder(summarize=self._summarize)
+        self._view_builder = view_builder or CloudViewBuilder()
         self._max_steps = max_steps
         self._max_duration_s = max_duration_s
         self._transition_fallback = transition_fallback
@@ -239,7 +240,8 @@ class AgentLoop:
             return False
         if budget_s <= SUMMARIZE_TIMEOUT_S:
             return False
-        if estimate_tokens(json.dumps(messages, ensure_ascii=False)) <= self._compact_threshold_tokens:
+        estimated_tokens = estimate_tokens(json.dumps(messages, ensure_ascii=False))
+        if estimated_tokens <= self._compact_threshold_tokens:
             return False
         system_count = 0
         while (

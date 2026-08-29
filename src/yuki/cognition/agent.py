@@ -43,6 +43,7 @@ class CognitionAgent(ProcessAgent):
         self._persona_store = None
         self._persona_refresh = None
         self._soul_reflection_scheduler = None
+        self._thread_maintenance_scheduler = None
 
     def setup(self) -> None:
         runtime = CognitionAssembler(
@@ -70,11 +71,22 @@ class CognitionAgent(ProcessAgent):
         self._persona_store = assembled.persona_store
         self._persona_refresh = assembled.persona_refresh
         self._soul_reflection_scheduler = assembled.soul_reflection_scheduler
+        self._thread_maintenance_scheduler = assembled.thread_maintenance_scheduler
         self._hub.start()
+        if self._thread_maintenance_scheduler is not None:
+            self._thread_maintenance_scheduler.start()
         if self._soul_reflection_scheduler is not None:
             self._soul_reflection_scheduler.start()
 
     def teardown(self) -> None:
+        # spec §8 teardown 顺序：停止接收新请求 → scheduler bounded flush →
+        # 关闭 hub/model client → 关闭 ThreadStore/MemoryStore。
+        self.bus.pause_subscriptions()
+        if self._thread_maintenance_scheduler is not None:
+            self._thread_maintenance_scheduler.close(
+                timeout_s=self.config.thread.shutdown_timeout_s
+            )
+            self._thread_maintenance_scheduler = None
         if self._hub is not None:
             self._hub.close(timeout_s=SOUL_REFLECTION_CLOSE_TIMEOUT_S)
             self._hub = None

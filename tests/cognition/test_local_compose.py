@@ -59,6 +59,23 @@ def test_local_view_builder_includes_pending_summary_fallback_turns():
     assert "上一段原文" in view
 
 
+def test_local_view_builder_uses_remaining_budget_for_active_segment_candidates():
+    snapshot = ContextSnapshot(
+        recent_turns=tuple(
+            {"kind": "user", "content": f"活跃轮次{i}", "ts": 0.0}
+            for i in range(7)
+        ),
+    )
+
+    view = LocalViewBuilder(max_tokens=1000, verbatim_turns=4).build(
+        snapshot,
+        None,
+        "继续",
+    )
+
+    assert "活跃轮次6" in view
+
+
 def test_local_view_builder_respects_budget():
     view = LocalViewBuilder(max_tokens=20).build(
         ContextSnapshot(recent_turns=tuple(

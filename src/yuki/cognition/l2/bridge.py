@@ -37,7 +37,7 @@ class CloudBridge:
         self._max_turns = max_turns
         self._system = system_prompt or DEFAULT_PERSONA_PROMPT.format(persona=persona_name)
         summarize = make_summarize(client)
-        self._view_builder = view_builder or CloudViewBuilder(summarize=summarize)
+        self._view_builder = view_builder or CloudViewBuilder()
         self.loop = AgentLoop(
             client,
             registry,

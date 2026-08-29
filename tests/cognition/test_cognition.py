@@ -58,6 +58,31 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
     agent.teardown()
 
 
+class RecordingPauseBus(FakeBus):
+    def __init__(self):
+        super().__init__()
+        self.pause_calls = 0
+
+    def pause_subscriptions(self):
+        self.pause_calls += 1
+
+
+def test_agent_teardown_pauses_subscriptions_before_flush(tmp_path):
+    bus = RecordingPauseBus()
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=bus,
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+    agent.setup()
+    assert bus.pause_calls == 0
+    agent.teardown()
+    # spec §8：先停止接收新请求，再 scheduler bounded flush。
+    assert bus.pause_calls == 1
+    assert agent._thread_maintenance_scheduler is None
+
+
 def test_cognition_agent_awake_service_coordinates_pipeline_and_brain(tmp_path):
     bus = FakeBus()
     pipeline = FakePipeline()
@@ -372,6 +397,7 @@ def test_cognition_agent_starts_and_stops_soul_reflection_scheduler(
             return {"choices": [{"message": {"content": "{}"}}]}
 
     monkeypatch.setattr("yuki.cognition.assembly.CloudClient", FakeCloudClient)
+    monkeypatch.setenv("YUKI_CLOUD_API_KEY", "test-key")
     agent = CognitionAgent(
         Config(
             cloud={"enabled": True, "base_url": "http://x", "model": "m"},
@@ -396,6 +422,44 @@ def test_cognition_agent_starts_and_stops_soul_reflection_scheduler(
     assert scheduler._timer_thread.is_alive() is False
 
 
+def test_cognition_agent_starts_and_stops_thread_maintenance_scheduler(
+    tmp_path,
+    monkeypatch,
+):
+    class FakeCloudClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def chat(self, messages, tools=None, timeout_s=None, **kwargs):
+            return {"choices": [{"message": {"content": "摘要"}}]}
+
+    monkeypatch.setattr("yuki.cognition.assembly.CloudClient", FakeCloudClient)
+    monkeypatch.setenv("YUKI_CLOUD_API_KEY", "test-key")
+    agent = CognitionAgent(
+        Config(
+            cloud={"enabled": True, "base_url": "http://x", "model": "m"},
+            memory={"db_path": str(tmp_path / "mem.db")},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+            soul={
+                "path": str(tmp_path / "soul.json"),
+                "snapshots_dir": str(tmp_path / "soul_snapshots"),
+            },
+            thread={"maintenance_tick_s": 1.0},
+        ),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+    )
+
+    agent.setup()
+    scheduler = agent._thread_maintenance_scheduler
+    assert scheduler is not None
+    assert scheduler._thread.is_alive()
+
+    agent.teardown()
+    assert agent._thread_maintenance_scheduler is None
+    assert scheduler._thread.is_alive() is False
+
+
 def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
     class FakeCloudClient:
         def __init__(self, **kwargs):
@@ -407,6 +471,7 @@ def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
 
     fake = FakeCloudClient()
     monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
+    monkeypatch.setenv("YUKI_CLOUD_API_KEY", "test-key")
 
     bus = FakeBus()
     agent = CognitionAgent(
@@ -488,6 +553,7 @@ def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, mon
 
     fake = FakeCloudClient()
     monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
+    monkeypatch.setenv("YUKI_CLOUD_API_KEY", "test-key")
 
     memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
     memory.write("preference", "公开偏好", sensitivity=0)
@@ -523,6 +589,7 @@ def test_persona_refresh_includes_safe_explicit_preference(tmp_path, monkeypatch
 
     fake = FakeCloudClient()
     monkeypatch.setattr("yuki.cognition.assembly.CloudClient", lambda **kw: fake)
+    monkeypatch.setenv("YUKI_CLOUD_API_KEY", "test-key")
 
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json"),

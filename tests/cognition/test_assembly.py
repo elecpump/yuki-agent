@@ -79,6 +79,27 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         memory.close()
 
 
+def test_cloud_missing_api_key_skips_cloud_components(tmp_path, monkeypatch):
+    monkeypatch.delenv("YUKI_CLOUD_API_KEY", raising=False)
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    runtime = CognitionAssembler(
+        Config(
+            cloud={"enabled": True},
+            memory={"db_path": str(tmp_path / "mem.db")},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus,
+        pipeline=pipeline,
+    ).assemble()
+    try:
+        assert runtime.bridge is None
+        assert runtime.thread_maintenance_scheduler is None
+    finally:
+        runtime.context.close()
+        runtime.memory.close()
+
+
 def test_cognition_assembler_uses_persistent_thread_store(tmp_path):
     bus = FakeBus()
     pipeline = FakePipeline()

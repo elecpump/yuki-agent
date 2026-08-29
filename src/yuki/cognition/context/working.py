@@ -61,7 +61,7 @@ class WorkingContext:
         with self._lock:
             return self._store.items()
 
-    def projection_items(self) -> tuple[list[dict], list[dict]]:
+    def projection_items(self) -> tuple[list[dict], list[str], list[dict]]:
         with self._lock:
             return self._store.projection_items()
 
