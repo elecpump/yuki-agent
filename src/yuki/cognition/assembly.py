@@ -309,9 +309,6 @@ class CognitionAssembler:
             embedding_indexer=embedding_indexer,
             vector_enabled=self.config.memory.vector_enabled,
             vector_candidates=self.config.memory.vector_candidates,
-            lexical_weight=self.config.memory.lexical_weight,
-            vector_weight=self.config.memory.vector_weight,
-            confidence_weight=self.config.memory.confidence_weight,
         )
 
     def _build_speech_buffer(self) -> SpeechBuffer:

@@ -59,7 +59,9 @@ def test_vector_disabled_preserves_lexical_query_shape(tmp_path):
         def upsert(self, memory):
             raise AssertionError("disabled vector path should not index writes")
 
-        def search(self, text, *, top_k, memory_type=None, min_sensitivity=0):
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
             raise AssertionError("disabled vector path should not search")
 
     m = MemoryManager(
@@ -84,9 +86,6 @@ def test_vector_query_can_return_non_lexical_hit(tmp_path):
         store,
         embedding_indexer=indexer,
         vector_enabled=True,
-        lexical_weight=0.0,
-        vector_weight=1.0,
-        confidence_weight=0.0,
     )
     try:
         mem_id = m.write("preference", "saffron noodle preference")
@@ -95,6 +94,142 @@ def test_vector_query_can_return_non_lexical_hit(tmp_path):
         results = m.query("sfron", top_k=1)
         assert results[0]["id"] == mem_id
         assert results[0]["vector_score"] > 0.0
+        assert "lexical_score" not in results[0]
+    finally:
+        m.close()
+
+
+def test_hybrid_reranks_by_vector_score_with_lexical_fallback(tmp_path):
+    store = MemoryStore(tmp_path / "mem.db")
+    a = store.create("preference", "咖啡爱好者")
+    b = store.create("preference", "咖啡烘焙")
+    lexical_only = store.create("preference", "咖啡豆产地")
+
+    class FixedScoresIndexer:
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
+            return [(store.get(a), 0.9), (store.get(b), 0.1)]
+
+    m = MemoryManager(store, embedding_indexer=FixedScoresIndexer(), vector_enabled=True)
+    try:
+        results = m.query("咖啡", top_k=3)
+        ids = [r["id"] for r in results]
+        assert ids == [a, b, lexical_only]
+        assert results[0]["score"] > results[1]["score"] > results[2]["score"]
+        assert results[2]["vector_score"] == 0.0
+        assert results[2]["score"] == 0.0
+        assert all("lexical_score" not in r for r in results)
+    finally:
+        m.close()
+
+
+def test_hybrid_score_multiplies_decay(tmp_path):
+    store = MemoryStore(tmp_path / "mem.db")
+    mem_id = store.create("preference", "needle memory")
+    store.touch(mem_id, at=time.time() - 10 * 86400)
+
+    class FixedScoresIndexer:
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
+            return [(store.get(mem_id), 0.8)]
+
+    m = MemoryManager(
+        store,
+        embedding_indexer=FixedScoresIndexer(),
+        vector_enabled=True,
+        decay_base=1.0,
+        decay_lambda=1.0,
+    )
+    try:
+        results = m.query("needle", top_k=1, touch=False)
+        expected = 0.8 * m.decay_weight(store.get(mem_id))
+        assert results[0]["score"] == pytest.approx(expected)
+    finally:
+        m.close()
+
+
+def test_hybrid_scores_lexical_candidate_outside_vector_candidate_limit(tmp_path):
+    class FixedProvider:
+        name = "fixed"
+        model = "fixed-v1"
+        dimension = 2
+
+        def embed(self, texts: list[str]) -> list[list[float]]:
+            vectors = []
+            for text in texts:
+                if text == "needle exact match":
+                    vectors.append([1.0, 0.0])
+                else:
+                    vectors.append([0.0, 1.0])
+            return vectors
+
+    store = MemoryStore(tmp_path / "mem.db")
+    indexer = MemoryEmbeddingIndexer(store, FixedProvider())
+    exact_id = store.create("preference", "needle exact match")
+    indexer.upsert(store.get(exact_id))
+    for index in range(3):
+        memory_id = store.create("preference", f"unrelated {index}")
+        indexer.upsert(store.get(memory_id))
+        store.touch(memory_id, at=time.time() - 10 * 86400)
+
+    m = MemoryManager(
+        store,
+        embedding_indexer=indexer,
+        vector_enabled=True,
+        vector_candidates=3,
+        decay_lambda=1.0,
+    )
+    try:
+        results = m.query("needle", top_k=1, touch=False)
+        assert results[0]["id"] == exact_id
+        assert results[0]["vector_score"] == pytest.approx(0.5)
+    finally:
+        m.close()
+
+
+def test_hybrid_does_not_embed_empty_query(tmp_path):
+    class CountingIndexer:
+        def __init__(self):
+            self.search_calls = 0
+
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
+            self.search_calls += 1
+            return []
+
+    indexer = CountingIndexer()
+    m = MemoryManager(
+        MemoryStore(tmp_path / "mem.db"),
+        embedding_indexer=indexer,
+        vector_enabled=True,
+    )
+    try:
+        assert m.query("   ") == []
+        assert indexer.search_calls == 0
+    finally:
+        m.close()
+
+
+def test_zero_score_vector_hit_precedes_lexical_only_fallback(tmp_path):
+    store = MemoryStore(tmp_path / "mem.db")
+    lexical_id = store.create("preference", "needle exact match")
+    vector_id = store.create("preference", "unrelated vector hit")
+
+    class ZeroScoreIndexer:
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
+            return [(store.get(vector_id), 0.0)]
+
+    m = MemoryManager(store, embedding_indexer=ZeroScoreIndexer(), vector_enabled=True)
+    try:
+        results = m.query("needle", top_k=1, touch=False)
+        assert results[0]["id"] == vector_id
+        assert results[0]["vector_score"] == 0.0
+        assert lexical_id not in [result["id"] for result in results]
     finally:
         m.close()
 
@@ -198,7 +333,9 @@ def test_vector_candidates_scale_with_top_k(tmp_path):
         def __init__(self):
             self.top_k = None
 
-        def search(self, text, *, top_k, memory_type=None, min_sensitivity=0):
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
             self.top_k = top_k
             return []
 
@@ -218,7 +355,9 @@ def test_vector_candidates_scale_with_top_k(tmp_path):
 
 def test_vector_query_failure_falls_back_to_lexical(tmp_path):
     class FailingIndexer:
-        def search(self, text, *, top_k, memory_type=None, min_sensitivity=0):
+        def search(
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+        ):
             raise RuntimeError("embedding provider down")
 
     m = MemoryManager(

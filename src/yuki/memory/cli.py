@@ -20,9 +20,6 @@ def build_manager(
     embedding_cache_dir: str = "",
     embedding_device: str = "auto",
     vector_candidates: int = 30,
-    lexical_weight: float = 0.45,
-    vector_weight: float = 0.45,
-    confidence_weight: float = 0.10,
 ) -> MemoryManager:
     store = MemoryStore(db_path)
     embedding_indexer = None
@@ -43,9 +40,6 @@ def build_manager(
         embedding_indexer=embedding_indexer,
         vector_enabled=vector_enabled,
         vector_candidates=vector_candidates,
-        lexical_weight=lexical_weight,
-        vector_weight=vector_weight,
-        confidence_weight=confidence_weight,
     )
 
 
@@ -149,9 +143,6 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--embedding-cache-dir", default="")
     parser.add_argument("--embedding-device", default="auto")
     parser.add_argument("--vector-candidates", type=int, default=30)
-    parser.add_argument("--lexical-weight", type=float, default=0.45)
-    parser.add_argument("--vector-weight", type=float, default=0.45)
-    parser.add_argument("--confidence-weight", type=float, default=0.10)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("list")
@@ -216,9 +207,6 @@ def main(argv: list[str] | None = None) -> int:
             embedding_model=args.embedding_model,
             embedding_dimension=args.embedding_dimension,
             vector_candidates=args.vector_candidates,
-            lexical_weight=args.lexical_weight,
-            vector_weight=args.vector_weight,
-            confidence_weight=args.confidence_weight,
         )
     except Exception as exc:
         print(f"error: {exc}", file=sys.stderr)

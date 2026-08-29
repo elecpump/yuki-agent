@@ -1,7 +1,7 @@
 # Yuki 记忆混合检索（FTS5 + Vector）设计
 
 > 日期：2026-08-18
-> 状态：设计定稿，待实现
+> 状态：已实现；检索模式后续调整为"BM25 双路召回 + 向量重排"（见 §6.2 变更记录）
 > 范围：在现有 `memories` + `memories_fts`（FTS5 trigram）之上新增向量召回，做 hybrid retrieval；保留 FTS 精确命中，补语义召回。默认 `vector_enabled=false`，现有检索行为完全不变。
 
 ## 1. 背景与目标
@@ -14,7 +14,7 @@
 query
   -> FTS5/LIKE lexical candidates
   -> vector semantic candidates
-  -> merge + decay + confidence + sensitivity filter
+  -> merge by id + vector rerank + decay + sensitivity filter
   -> top_k
 ```
 
@@ -173,20 +173,18 @@ if not vector_enabled or self._embedding_indexer is None:
     return old_fts_decay_query(...)
 ```
 
-不能混入 confidence，不能改权重。只有 vector 开启后才使用：
+**变更记录（检索模式：BM25 + 向量检视 + top_k）**：`vector_enabled=true` 时不再做加权融合，改为 **BM25 双路召回 + 向量重排**：
 
 ```
-score =
-  lexical_weight * lexical_score
-+ vector_weight   * vector_score
-+ confidence_weight * confidence
-then * decay_weight
+score = vector_score * decay_weight
 ```
 
-- FTS 命中的 memory 得 `lexical_score`；vector 命中的得 `vector_score`；两边候选按 id merge（同一 id 双侧得分相加）。
-- cosine 归一到 `[0, 1]`：`score = min(max((cosine + 1.0) / 2.0, 0.0), 1.0)`。
+- BM25（FTS5/LIKE）只负责**召回候选**（`candidate_k` 条），不参与打分；向量侧按 cosine 召回 `candidate_k` 条，双侧候选按 id 合并（同一 id 去重）。BM25 候选即使不在向量 top candidates 中，只要存在当前模型的 embedding，也必须计算其 query cosine，避免双路召回退化为纯向量 top-k。
+- 排序唯一依据是向量相似度 `vector_score ∈ [0,1]`（cosine 归一化 `min(max((cosine+1)/2, 0), 1)`）乘以衰减权重。
+- **仅 BM25 命中且没有当前 embedding 的候选 `vector_score=0`**，以“是否有向量分”为次级排序键，保证排在所有向量命中之后；向量命中不足 top_k 时兜底填充（召回安全网）。需要兜底命中也参与排序时，先 `embeddings rebuild` 补齐向量。
+- 原 `lexical_weight / vector_weight / confidence_weight` 三项加权融合配置已移除（2026-08-29 调整），不再提供打分权重。
 - 批量 cosine 用 numpy，不逐行解包。
-- **只 touch 最终返回的 top_k**（当前已如此，保持）。
+- **只 touch 最终返回的 top_k**（保持）。
 - `min_sensitivity` / `memory_type` 在两侧候选 SQL 里都过滤；personal/高敏过滤继续由 `min_sensitivity` 和 `MemoryAccess` 管。
 - 查询侧 embed 失败（provider 不可用/异常）必须降级 FTS，不影响主路径。
 
@@ -205,12 +203,9 @@ memory:
   embedding_model: hashing-v1
   embedding_dimension: 384
   vector_candidates: 30
-  lexical_weight: 0.45
-  vector_weight: 0.45
-  confidence_weight: 0.10
 ```
 
-权重仅在 `vector_enabled=true` 时生效（见 6.2）。
+`vector_candidates` 仅在 `vector_enabled=true` 时生效（见 6.2）；`lexical_weight / vector_weight / confidence_weight` 已随加权融合移除。
 
 ## 8. 装配点
 
@@ -244,6 +239,10 @@ python -m yuki.memory.cli embeddings rebuild [--type memory_type]
 - 同内容重复 rebuild 不重算（hash 判重，`upsert` 次数可数）。
 - FTS 不命中但 hash overlap 命中时能召回（用单/双字查询构造；hash provider 是字符 overlap，不是语义，测试写"hash overlap 召回"而非"语义召回"）。
 - hybrid merge 按 id 去重，最终只 touch top_k。
+- 排序按向量相似度 × 衰减（BM25 仅召回，不参与打分）；仅 BM25 命中候选 `vector_score=0` 兜底填充。
+- BM25 候选不在向量 top candidates 中但已有 embedding 时，仍计算 query cosine 并参与统一重排。
+- 空文本不调用 embedding provider；零分向量命中仍排在无 embedding 的 BM25-only 兜底之前。
+- 原加权融合的 `lexical_score` 键已不再产出（2026-08-29 调整）。
 - `delete` / `wipe` / `delete_decayed` 后 embedding 同步删除（FK 级联 + wipe 显式清表）。
 - provider/model/dimension 变更时旧 embedding 不被误用（复合主键共存 + 查询按当前模型过滤）。
 - `vector_enabled=false` 时行为完全等同当前 FTS5（结果集 + score 均一致，不带 confidence）。
@@ -263,7 +262,7 @@ python -m yuki.memory.cli embeddings rebuild [--type memory_type]
 
 1. `store.py`：`PRAGMA foreign_keys=ON` + 复合主键 `memory_embeddings` 表 + `upsert_embedding()` + `vector_candidates()` + `wipe()` 显式清表。
 2. `embedding.py`：`EmbeddingProvider` / `HashingEmbeddingProvider` / `MemoryEmbeddingIndexer`。
-3. `manager.py`：可选 vector indexer，默认旧行为；`query()` hybrid merge + 加权评分。
+3. `manager.py`：可选 vector indexer，默认旧行为；`query()` 双路召回 + 向量重排。
 4. `cli.py`：`embeddings rebuild` 子命令。
 5. 测试：FK 级联、多模型共存、vector off 等价、candidate_k 扩张、embed 失败降级 FTS。
 6. 再考虑真实 embedding provider（sentence-transformers / 云，默认关闭）。
@@ -282,4 +281,5 @@ python -m yuki.memory.cli embeddings rebuild [--type memory_type]
 | hashing provider 只作框架 baseline | 零依赖跑通管线；不做语义宣称，语义增益留给 ST/云 |
 | `candidate_k = max(vector_candidates, top_k*3)` | 避免固定候选池饿死大 top_k（MemoryAccess 传 top_k*5） |
 | 查询侧 embed 失败降级 FTS | 向量是增量能力，失败不影响主路径 |
+| **2026-08-29：双路召回 + 向量重排，取代加权融合** | BM25 只做召回者、向量统一重排，语义排序干净；BM25 分数不再被压平为常数，也无需打分权重 |
 | CLI rebuild 而非启动时懒加载 | 避免 cognition 启动突然给全库算 embedding |

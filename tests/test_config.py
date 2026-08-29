@@ -182,9 +182,6 @@ def test_memory_defaults():
     assert config.memory.embedding_model == "hashing-v1"
     assert config.memory.embedding_dimension == 384
     assert config.memory.vector_candidates == 30
-    assert config.memory.lexical_weight == 0.45
-    assert config.memory.vector_weight == 0.45
-    assert config.memory.confidence_weight == 0.10
 
 
 def test_memory_env_override(monkeypatch):

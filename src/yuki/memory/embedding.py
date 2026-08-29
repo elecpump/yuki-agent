@@ -4,6 +4,7 @@ import hashlib
 import math
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
@@ -301,6 +302,7 @@ class MemoryEmbeddingIndexer:
         top_k: int,
         memory_type: str | None = None,
         min_sensitivity: int = 0,
+        include_ids: Iterable[int] = (),
     ) -> list[tuple[dict, float]]:
         limit = max(0, int(top_k))
         if limit == 0:
@@ -313,13 +315,22 @@ class MemoryEmbeddingIndexer:
         if cache.matrix.size == 0:
             return []
         scores = normalized_cosine_scores(query_vector, cache.matrix)
-        order = top_k_indices(scores, limit)
+        order = [int(index) for index in top_k_indices(scores, limit)]
+        selected = set(order)
+        index_by_memory_id = {
+            memory_id: index for index, memory_id in enumerate(cache.memory_ids)
+        }
+        for memory_id in include_ids:
+            index = index_by_memory_id.get(int(memory_id))
+            if index is not None and index not in selected:
+                order.append(index)
+                selected.add(index)
         results: list[tuple[dict, float]] = []
         for index in order:
-            score = float(scores[int(index)])
+            score = float(scores[index])
             if math.isnan(score):
                 continue
-            memory = self._store.get(cache.memory_ids[int(index)])
+            memory = self._store.get(cache.memory_ids[index])
             if memory is None:
                 continue
             if memory_type is not None and memory.get("memory_type") != memory_type:

@@ -58,9 +58,8 @@ memory:
   #   embedding_cache_dir: .model
   #   embedding_device: auto
   vector_candidates: 30
-  lexical_weight: 0.45
-  vector_weight: 0.45
-  confidence_weight: 0.10
+  # 检索模式：BM25（FTS5）与向量双路召回，合并后按向量相似度 × 衰减重排取 top_k。
+  # BM25 只负责召回候选；仅 BM25 命中的记忆排在向量命中之后，不足 top_k 时兜底。
 text:
   enabled: true
   dom_enabled: true

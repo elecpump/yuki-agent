@@ -45,7 +45,7 @@ class ShortTermMemory:
 
 
 class MemoryManager:
-    """记忆门面：衰减加权检索、清理策略、短期工作记忆。"""
+    """记忆门面：检索（FTS5 BM25 / 向量双路召回 + 向量重排）、清理策略、短期工作记忆。"""
 
     def __init__(
         self,
@@ -60,9 +60,6 @@ class MemoryManager:
         embedding_indexer: MemoryEmbeddingIndexer | None = None,
         vector_enabled: bool = False,
         vector_candidates: int = 30,
-        lexical_weight: float = 0.45,
-        vector_weight: float = 0.45,
-        confidence_weight: float = 0.10,
     ) -> None:
         self._store = store
         self._base = decay_base
@@ -71,9 +68,6 @@ class MemoryManager:
         self._embedding_indexer = embedding_indexer
         self._vector_enabled = vector_enabled
         self._vector_candidates = vector_candidates
-        self._lexical_weight = lexical_weight
-        self._vector_weight = vector_weight
-        self._confidence_weight = confidence_weight
         self._short_term = short_term or ShortTermMemory(
             ttl_s=short_term_ttl_s, capacity=short_term_capacity,
         )
@@ -130,6 +124,9 @@ class MemoryManager:
         min_sensitivity: int = 0,
         touch: bool = True,
     ) -> list[dict]:
+        text = (text or "").strip()
+        if not text:
+            return []
         if not self._vector_enabled or self._embedding_indexer is None:
             return self._query_lexical(
                 text,
@@ -189,36 +186,41 @@ class MemoryManager:
         min_sensitivity: int,
         touch: bool,
     ) -> list[dict]:
+        """BM25（FTS5）与向量双路召回，合并后统一按向量相似度 × 衰减重排，取 top_k。
+
+        BM25 只负责召回候选、不参与打分；BM25 候选若有当前 embedding，也计算向量分。
+        没有当前 embedding 的候选 vector_score=0，排在所有向量命中之后。
+        """
         now = time.time()
         candidate_k = max(int(self._vector_candidates), int(top_k) * 3)
         lexical_hits = self._store.query(
             text, memory_type=memory_type, top_k=candidate_k, min_sensitivity=min_sensitivity,
         )
         vector_hits = self._embedding_indexer.search(
-            text, memory_type=memory_type, top_k=candidate_k, min_sensitivity=min_sensitivity,
+            text,
+            memory_type=memory_type,
+            top_k=candidate_k,
+            min_sensitivity=min_sensitivity,
+            include_ids=(mem["id"] for mem in lexical_hits),
         )
         by_id: dict[int, dict] = {}
-        lexical_scores: dict[int, float] = {}
         vector_scores: dict[int, float] = {}
         for mem in lexical_hits:
             by_id[mem["id"]] = mem
-            lexical_scores[mem["id"]] = 1.0
         for mem, score in vector_hits:
             by_id.setdefault(mem["id"], mem)
             vector_scores[mem["id"]] = max(0.0, min(float(score), 1.0))
 
         scored: list[dict] = []
         for memory_id, mem in by_id.items():
-            rank = (
-                self._lexical_weight * lexical_scores.get(memory_id, 0.0)
-                + self._vector_weight * vector_scores.get(memory_id, 0.0)
-                + self._confidence_weight * float(mem.get("confidence", 0.0))
-            )
-            mem["score"] = rank * self.decay_weight(mem, now)
-            mem["lexical_score"] = lexical_scores.get(memory_id, 0.0)
-            mem["vector_score"] = vector_scores.get(memory_id, 0.0)
+            vector_score = vector_scores.get(memory_id, 0.0)
+            mem["vector_score"] = vector_score
+            mem["score"] = vector_score * self.decay_weight(mem, now)
             scored.append(mem)
-        scored.sort(key=lambda m: m["score"], reverse=True)
+        scored.sort(
+            key=lambda m: (m["score"], m["id"] in vector_scores),
+            reverse=True,
+        )
         returned = scored[:top_k]
         if touch:
             for mem in returned:
