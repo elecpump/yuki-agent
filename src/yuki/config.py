@@ -283,11 +283,16 @@ class GatewayConfig(BaseModel):
     history_dir: str = "data/recordings"
 
 
-class ContextConfig(BaseModel):
-    max_turns: int = Field(20, ge=1)
-    max_tokens: int = Field(1500, ge=100)
-    verbatim_turns: int = Field(4, ge=1)
-    snapshot_path: str = "data/context_snapshot.json"
+class ThreadConfig(BaseModel):
+    segment_max_turns: int = Field(20, ge=1)
+    segment_verbatim_max: int = Field(20, ge=1)
+    fallback_turns: int = Field(8, ge=0)
+    episode_idle_s: float = Field(300.0, ge=0.0)
+    maintenance_tick_s: float = Field(30.0, ge=1.0)
+    shutdown_timeout_s: float = Field(3.0, ge=0.0)
+    summary_failures_max: int = Field(3, ge=1)
+    history_summary_max_segments: int = Field(8, ge=1)
+    history_summary_max_tokens: int = Field(600, ge=100)
 
 
 class PersonaConfig(BaseModel):
@@ -327,7 +332,7 @@ class Config(BaseModel):
     perception: PerceptionConfig = Field(default_factory=PerceptionConfig)
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
-    context: ContextConfig = Field(default_factory=ContextConfig)
+    thread: ThreadConfig = Field(default_factory=ThreadConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
 
     @classmethod
@@ -346,6 +351,7 @@ class Config(BaseModel):
             if local.exists():
                 with open(local, "r", encoding="utf-8") as fh:
                     data = _deep_merge(data, yaml.safe_load(fh) or {})
+        data.pop("context", None)
         cls._apply_env("persona_name", "PERSONA_NAME", data)
         legacy_cooldown_path = os.environ.get("YUKI_SOUL_TUNER_STATE_PATH")
         if legacy_cooldown_path and "YUKI_SOUL_COOLDOWN_STATE_PATH" not in os.environ:
@@ -371,7 +377,7 @@ class Config(BaseModel):
             ("perception", PerceptionConfig),
             ("wake_word", WakeWordConfig),
             ("gateway", GatewayConfig),
-            ("context", ContextConfig),
+            ("thread", ThreadConfig),
             ("persona", PersonaConfig),
         ):
             section = data.setdefault(section_name, {})

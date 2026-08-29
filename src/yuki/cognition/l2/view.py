@@ -42,12 +42,14 @@ class CloudViewBuilder:
 
     def enrich(self, snapshot: ContextSnapshot, memory: MemoryManager | None,
                utterance: str) -> ContextSnapshot:
-        summaries = self._fold(snapshot.recent_turns, utterance)
+        summaries = list(snapshot.summaries)
+        summaries.extend(self._fold(snapshot.recent_turns, utterance))
         memories = self._retrieve_memory(memory, utterance)
         return ContextSnapshot(
             situation=snapshot.situation,
             recent_turns=snapshot.recent_turns,
             summaries=tuple(summaries),
+            fallback_turns=snapshot.fallback_turns,
             long_term_memory=tuple(memories),
         )
 
@@ -60,9 +62,14 @@ class CloudViewBuilder:
             top_k=self._memory_top_k,
             min_sensitivity=0,
         )
-        guaranteed = [m for m in safe if m.get("memory_type") == "preference" or m.get("strengthened")]
+        guaranteed = [
+            memory
+            for memory in safe
+            if memory.get("memory_type") == "preference" or memory.get("strengthened")
+        ]
         others = [m for m in safe if m not in guaranteed]
-        return guaranteed[: self._memory_top_k] + others[: max(0, self._memory_top_k - len(guaranteed))]
+        remaining = max(0, self._memory_top_k - len(guaranteed))
+        return guaranteed[: self._memory_top_k] + others[:remaining]
 
     def _fold(self, recent_turns, utterance) -> list[str]:
         fold = list(reversed(recent_turns))[: max(0, len(recent_turns) - self._verbatim_turns)]
@@ -124,14 +131,20 @@ class CloudViewBuilder:
             sit = self._format_situation(snapshot.situation)
             parts.append(f"当前情境：{sit}")
             used += estimate_tokens(sit)
-        for t in snapshot.recent_turns[: self._verbatim_turns]:
-            line = f"[{t['kind']}] {t['content']}"
-            parts.append(line)
-            used += estimate_tokens(line)
         for s in snapshot.summaries:
             line = f"（摘要）{s}"
             if used + estimate_tokens(line) > self._max_tokens:
                 break
+            parts.append(line)
+            used += estimate_tokens(line)
+        for turn in snapshot.fallback_turns:
+            line = f"（历史原文）[{turn['kind']}] {turn['content']}"
+            if used + estimate_tokens(line) > self._max_tokens:
+                break
+            parts.append(line)
+            used += estimate_tokens(line)
+        for t in snapshot.recent_turns[: self._verbatim_turns]:
+            line = f"[{t['kind']}] {t['content']}"
             parts.append(line)
             used += estimate_tokens(line)
         if snapshot.long_term_memory:

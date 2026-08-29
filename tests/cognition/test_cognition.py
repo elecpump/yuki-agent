@@ -283,8 +283,7 @@ def test_cognition_agent_builds_cooldown_calculator(tmp_path):
 def test_cognition_agent_builds_context_and_projector(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
-        Config(persona={"snapshots_path": str(tmp_path / "persona.json")},
-               context={"snapshot_path": str(tmp_path / "snap.json")}),
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
         bus=bus,
         pipeline=FakePipeline(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
@@ -300,8 +299,7 @@ def test_cognition_agent_builds_context_and_projector(tmp_path):
 def test_cognition_agent_teardown_closes_context(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
-        Config(persona={"snapshots_path": str(tmp_path / "persona.json")},
-               context={"snapshot_path": str(tmp_path / "snap.json")}),
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
         bus=bus,
         pipeline=FakePipeline(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
@@ -315,8 +313,7 @@ def test_cognition_agent_teardown_closes_context(tmp_path):
 def test_cognition_agent_assembles_persona(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
-        Config(persona={"snapshots_path": str(tmp_path / "persona.json")},
-               context={"snapshot_path": str(tmp_path / "ctx.json")}),
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
         bus=bus,
         pipeline=FakePipeline(),
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
@@ -339,7 +336,6 @@ def test_cognition_agent_registers_soul_update_and_refreshes_persona(tmp_path):
                 "path": str(tmp_path / "soul.json"),
                 "snapshots_dir": str(tmp_path / "soul_snapshots"),
             },
-            context={"snapshot_path": str(tmp_path / "ctx.json")},
         ),
         bus=bus,
         pipeline=FakePipeline(),
@@ -384,7 +380,6 @@ def test_cognition_agent_starts_and_stops_soul_reflection_scheduler(
                 "path": str(tmp_path / "soul.json"),
                 "snapshots_dir": str(tmp_path / "soul_snapshots"),
             },
-            context={"snapshot_path": str(tmp_path / "ctx.json")},
         ),
         bus=FakeBus(),
         pipeline=FakePipeline(),
@@ -417,7 +412,6 @@ def test_agent_wires_refine_when_enabled(tmp_path, monkeypatch):
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
                         "enable_llm_refine": True},
-               context={"snapshot_path": str(tmp_path / "ctx.json")},
                cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
         bus=bus,
         pipeline=FakePipeline(),
@@ -503,7 +497,6 @@ def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, mon
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
                         "enable_llm_refine": True},
-               context={"snapshot_path": str(tmp_path / "ctx.json")},
                cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
         bus=FakeBus(),
         pipeline=FakePipeline(),
@@ -534,7 +527,6 @@ def test_persona_refresh_includes_safe_explicit_preference(tmp_path, monkeypatch
     agent = CognitionAgent(
         Config(persona={"snapshots_path": str(tmp_path / "persona.json"),
                         "enable_llm_refine": True},
-               context={"snapshot_path": str(tmp_path / "ctx.json")},
                cloud={"enabled": True, "base_url": "http://x", "model": "m"}),
         bus=FakeBus(),
         pipeline=FakePipeline(),

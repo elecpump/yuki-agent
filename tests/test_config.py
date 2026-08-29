@@ -131,7 +131,8 @@ def test_load_merges_local_override(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     (tmp_path / "config.local.yaml").write_text(
-        "bus:\n  base_port: 9000\nplugins:\n  weather:\n    units: imperial\n  maps:\n    zoom: 3\n",
+        "bus:\n  base_port: 9000\n"
+        "plugins:\n  weather:\n    units: imperial\n  maps:\n    zoom: 3\n",
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
@@ -454,20 +455,20 @@ def test_gateway_env_override(monkeypatch):
     assert config.gateway.history_dir == "tmp/history"
 
 
-def test_context_defaults():
+def test_thread_defaults_include_fallback_and_shutdown_limits():
     config = Config()
-    assert config.context.max_turns == 20
-    assert config.context.max_tokens == 1500
-    assert config.context.verbatim_turns == 4
-    assert config.context.snapshot_path == "data/context_snapshot.json"
+
+    assert config.thread.fallback_turns == 8
+    assert config.thread.shutdown_timeout_s == 3.0
 
 
-def test_context_env_override(monkeypatch):
-    monkeypatch.setenv("YUKI_CONTEXT_MAX_TURNS", "30")
-    monkeypatch.setenv("YUKI_CONTEXT_SNAPSHOT_PATH", "tmp/snap.json")
-    config = Config.load(None)
-    assert config.context.max_turns == 30
-    assert config.context.snapshot_path == "tmp/snap.json"
+def test_load_ignores_removed_context_snapshot_section(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("context:\n  snapshot_path: old.json\n", encoding="utf-8")
+
+    config = Config.load(path)
+
+    assert not hasattr(config, "context")
 
 
 def test_persona_defaults():

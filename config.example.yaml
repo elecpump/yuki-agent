@@ -158,11 +158,16 @@ gateway:
   cleanup_interval_s: 30.0
   chat_task_timeout_s: 60.0
   history_dir: data/recordings
-context:
-  max_turns: 20
-  max_tokens: 1500
-  verbatim_turns: 4
-  snapshot_path: data/context_snapshot.json
+thread:
+  segment_max_turns: 20
+  segment_verbatim_max: 20
+  fallback_turns: 8
+  episode_idle_s: 300
+  maintenance_tick_s: 30
+  shutdown_timeout_s: 3.0
+  summary_failures_max: 3
+  history_summary_max_segments: 8
+  history_summary_max_tokens: 600
 persona:
   prompt: "你是{persona},一个温柔的中文语音陪伴 agent。回复简短自然(1-3 句),贴合陪伴场景。不替用户操作系统或浏览器。用户提到自伤/自杀等危机时,优先表达关怀并建议求助。可以用工具查询记忆,但不要捏造记忆内容。"
   max_versions: 50

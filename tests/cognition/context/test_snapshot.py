@@ -1,7 +1,7 @@
 import pytest
 
 from yuki.cognition.context.snapshot import ContextProjector, ContextSnapshot
-from yuki.cognition.context.store import ShortTermTurnStore
+from yuki.cognition.context.store import ShortTermTurnStore, ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
@@ -9,7 +9,7 @@ from yuki.memory.store import MemoryStore
 
 def make_ctx(tmp_path):
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    return WorkingContext(ShortTermTurnStore(manager), snapshot_path=None)
+    return WorkingContext(ShortTermTurnStore(manager))
 
 
 def test_project_fills_situation_and_recent_turns(tmp_path):
@@ -45,3 +45,20 @@ def test_snapshot_is_frozen():
     snap = ContextSnapshot(recent_turns=({"content": "x", "kind": "user", "ts": 0.0},))
     with pytest.raises(Exception):
         snap.recent_turns = ()
+
+
+def test_project_separates_active_segment_from_pending_summary_fallback(tmp_path):
+    store = ThreadTurnStore(tmp_path / "thread.db", segment_max_turns=2)
+    context = WorkingContext(store)
+    first_user_id = store.add_user("上一问", at=100.0)
+    store.add_agent("上一答", at=101.0, reply_to_turn_id=first_user_id)
+    current_user_id = store.add_user("当前问题", at=102.0)
+
+    snapshot = ContextProjector(fallback_turns=8).build(
+        context,
+        exclude_turn_id=current_user_id,
+    )
+
+    assert snapshot.recent_turns == ()
+    assert [turn["content"] for turn in snapshot.fallback_turns] == ["上一答", "上一问"]
+    context.close()

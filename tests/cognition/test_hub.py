@@ -1,6 +1,9 @@
 import math
+import sqlite3
 import threading
 import time
+
+import pytest
 
 from yuki.cognition.brain.hub import (
     COGNITION_AWAKE_SERVICE,
@@ -11,7 +14,7 @@ from yuki.cognition.brain.hub import (
 )
 from yuki.cognition.brain.local.router import GateRoute, RouterDecision
 from yuki.cognition.context.snapshot import ContextProjector, ContextSnapshot
-from yuki.cognition.context.store import ShortTermTurnStore
+from yuki.cognition.context.store import ShortTermTurnStore, ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.client import CloudError
 from yuki.config import Config
@@ -418,6 +421,134 @@ def test_hub_writes_context_without_double_write(tmp_path):
     memory.close()
 
 
+def test_hub_persists_user_before_generation_and_links_reply(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    turn_store = ThreadTurnStore(tmp_path / "thread.db")
+    context = WorkingContext(turn_store)
+
+    class InspectingBridge:
+        def generate(self, utterance, snapshot=None, memory=None):
+            turns = turn_store.items()
+            assert [(turn["role"], turn["response_state"]) for turn in turns] == [
+                ("user", "pending")
+            ]
+            assert snapshot.recent_turns == ()
+            return "已经记下了"
+
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        bridge=InspectingBridge(),
+        context=context,
+        projector=ContextProjector(),
+        local_enabled=False,
+    )
+
+    hub.handle_chat_request({"text": "别忘了这句话"})
+
+    turns = turn_store.items()
+    assert [(turn["role"], turn["content"]) for turn in turns] == [
+        ("agent", "已经记下了"),
+        ("user", "别忘了这句话"),
+    ]
+    assert turns[0]["reply_to_turn_id"] == turns[1]["id"]
+    assert turns[1]["response_state"] == "completed"
+    turn_store.close()
+    memory.close()
+
+
+def test_hub_marks_user_turn_interrupted_when_no_reply_is_committed(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    turn_store = ThreadTurnStore(tmp_path / "thread.db")
+    context = WorkingContext(turn_store)
+    loop = FakeLoop(
+        result={"text": "", "steps": 1, "interrupted": True, "failed": False},
+    )
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        loop=loop,
+        context=context,
+        projector=ContextProjector(),
+        local_enabled=False,
+    )
+
+    result = hub.handle_chat_request({"text": "先停一下"})
+
+    assert result["spoke"] is False
+    assert turn_store.items()[0]["response_state"] == "interrupted"
+    turn_store.close()
+    memory.close()
+
+
+def test_hub_marks_failed_and_does_not_publish_when_reply_persistence_fails(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    thread_path = tmp_path / "thread.db"
+    turn_store = ThreadTurnStore(thread_path)
+    context = WorkingContext(turn_store)
+    with sqlite3.connect(thread_path) as connection:
+        connection.execute(
+            """
+            CREATE TRIGGER reject_agent_turn
+            BEFORE INSERT ON thread_turns
+            WHEN NEW.role = 'agent'
+            BEGIN
+                SELECT RAISE(ABORT, 'agent persistence failed');
+            END
+            """
+        )
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        bridge=FakeBridge(reply="不会成功提交"),
+        context=context,
+        projector=ContextProjector(),
+        local_enabled=False,
+    )
+
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="agent persistence failed"):
+            hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "请回答"})
+
+        assert _reply_text(bus) is None
+        assert turn_store.items()[0]["response_state"] == "failed"
+    finally:
+        turn_store.close()
+        memory.close()
+
+
+def test_hub_marks_user_turn_failed_when_generation_raises(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    turn_store = ThreadTurnStore(tmp_path / "thread.db")
+    context = WorkingContext(turn_store)
+
+    class ExplodingRouter:
+        def route(self, text, *, snapshot=None, situation=None):
+            raise RuntimeError("generation exploded")
+
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        local_router=ExplodingRouter(),
+        context=context,
+        projector=ContextProjector(),
+        local_enabled=True,
+    )
+
+    try:
+        with pytest.raises(RuntimeError, match="generation exploded"):
+            hub.handle_chat_request({"text": "触发异常"})
+
+        assert turn_store.items()[0]["response_state"] == "failed"
+    finally:
+        turn_store.close()
+        memory.close()
+
+
 def test_select_situation_prefers_deep_for_same_source(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
@@ -437,7 +568,7 @@ def test_select_situation_prefers_deep_for_same_source(tmp_path):
 def test_single_turn_writer_no_double_write(tmp_path):
     bus = FakeBus()
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    working = WorkingContext(ShortTermTurnStore(manager), snapshot_path=None)
+    working = WorkingContext(ShortTermTurnStore(manager))
     hub = DecisionHub(bus, memory=manager, context=working, local_enabled=False)
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert working.turn_count() == 2

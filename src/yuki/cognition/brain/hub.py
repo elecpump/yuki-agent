@@ -23,6 +23,7 @@ from yuki.topics import Topics
 
 if TYPE_CHECKING:
     from yuki.cognition.brain.soul import SoulStore
+    from yuki.cognition.context.store import ResponseState
     from yuki.cognition.l2.proactive import ProactiveAgent
 
 logger = get_logger("yuki.cognition.brain.hub")
@@ -198,9 +199,19 @@ class DecisionHub:
         *,
         publish_reply: bool,
     ) -> dict:
+        user_turn_id = None
+        if self._context_wrapper is not None and trigger == TriggerKind.UTTERANCE:
+            user_turn_id = self._context_wrapper.add_user(text)
+
         snapshot = None
         if self._context_wrapper is not None and self._projector is not None:
-            snapshot = self._projector.build(self._context_wrapper)
+            if user_turn_id is None:
+                snapshot = self._projector.build(self._context_wrapper)
+            else:
+                snapshot = self._projector.build(
+                    self._context_wrapper,
+                    exclude_turn_id=user_turn_id,
+                )
         effective_situation = situation
         if effective_situation is None:
             effective_situation = (
@@ -210,12 +221,16 @@ class DecisionHub:
             snapshot = ContextSnapshot(situation=effective_situation)
 
         if trigger == TriggerKind.UTTERANCE:
-            result = self._handle_utterance(
-                text,
-                snapshot,
-                effective_situation,
-                publish_reply=publish_reply,
-            )
+            try:
+                result = self._handle_utterance(
+                    text,
+                    snapshot,
+                    effective_situation,
+                    publish_reply=publish_reply,
+                )
+            except Exception:
+                self._mark_response(user_turn_id, "failed")
+                raise
         else:
             result = self._result("", False, reason="silent", route="silent")
 
@@ -227,18 +242,28 @@ class DecisionHub:
         reply_id = result.get("reply_id")
         if spoke and reply_id is None:
             reply_id = uuid.uuid4().hex
-        if spoke:
-            if publish_reply:
-                self._bus.publish(
-                    Topics.REPLY,
-                    final_reply_payload(rendered, reply_ts, emotion_value, reply_id),
-                )
 
         if self._context_wrapper is not None:
-            if trigger == TriggerKind.UTTERANCE:
-                self._context_wrapper.add_user(text)
             if spoke:
-                self._context_wrapper.add_agent(rendered)
+                try:
+                    if user_turn_id is None:
+                        self._context_wrapper.add_agent(rendered)
+                    else:
+                        self._context_wrapper.add_agent(
+                            rendered,
+                            reply_to_turn_id=user_turn_id,
+                        )
+                except Exception:
+                    self._mark_response(user_turn_id, "failed")
+                    raise
+            elif trigger == TriggerKind.UTTERANCE and result["reason"] == "interrupted":
+                self._mark_response(user_turn_id, "interrupted")
+
+        if spoke and publish_reply:
+            self._bus.publish(
+                Topics.REPLY,
+                final_reply_payload(rendered, reply_ts, emotion_value, reply_id),
+            )
 
         if trigger == TriggerKind.UTTERANCE:
             self._utterance_count += 1
@@ -267,6 +292,13 @@ class DecisionHub:
             "spoke": spoke,
             "reason": result["reason"],
         }
+
+    def _mark_response(self, user_turn_id: int | None, state: ResponseState) -> None:
+        if user_turn_id is None or self._context_wrapper is None:
+            return
+        marker = getattr(self._context_wrapper, "mark_response", None)
+        if marker is not None:
+            marker(user_turn_id, state)
 
     def _run_periodic(self) -> None:
         with self._periodic_lock:

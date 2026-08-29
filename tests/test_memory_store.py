@@ -1,3 +1,5 @@
+import sqlite3
+
 import pytest
 
 from yuki.memory.embedding import encode_vector
@@ -96,6 +98,76 @@ def test_embeddings_are_keyed_by_provider_model_and_dimension(store):
     assert len(v1_rows) == 1
     assert len(v2_rows) == 1
     assert "embedding" not in v1_rows[0][0]
+
+
+def test_normal_retrieval_excludes_superseded_memory_and_vectors(store):
+    active_id = store.create("preference", "active preference")
+    superseded_id = store.create("preference", "superseded preference")
+    for memory_id in (active_id, superseded_id):
+        store.upsert_embedding(
+            memory_id,
+            provider="hashing",
+            model="hashing-v1",
+            dimension=2,
+            embedding=encode_vector([1.0, 0.0]),
+            content_hash=str(memory_id),
+        )
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "UPDATE memories SET state = 'superseded' WHERE id = ?",
+            (superseded_id,),
+        )
+
+    assert [memory["id"] for memory in store.list()] == [active_id]
+    assert store.search("superseded") == []
+    vector_ids = {
+        memory["id"]
+        for memory, _ in store.vector_rows(
+            provider="hashing",
+            model="hashing-v1",
+            dimension=2,
+        )
+    }
+    assert vector_ids == {active_id}
+
+
+def test_opening_legacy_database_adds_memory_lifecycle_columns(tmp_path):
+    path = tmp_path / "legacy.db"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE memories (
+                id INTEGER PRIMARY KEY,
+                memory_type TEXT NOT NULL,
+                content TEXT NOT NULL,
+                confidence REAL NOT NULL DEFAULT 0.5,
+                sensitivity INTEGER NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'cli',
+                metadata TEXT NOT NULL DEFAULT '{}',
+                created_at REAL NOT NULL,
+                last_access REAL NOT NULL,
+                access_count INTEGER NOT NULL DEFAULT 0,
+                strengthened INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO memories (
+                memory_type, content, created_at, last_access
+            ) VALUES ('preference', 'legacy memory', 123.0, 123.0)
+            """
+        )
+
+    store = MemoryStore(path)
+    try:
+        memory = store.get(1)
+        assert memory["state"] == "active"
+        assert memory["revision"] == 1
+        assert memory["updated_at"] == 123.0
+        assert memory["supersedes_id"] is None
+    finally:
+        store.close()
 
 
 def test_delete_decayed_removes_only_eligible_old_memories(store):

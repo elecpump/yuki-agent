@@ -1,46 +1,49 @@
-import json
 import threading
 import time
-from pathlib import Path
 
-from yuki.cognition.context.store import TurnStore
-from yuki.logger import get_logger
-from yuki.persistence import atomic_write_json
-
-logger = get_logger("yuki.cognition.context.working")
+from yuki.cognition.context.store import ResponseState, TurnStore
 
 
 class WorkingContext:
-    """写入侧：追加会话轮次/情境 + 尽力持久化。
+    """写入侧：追加持久化会话轮次并维护当前情境。
 
     决策用 ContextProjector 投影只读快照，不直接读本对象。
     """
 
-    def __init__(self, store: TurnStore, *, snapshot_path: str | Path | None = None,
-                 snapshot_interval: int = 5, ttl_s: float = 1800.0) -> None:
+    def __init__(self, store: TurnStore) -> None:
         self._store = store
-        self._snapshot_path = Path(snapshot_path) if snapshot_path else None
-        self._snapshot_interval = snapshot_interval
-        self._ttl_s = ttl_s
         self._situation: dict | None = None
-        self._add_count = 0
+        self._closed = False
         self._lock = threading.RLock()
 
-    def add_user(self, text: str) -> None:
-        self._add("user", text)
+    def add_user(self, text: str) -> int | None:
+        return self._add("user", text)
 
-    def add_agent(self, text: str) -> None:
-        self._add("agent", text)
+    def add_agent(self, text: str, *, reply_to_turn_id: int | None = None) -> int | None:
+        return self._add("agent", text, reply_to_turn_id=reply_to_turn_id)
 
-    def _add(self, kind: str, text: str) -> None:
+    def _add(
+        self,
+        kind: str,
+        text: str,
+        *,
+        reply_to_turn_id: int | None = None,
+    ) -> int | None:
         with self._lock:
-            self._store.add(text, kind, time.time())
-            self._add_count += 1
-            if (
-                self._snapshot_path is not None
-                and self._add_count % self._snapshot_interval == 0
-            ):
-                self.snapshot()
+            now = time.time()
+            if kind == "user":
+                turn_id = self._store.add_user(text, at=now)
+            else:
+                turn_id = self._store.add_agent(
+                    text,
+                    at=now,
+                    reply_to_turn_id=reply_to_turn_id,
+                )
+            return turn_id
+
+    def mark_response(self, user_turn_id: int, state: ResponseState) -> None:
+        with self._lock:
+            self._store.mark_response(user_turn_id, state)
 
     def update_situation(self, payload: dict) -> None:
         with self._lock:
@@ -58,44 +61,13 @@ class WorkingContext:
         with self._lock:
             return self._store.items()
 
-    def snapshot(self) -> None:
+    def projection_items(self) -> tuple[list[dict], list[dict]]:
         with self._lock:
-            if self._snapshot_path is None:
-                return
-            try:
-                payload = {
-                    "turns": [
-                        {"content": turn["content"], "kind": turn["kind"], "ts": turn["ts"]}
-                        for turn in reversed(self._store.items())
-                    ],
-                    "situation": self._situation,
-                    "saved_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                }
-                atomic_write_json(self._snapshot_path, payload)
-            except OSError as exc:
-                logger.warning("context snapshot failed", error=str(exc))
-
-    def restore(self) -> None:
-        with self._lock:
-            if self._snapshot_path is None or not self._snapshot_path.exists():
-                return
-            try:
-                data = json.loads(self._snapshot_path.read_text(encoding="utf-8"))
-            except (OSError, ValueError) as exc:
-                logger.warning("context restore failed", error=str(exc))
-                return
-            now = time.time()
-            for turn in data.get("turns") or []:
-                if not isinstance(turn, dict):
-                    continue
-                ts = turn.get("ts", now)
-                if isinstance(ts, (int, float)) and now - ts <= self._ttl_s:
-                    self._store.add(turn.get("content", ""), turn.get("kind", "turn"), ts)
-            situation = data.get("situation")
-            if isinstance(situation, dict):
-                self._situation = situation
+            return self._store.projection_items()
 
     def close(self) -> None:
         with self._lock:
-            if self._store.items() or self._situation is not None:
-                self.snapshot()
+            if self._closed:
+                return
+            self._store.close()
+            self._closed = True

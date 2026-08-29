@@ -26,7 +26,7 @@ from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.soul_reflector import SoulReflector
 from yuki.cognition.brain.soul_scheduler import SoulReflectionScheduler
 from yuki.cognition.context.snapshot import ContextProjector
-from yuki.cognition.context.store import ShortTermTurnStore
+from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
@@ -198,12 +198,18 @@ class CognitionAssembler:
             if cloud_client is not None
             else None
         )
+        thread_db_path = memory.db_path or Path(self.config.memory.db_path)
         context = WorkingContext(
-            ShortTermTurnStore(memory),
-            snapshot_path=self.config.context.snapshot_path or None,
+            ThreadTurnStore(
+                thread_db_path,
+                segment_max_turns=self.config.thread.segment_max_turns,
+                episode_idle_s=self.config.thread.episode_idle_s,
+            )
         )
-        context.restore()
-        projector = ContextProjector(max_turns=self.config.context.max_turns)
+        projector = ContextProjector(
+            max_turns=self.config.thread.segment_verbatim_max,
+            fallback_turns=self.config.thread.fallback_turns,
+        )
         local_router, local_composer = self._build_local_brain()
         persona_refresh = self._build_persona_refresh(
             memory,

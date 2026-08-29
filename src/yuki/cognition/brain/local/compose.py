@@ -44,6 +44,15 @@ class LocalViewBuilder:
             bits.extend(situation.get("key_points") or [])
             add("当前情境：", " ".join(str(bit) for bit in bits if bit)[:1000])
 
+        for summary in snapshot.summaries:
+            add("（摘要）", str(summary))
+
+        for turn in snapshot.fallback_turns:
+            add(
+                f"（历史原文）[{turn.get('kind', 'turn')}] ",
+                str(turn.get("content", ""))[:1200],
+            )
+
         for turn in list(snapshot.recent_turns or ())[: self._verbatim_turns]:
             content = str(turn.get("content", ""))
             if self._contains_crisis(content):
@@ -81,7 +90,10 @@ class LocalViewBuilder:
         seen = {item.get("id") for item in queried}
         guaranteed = [
             item
-            for item in access.list(purpose=MemoryPurpose.LOCAL_MODEL_CONTEXT, memory_type="preference")
+            for item in access.list(
+                purpose=MemoryPurpose.LOCAL_MODEL_CONTEXT,
+                memory_type="preference",
+            )
             if item.get("id") not in seen
         ][: max(0, self._memory_top_k - len(queried))]
         return queried + guaranteed

@@ -25,6 +25,15 @@ def manager(tmp_path):
     m.close()
 
 
+def test_memory_manager_exposes_its_database_path(tmp_path):
+    path = tmp_path / "mem.db"
+    memory = MemoryManager(MemoryStore(path))
+    try:
+        assert memory.db_path == path
+    finally:
+        memory.close()
+
+
 def test_write_returns_id_and_query_ranks_freshness(manager):
     old_id = manager.write("preference", "旧记忆", source="cli")
     manager._store.touch(old_id, at=1000000.0)  # 10 天前

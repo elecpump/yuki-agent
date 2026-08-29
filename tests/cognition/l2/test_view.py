@@ -16,6 +16,23 @@ def make_snapshot(*, turns=(), situation=None):
     return ContextSnapshot(situation=situation, recent_turns=tuple(turns))
 
 
+def test_enrich_preserves_persistent_fallback_turns():
+    fallback = (turn("持久化历史"),)
+    snapshot = ContextSnapshot(fallback_turns=fallback)
+
+    enriched = CloudViewBuilder().enrich(snapshot, None, "当前问题")
+
+    assert enriched.fallback_turns == fallback
+
+
+def test_enrich_does_not_overwrite_persistent_segment_summaries():
+    snapshot = ContextSnapshot(summaries=("持久化摘要",))
+
+    enriched = CloudViewBuilder().enrich(snapshot, None, "当前问题")
+
+    assert enriched.summaries == ("持久化摘要",)
+
+
 def turn(text, kind="user"):
     return {"content": text, "kind": kind, "ts": 0.0}
 
@@ -112,3 +129,11 @@ def test_format_empty_snapshot():
     builder = CloudViewBuilder()
     text = builder.format(make_snapshot(), "")
     assert "用户说：" in text
+
+
+def test_format_includes_pending_summary_fallback_turns():
+    snapshot = ContextSnapshot(fallback_turns=(turn("上一段原文"),))
+
+    text = CloudViewBuilder().format(snapshot, "当前问题")
+
+    assert "上一段原文" in text

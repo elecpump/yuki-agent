@@ -10,19 +10,39 @@ class ContextSnapshot:
     situation: dict | None = None
     recent_turns: tuple = ()
     summaries: tuple = ()
+    fallback_turns: tuple = ()
     long_term_memory: tuple = ()
 
 
 class ContextProjector:
     """把写入侧投影为只读快照（裁剪/排序/去重）。"""
 
-    def __init__(self, max_turns: int = 20) -> None:
+    def __init__(self, max_turns: int = 20, *, fallback_turns: int = 8) -> None:
         self._max_turns = max_turns
+        self._fallback_turns = fallback_turns
 
-    def build(self, working: WorkingContext) -> ContextSnapshot:
+    def build(
+        self,
+        working: WorkingContext,
+        *,
+        exclude_turn_id: int | None = None,
+    ) -> ContextSnapshot:
+        recent_items, fallback_items = working.projection_items()
+        turns = self._turns(recent_items, exclude_turn_id, self._max_turns)
+        fallback = self._turns(fallback_items, exclude_turn_id, self._fallback_turns)
+        return ContextSnapshot(
+            situation=working.situation(),
+            recent_turns=tuple(turns),
+            fallback_turns=tuple(fallback),
+        )
+
+    @staticmethod
+    def _turns(items: list[dict], exclude_turn_id: int | None, limit: int) -> list[dict]:
         seen = None
         turns = []
-        for item in working.items():  # 新→旧
+        for item in items:  # 新→旧
+            if exclude_turn_id is not None and item.get("id") == exclude_turn_id:
+                continue
             content = item.get("content", "")
             if content and content != seen:
                 turns.append({
@@ -31,6 +51,6 @@ class ContextProjector:
                     "ts": item.get("ts", 0.0),
                 })
             seen = content
-            if len(turns) >= self._max_turns:
+            if len(turns) >= limit:
                 break
-        return ContextSnapshot(situation=working.situation(), recent_turns=tuple(turns))
+        return turns

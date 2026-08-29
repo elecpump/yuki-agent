@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 import time
 from collections import deque
+from pathlib import Path
 
 from yuki.logger import get_logger
 from yuki.memory.embedding import MemoryEmbeddingIndexer
@@ -27,7 +28,9 @@ class ShortTermMemory:
         self._items: deque[dict] = deque()
 
     def add(self, content: str, *, kind: str = "event", at: float | None = None) -> None:
-        self._items.append({"content": content, "kind": kind, "ts": time.time() if at is None else at})
+        self._items.append(
+            {"content": content, "kind": kind, "ts": time.time() if at is None else at}
+        )
         while len(self._items) > self._cap:
             self._items.popleft()
 
@@ -71,6 +74,10 @@ class MemoryManager:
         self._short_term = short_term or ShortTermMemory(
             ttl_s=short_term_ttl_s, capacity=short_term_capacity,
         )
+
+    @property
+    def db_path(self) -> Path | None:
+        return self._store.db_path
 
     def write(
         self,

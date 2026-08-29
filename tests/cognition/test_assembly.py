@@ -1,5 +1,6 @@
 from yuki.cognition.assembly import CognitionAssembler
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
+from yuki.cognition.context.store import ThreadTurnStore
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
 from yuki.memory.manager import MemoryManager
@@ -76,6 +77,31 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
     finally:
         runtime.context.close()
         memory.close()
+
+
+def test_cognition_assembler_uses_persistent_thread_store(tmp_path):
+    bus = FakeBus()
+    pipeline = FakePipeline()
+    db_path = tmp_path / "mem.db"
+    config = Config(
+        memory={"db_path": str(db_path)},
+        thread={"segment_max_turns": 3, "episode_idle_s": 10},
+        persona={"snapshots_path": str(tmp_path / "persona.json")},
+    )
+    runtime = CognitionAssembler(config, bus, pipeline=pipeline).assemble()
+
+    try:
+        assert isinstance(runtime.context._store, ThreadTurnStore)
+        runtime.handle_chat_request({"text": "需要持久化"})
+    finally:
+        runtime.context.close()
+        runtime.memory.close()
+
+    reopened = ThreadTurnStore(db_path)
+    try:
+        assert any(turn["content"] == "需要持久化" for turn in reopened.items())
+    finally:
+        reopened.close()
 
 
 def test_cognition_assembler_wires_vector_memory_from_config(tmp_path):

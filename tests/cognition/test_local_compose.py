@@ -49,6 +49,16 @@ def test_local_view_builder_drops_crisis_history_turn():
     assert "普通回复" in view
 
 
+def test_local_view_builder_includes_pending_summary_fallback_turns():
+    snapshot = ContextSnapshot(
+        fallback_turns=({"kind": "agent", "content": "上一段原文", "ts": 0.0},),
+    )
+
+    view = LocalViewBuilder(max_tokens=1000).build(snapshot, None, "当前问题")
+
+    assert "上一段原文" in view
+
+
 def test_local_view_builder_respects_budget():
     view = LocalViewBuilder(max_tokens=20).build(
         ContextSnapshot(recent_turns=tuple(

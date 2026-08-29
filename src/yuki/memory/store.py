@@ -18,6 +18,9 @@ MEMORY_TYPES = ("preference", "personal", "scenario", "reflection")
 class StorageBackend(Protocol):
     """Minimal storage port for persisted memory lookup and maintenance."""
 
+    @property
+    def db_path(self) -> Path | None: ...
+
     def persist(self) -> None: ...
 
     def query(
@@ -41,7 +44,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         """
         CREATE TABLE IF NOT EXISTS memories (
             id            INTEGER PRIMARY KEY,
-            memory_type   TEXT NOT NULL CHECK (memory_type IN ('preference','personal','scenario','reflection')),
+            memory_type   TEXT NOT NULL
+                          CHECK (memory_type IN ('preference','personal','scenario','reflection')),
             content       TEXT NOT NULL,
             confidence    REAL NOT NULL DEFAULT 0.5,
             sensitivity   INTEGER NOT NULL DEFAULT 0 CHECK (sensitivity IN (0,1,2)),
@@ -50,10 +54,31 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             created_at    REAL NOT NULL,
             last_access   REAL NOT NULL,
             access_count  INTEGER NOT NULL DEFAULT 0,
-            strengthened  INTEGER NOT NULL DEFAULT 0
+            strengthened  INTEGER NOT NULL DEFAULT 0,
+            state         TEXT NOT NULL DEFAULT 'active'
+                          CHECK (state IN ('active','superseded','tombstoned')),
+            revision      INTEGER NOT NULL DEFAULT 1,
+            updated_at    REAL NOT NULL DEFAULT 0,
+            supersedes_id INTEGER REFERENCES memories(id)
         )
         """
     )
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(memories)")}
+    migrations = {
+        "state": (
+            "ALTER TABLE memories ADD COLUMN state TEXT NOT NULL DEFAULT 'active' "
+            "CHECK (state IN ('active','superseded','tombstoned'))"
+        ),
+        "revision": "ALTER TABLE memories ADD COLUMN revision INTEGER NOT NULL DEFAULT 1",
+        "updated_at": "ALTER TABLE memories ADD COLUMN updated_at REAL NOT NULL DEFAULT 0",
+        "supersedes_id": (
+            "ALTER TABLE memories ADD COLUMN supersedes_id INTEGER REFERENCES memories(id)"
+        ),
+    }
+    for column, statement in migrations.items():
+        if column not in columns:
+            conn.execute(statement)
+    conn.execute("UPDATE memories SET updated_at = created_at WHERE updated_at = 0")
     conn.execute(
         "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
         "content, content='memories', content_rowid='id', tokenize='trigram')"
@@ -82,10 +107,12 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
         END;
         CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            INSERT INTO memories_fts(memories_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
         END;
         CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-            INSERT INTO memories_fts(memories_fts, rowid, content) VALUES ('delete', old.id, old.content);
+            INSERT INTO memories_fts(memories_fts, rowid, content)
+            VALUES ('delete', old.id, old.content);
             INSERT INTO memories_fts(rowid, content) VALUES (new.id, new.content);
         END;
         """
@@ -117,6 +144,10 @@ class MemoryStore(StorageBackend):
         self._lock = threading.Lock()
         _ensure_schema(self._conn)
         self._conn.commit()
+
+    @property
+    def db_path(self) -> Path:
+        return self._path
 
     def close(self) -> None:
         with self._lock:
@@ -159,9 +190,23 @@ class MemoryStore(StorageBackend):
         meta = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
             cur = self._conn.execute(
-                "INSERT INTO memories (memory_type, content, confidence, sensitivity, source, metadata, created_at, last_access) "
-                "VALUES (?,?,?,?,?,?,?,?)",
-                (memory_type, content, float(confidence), int(sensitivity), source, meta, now, now),
+                """
+                INSERT INTO memories (
+                    memory_type, content, confidence, sensitivity, source, metadata,
+                    created_at, last_access, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    memory_type,
+                    content,
+                    float(confidence),
+                    int(sensitivity),
+                    source,
+                    meta,
+                    now,
+                    now,
+                    now,
+                ),
             )
             self._conn.commit()
             memory_id = int(cur.lastrowid)
@@ -170,7 +215,10 @@ class MemoryStore(StorageBackend):
 
     def get(self, memory_id: int) -> dict | None:
         with self._lock:
-            row = self._conn.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+            row = self._conn.execute(
+                "SELECT * FROM memories WHERE id = ? AND state = 'active'",
+                (memory_id,),
+            ).fetchone()
         return self._row(row) if row else None
 
     def delete(self, memory_id: int) -> bool:
@@ -180,7 +228,10 @@ class MemoryStore(StorageBackend):
         return cur.rowcount > 0
 
     def delete_decayed(self, *, last_access_before: float | None = None) -> int:
-        sql = "DELETE FROM memories WHERE memory_type != 'personal' AND strengthened = 0"
+        sql = (
+            "DELETE FROM memories WHERE state = 'active' "
+            "AND memory_type != 'personal' AND strengthened = 0"
+        )
         params: list = []
         if last_access_before is not None:
             sql += " AND last_access < ?"
@@ -191,7 +242,7 @@ class MemoryStore(StorageBackend):
         return cur.rowcount
 
     def list(self, *, memory_type: str | None = None, min_sensitivity: int = 0) -> list[dict]:
-        sql = "SELECT * FROM memories WHERE sensitivity >= ?"
+        sql = "SELECT * FROM memories WHERE state = 'active' AND sensitivity >= ?"
         params: list = [int(min_sensitivity)]
         if memory_type is not None:
             sql += " AND memory_type = ?"
@@ -203,7 +254,9 @@ class MemoryStore(StorageBackend):
 
     def all(self) -> list[dict]:
         with self._lock:
-            rows = self._conn.execute("SELECT * FROM memories").fetchall()
+            rows = self._conn.execute(
+                "SELECT * FROM memories WHERE state = 'active'"
+            ).fetchall()
         return [self._row(r) for r in rows]
 
     def touch(self, memory_id: int, at: float | None = None) -> None:
@@ -291,7 +344,8 @@ class MemoryStore(StorageBackend):
         sql = (
             "SELECT m.*, e.embedding FROM memory_embeddings e "
             "JOIN memories m ON m.id = e.memory_id "
-            "WHERE e.provider = ? AND e.model = ? AND e.dimension = ? AND m.sensitivity >= ?"
+            "WHERE e.provider = ? AND e.model = ? AND e.dimension = ? "
+            "AND m.state = 'active' AND m.sensitivity >= ?"
         )
         params: list = [provider, model, int(dimension), int(min_sensitivity)]
         if memory_type is not None:
@@ -319,7 +373,8 @@ class MemoryStore(StorageBackend):
             "SELECT count(*) AS embedding_count, max(e.updated_at) AS last_updated "
             "FROM memory_embeddings e "
             "JOIN memories m ON m.id = e.memory_id "
-            "WHERE e.provider = ? AND e.model = ? AND e.dimension = ? AND m.sensitivity >= ?"
+            "WHERE e.provider = ? AND e.model = ? AND e.dimension = ? "
+            "AND m.state = 'active' AND m.sensitivity >= ?"
         )
         params: list = [provider, model, int(dimension), int(min_sensitivity)]
         if memory_type is not None:
@@ -328,7 +383,10 @@ class MemoryStore(StorageBackend):
         with self._lock:
             row = self._conn.execute(sql, params).fetchone()
         last_updated = row["last_updated"]
-        return int(row["embedding_count"]), float(last_updated) if last_updated is not None else None
+        return (
+            int(row["embedding_count"]),
+            float(last_updated) if last_updated is not None else None,
+        )
 
     def embeddings_count(self) -> int:
         with self._lock:
@@ -351,7 +409,7 @@ class MemoryStore(StorageBackend):
             sql = (
                 "SELECT m.*, bm25(memories_fts) AS bm25 "
                 "FROM memories_fts JOIN memories m ON m.id = memories_fts.rowid "
-                "WHERE memories_fts MATCH ? AND m.sensitivity >= ?"
+                "WHERE memories_fts MATCH ? AND m.state = 'active' AND m.sensitivity >= ?"
             )
             params: list = [_fts_phrase(text), min_sens]
             if memory_type is not None:
@@ -369,7 +427,8 @@ class MemoryStore(StorageBackend):
         escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         sql = (
             "SELECT * FROM memories "
-            "WHERE content LIKE '%' || ? || '%' ESCAPE '\\' AND sensitivity >= ?"
+            "WHERE state = 'active' "
+            "AND content LIKE '%' || ? || '%' ESCAPE '\\' AND sensitivity >= ?"
         )
         params = [escaped, min_sens]
         if memory_type is not None:
