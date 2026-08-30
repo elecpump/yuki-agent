@@ -31,7 +31,10 @@ def test_gateway_health_aggregates_hub_and_heartbeats():
     runtime, client = _client(bus=bus)
 
     with client:
-        runtime.on_heartbeat(Topics.HEARTBEAT, {"process": "perception", "healthy": True})
+        runtime.on_heartbeat(
+            Topics.HEARTBEAT,
+            {"process": "perception", "healthy": True, "ts": time.time()},
+        )
         response = client.get("/api/health")
 
     assert response.status_code == 200
@@ -39,7 +42,28 @@ def test_gateway_health_aggregates_hub_and_heartbeats():
     assert body["hub"]["healthy"] is True
     assert body["gateway"]["started"] is True
     assert body["processes"]["perception"]["healthy"] is True
+    assert body["processes"]["perception"]["fresh"] is True
+    assert body["processes"]["perception"]["last_seen_age_s"] >= 0
     assert "health/gateway" in bus.services
+
+
+def test_gateway_health_marks_stale_or_invalid_heartbeats_not_fresh():
+    runtime, _ = _client(config=Config(health={"heartbeat_interval_s": 5.0}))
+    runtime.on_heartbeat(
+        Topics.HEARTBEAT,
+        {"process": "stale", "healthy": True, "ts": time.time() - 16.0},
+    )
+    runtime.on_heartbeat(
+        Topics.HEARTBEAT,
+        {"process": "missing-ts", "healthy": True},
+    )
+
+    snapshot = runtime.cached_health_snapshot()
+
+    assert snapshot["processes"]["stale"]["fresh"] is False
+    assert snapshot["processes"]["stale"]["last_seen_age_s"] >= 16.0
+    assert snapshot["processes"]["missing-ts"]["fresh"] is False
+    assert snapshot["processes"]["missing-ts"]["last_seen_age_s"] is None
 
 
 def test_gateway_does_not_expose_memory_management_endpoints():
@@ -92,7 +116,13 @@ def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():
     bus = FakeBus()
     bus.respond(
         COGNITION_CHAT_SERVICE,
-        lambda payload: {"text": "pong", "ts": 1.0, "spoke": True},
+        lambda payload: {
+            "text": "pong",
+            "ts": 1.0,
+            "spoke": True,
+            "reason": "chat_local",
+            "emotion": "warm",
+        },
     )
     runtime, client = _client(bus=bus)
 
@@ -105,6 +135,10 @@ def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():
     assert message["text"] == "pong"
     assert message["done"] is True
     assert message["status"] == "completed"
+    assert message["reason"] == "chat_local"
+    assert message["ts"] == 1.0
+    assert message["spoke"] is True
+    assert message["emotion"] == "warm"
 
 
 def test_gateway_mounts_injected_custom_channel():

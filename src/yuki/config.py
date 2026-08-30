@@ -275,7 +275,9 @@ class GatewayConfig(BaseModel):
     enabled: bool = False
     host: str = "127.0.0.1"
     port: int = Field(8765, ge=1, le=65535)
-    cors_origins: list[str] = Field(default_factory=lambda: ["tauri://localhost"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["tauri://localhost", "http://tauri.localhost"]
+    )
     cors_origin_regex: str = r"^http://localhost:\d+$"
     ws_heartbeat_timeout_s: float = Field(45.0, ge=1.0)
     cleanup_interval_s: float = Field(30.0, ge=1.0)

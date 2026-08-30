@@ -46,6 +46,10 @@ pip install -e ".[asr]"           # 追加唤醒词检测（openWakeWord）
 pip install -e ".[desktop]"       # 追加 HTTP/WS Gateway（FastAPI/uvicorn）
 ```
 
+桌面前端还需要 Node.js 20+；构建 Tauri 安装包需要 Rust stable 和 Windows WebView2
+开发环境。纯浏览器开发不依赖 Rust。React 19 通过
+`@ant-design/v5-patch-for-react-19` 兼容 Ant Design v5。
+
 ## 运行
 
 ```bash
@@ -60,6 +64,42 @@ python -m yuki.soul_cli list         # Soul 可恢复版本
 
 启用唤醒词：`config.yaml` 中 `wake_word.enabled: true` 并配置 `model_path`（自训的
 "yuki" onnx 模型）；启用桌面 Gateway：`gateway.enabled: true`（REST `:8765`）。
+
+### 桌面前端
+
+浏览器开发模式：
+
+```bash
+# 终端 A：config.yaml 中启用 gateway 后启动后端
+python -m yuki.supervisor
+
+# 终端 B
+cd frontend
+npm install
+npm run dev
+```
+
+Tauri 开发模式默认只连接外部 supervisor，不自动启动后端：
+
+```bash
+cd frontend
+npm run tauri dev
+```
+
+release 构建默认尝试自启动 supervisor，但 v1 不打包 Python。运行前必须提供包含
+`config.yaml` 的绝对工作目录；推荐同时指定能 `import yuki` 的解释器：
+
+```powershell
+$env:YUKI_WORKDIR = "D:\code\yuki-agent"
+$env:YUKI_PYTHON = "D:\code\yuki-agent\.venv\Scripts\python.exe"
+cd frontend
+npm run tauri build
+```
+
+`YUKI_DESKTOP_LAUNCH_BACKEND=true|false` 可覆盖 dev（默认 false）和 release（默认
+true）的自启动策略。若 8765 已有健康 Yuki Gateway，桌面端进入 external 模式，退出
+时不会关闭它。旧 `config.yaml` 若显式设置 `gateway.cors_origins`，Windows release 需
+包含 `http://tauri.localhost`。
 
 ## 配置
 
@@ -104,6 +144,12 @@ python -m yuki.soul_cli show          # 核对结果后再重启 Yuki
 ```bash
 pytest                        # 单元测试
 pytest -m e2e                 # 端到端集成测试（spawn 真实进程）
+
+cd frontend
+npm test                      # Vitest
+npm run typecheck
+npm run lint
+npm run build                 # 纯 Web 生产构建
 ```
 
 ## 文档
@@ -111,4 +157,5 @@ pytest -m e2e                 # 端到端集成测试（spawn 真实进程）
 - 整体设计：`docs/superpowers/specs/2026-08-10-yuki-agent-design.md`
 - ASR 全链路：`docs/superpowers/specs/2026-08-23-asr-fullchain-design.md`
 - 桌面 Gateway：`docs/superpowers/specs/2026-08-23-desktop-gateway-design.md`
+- 桌面前端：`docs/superpowers/specs/2026-08-30-yuki-desktop-frontend-design.md`
 - 双进程架构：`docs/superpowers/specs/2026-08-27-single-main-model-worker-design.md`

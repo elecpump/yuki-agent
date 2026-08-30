@@ -426,7 +426,10 @@ def test_gateway_defaults():
     assert config.gateway.enabled is False
     assert config.gateway.host == "127.0.0.1"
     assert config.gateway.port == 8765
-    assert config.gateway.cors_origins == ["tauri://localhost"]
+    assert config.gateway.cors_origins == [
+        "tauri://localhost",
+        "http://tauri.localhost",
+    ]
     assert config.gateway.cors_origin_regex == r"^http://localhost:\d+$"
     assert config.gateway.ws_heartbeat_timeout_s == 45.0
     assert config.gateway.cleanup_interval_s == 30.0

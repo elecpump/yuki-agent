@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core window access only; the web frontend has no shell capability.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

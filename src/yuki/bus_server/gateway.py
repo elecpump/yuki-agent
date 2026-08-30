@@ -265,8 +265,26 @@ class GatewayRuntime:
         return self._health_snapshot({"healthy": None, "cached": True})
 
     def _health_snapshot(self, hub: dict) -> dict:
+        now = time.time()
+        freshness_timeout_s = max(
+            15.0,
+            3.0 * float(self.config.health.heartbeat_interval_s),
+        )
         with self._lock:
-            processes = {key: dict(value) for key, value in self._heartbeats.items()}
+            processes = {}
+            for key, value in self._heartbeats.items():
+                process = dict(value)
+                try:
+                    last_seen_age_s = max(0.0, now - float(process["ts"]))
+                except (KeyError, TypeError, ValueError):
+                    last_seen_age_s = None
+                process["last_seen_age_s"] = (
+                    round(last_seen_age_s, 2) if last_seen_age_s is not None else None
+                )
+                process["fresh"] = (
+                    last_seen_age_s is not None and last_seen_age_s <= freshness_timeout_s
+                )
+                processes[key] = process
         return {
             "gateway": self.gateway_health(),
             "hub": hub,
@@ -398,6 +416,10 @@ async def _chat_message_handler(runtime: GatewayRuntime, message: dict) -> dict 
         "type": "assistant_chunk",
         "task_id": task["task_id"],
         "text": result.get("text", ""),
+        "reason": result.get("reason", ""),
+        "ts": result.get("ts"),
+        "spoke": result.get("spoke"),
+        "emotion": result.get("emotion"),
         "done": True,
         "status": task["status"],
         "error": task.get("error", ""),

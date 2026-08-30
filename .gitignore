@@ -12,3 +12,6 @@ config.yaml
 .model
 checkpoints/
 test.py
+frontend/node_modules/
+frontend/src-tauri/target/
+frontend/src-tauri/gen/schemas/

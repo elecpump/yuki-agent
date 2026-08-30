@@ -155,12 +155,15 @@ wake_word:
   pre_roll_s: 1.2
   listen_timeout_s: 10.0
   listen_window_s: 5.0
+# 桌面前端需要 gateway.enabled: true。Windows release 的 WebView origin 是
+# http://tauri.localhost；已有 config.yaml 若显式覆盖 cors_origins，也需包含该值。
 gateway:
   enabled: false
   host: 127.0.0.1
   port: 8765
   cors_origins:
     - tauri://localhost
+    - http://tauri.localhost
   cors_origin_regex: "^http://localhost:\\d+$"
   ws_heartbeat_timeout_s: 45.0
   cleanup_interval_s: 30.0
