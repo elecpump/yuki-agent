@@ -28,7 +28,10 @@ _CATALOG_VRAM_MB = {
     "vlm": 5 * 1024,
     "stt": 1536,
     "local_chat": 2 * 1024,
-    "tts": 2 * 1024,
+    # 实测 IndexTTS-2.5 全模型驻留约 5.5GB（w2v-bert fp32 + gpt fp32 + qwen fp16
+    # + s2mel + codec + bigvgan）；旧值 2GB 会让调度器过度准入导致显存过载，
+    # VLM 推理在无余量时卡死在 CUDA 分配上。
+    "tts": 6 * 1024,
     "embedding": 1024,
 }
 
