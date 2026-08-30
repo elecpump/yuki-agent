@@ -55,7 +55,11 @@ def test_provider_defaults_and_loads_once():
     provider.embed(["a"])
     provider.embed(["b"])
 
-    assert created == [("Qwen/Qwen3-Embedding-0.6B", None, "auto")]
+    # "auto" 必须解析为实际设备：sentence-transformers 6.x 不接受字面 "auto"。
+    assert len(created) == 1
+    assert created[0][0] == "Qwen/Qwen3-Embedding-0.6B"
+    assert created[0][1] is None
+    assert created[0][2] in ("cuda", "cpu")
     assert provider.embed(["c"])  # 不重复构造
     assert len(created) == 1
 

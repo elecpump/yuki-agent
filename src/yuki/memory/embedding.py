@@ -131,13 +131,24 @@ class SentenceTransformerEmbeddingProvider:
                 from sentence_transformers import SentenceTransformer
 
                 factory = SentenceTransformer
+            device = self._resolve_device()
             self._st = factory(
                 self.model,
                 cache_folder=self._cache_dir or None,
-                device=self._device,
+                device=device,
             )
             self._dimension = int(self._st.get_sentence_embedding_dimension())
             return self._st
+
+    def _resolve_device(self) -> str:
+        if self._device != "auto":
+            return self._device
+        try:
+            import torch
+
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except Exception:
+            return "cpu"
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         st = self._ensure()
