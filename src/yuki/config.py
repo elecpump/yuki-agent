@@ -118,6 +118,8 @@ class MemoryConfig(BaseModel):
     embedding_cache_dir: str = ""     # sentence-transformers 的 HF 缓存目录（如 .model）；hashing 不用
     embedding_device: str = "auto"    # auto | cpu | cuda:0；sentence-transformers provider
     vector_candidates: int = Field(30, ge=1)
+    superseded_retention_days: int = Field(30, ge=0)
+    tombstone_retention_days: int = Field(0, ge=0)
 
 
 class TextConfig(BaseModel):
@@ -295,6 +297,27 @@ class ThreadConfig(BaseModel):
     history_summary_max_tokens: int = Field(600, ge=100)
 
 
+class SedimentConfig(BaseModel):
+    timeout_s: float = Field(8.0, ge=0.1)
+    domain_instructions: str = ""
+    promotion_min_episodes: int = Field(2, ge=1)
+    strengthen_min_episodes: int = Field(3, ge=2)
+    tombstone_min_episodes: int = Field(2, ge=1)
+    update_min_episodes: int = Field(3, ge=1)
+    explicit_activation_confidence: float = Field(0.9, ge=0.0, le=1.0)
+    candidate_merge_similarity: float = Field(0.88, ge=0.0, le=1.0)
+    retry_base_s: float = Field(60.0, ge=1.0)
+    retry_max_s: float = Field(3600.0, ge=1.0)
+
+    @model_validator(mode="after")
+    def validate_threshold_order(self) -> "SedimentConfig":
+        if self.strengthen_min_episodes <= self.promotion_min_episodes:
+            raise ValueError("strengthen_min_episodes must exceed promotion_min_episodes")
+        if self.retry_max_s < self.retry_base_s:
+            raise ValueError("retry_max_s must be at least retry_base_s")
+        return self
+
+
 class PersonaConfig(BaseModel):
     prompt: str = (
         "你是{persona},一个温柔的中文语音陪伴 agent。"
@@ -333,6 +356,7 @@ class Config(BaseModel):
     wake_word: WakeWordConfig = Field(default_factory=WakeWordConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     thread: ThreadConfig = Field(default_factory=ThreadConfig)
+    sediment: SedimentConfig = Field(default_factory=SedimentConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
 
     @classmethod

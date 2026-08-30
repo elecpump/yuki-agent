@@ -551,6 +551,24 @@ def test_memory_manager_accepts_any_storage_backend():
         def vacuum(self):
             self.calls.append("vacuum")
 
+        def embedding_outbox(self, *, limit=20):
+            return []
+
+        def acknowledge_embedding_outbox(self, memory_id, operation, queued_at):
+            return True
+
+        def delete_embeddings(self, memory_id):
+            return 0
+
+        def cleanup_inactive(
+            self,
+            *,
+            now,
+            superseded_retention_days,
+            tombstone_retention_days,
+        ):
+            return 0
+
     backend = FakeBackend()
     manager = MemoryManager(backend)
     assert manager.query("hi", top_k=3) == []

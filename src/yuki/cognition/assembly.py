@@ -25,7 +25,13 @@ from yuki.cognition.brain.snapshots import PersonaStore
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.soul_reflector import SoulReflector
 from yuki.cognition.brain.soul_scheduler import SoulReflectionScheduler
+from yuki.cognition.context.consolidation import (
+    CandidateResolver,
+    ConsolidationStore,
+    EvolutionPolicy,
+)
 from yuki.cognition.context.maintenance import SegmentSummarizer, ThreadMaintenanceScheduler
+from yuki.cognition.context.sediment import Sedimenter
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
@@ -44,6 +50,7 @@ from yuki.functions.soul_tools import register_soul_functions
 from yuki.functions.system import register_builtin_system
 from yuki.logger import get_logger
 from yuki.memory.embedding import (
+    EmbeddingOutboxWorker,
     EmbeddingProvider,
     MemoryEmbeddingIndexer,
     build_embedding_indexer,
@@ -226,6 +233,35 @@ class CognitionAssembler:
         soul_reflection_scheduler = None
         thread_maintenance_scheduler = None
         if cloud_client is not None:
+            consolidation_store = None
+            sedimenter = None
+            if memory.db_path is not None:
+                consolidation_store = ConsolidationStore(
+                    thread_db_path,
+                    policy=EvolutionPolicy(
+                        promotion_min_episodes=self.config.sediment.promotion_min_episodes,
+                        strengthen_min_episodes=self.config.sediment.strengthen_min_episodes,
+                        tombstone_min_episodes=self.config.sediment.tombstone_min_episodes,
+                        update_min_episodes=self.config.sediment.update_min_episodes,
+                        explicit_activation_confidence=(
+                            self.config.sediment.explicit_activation_confidence
+                        ),
+                    ),
+                    resolver=CandidateResolver(
+                        threshold=self.config.sediment.candidate_merge_similarity,
+                    ),
+                    related_provider=lambda turns, limit: self._related_memories(
+                        memory,
+                        turns,
+                        limit,
+                    ),
+                )
+                sedimenter = Sedimenter(
+                    cloud_client,
+                    model=self.config.cloud.model,
+                    timeout_s=self.config.sediment.timeout_s,
+                    domain_instructions=self.config.sediment.domain_instructions,
+                )
             thread_maintenance_scheduler = ThreadMaintenanceScheduler(
                 thread_store,
                 SegmentSummarizer(
@@ -235,6 +271,11 @@ class CognitionAssembler:
                 ),
                 summary_failures_max=self.config.thread.summary_failures_max,
                 tick_s=self.config.thread.maintenance_tick_s,
+                consolidation_store=consolidation_store,
+                sedimenter=sedimenter,
+                retry_base_s=self.config.sediment.retry_base_s,
+                retry_max_s=self.config.sediment.retry_max_s,
+                outbox_worker=EmbeddingOutboxWorker(memory),
             )
             reflector = SoulReflector(
                 cloud_client,
@@ -330,7 +371,41 @@ class CognitionAssembler:
             embedding_indexer=embedding_indexer,
             vector_enabled=self.config.memory.vector_enabled,
             vector_candidates=self.config.memory.vector_candidates,
+            superseded_retention_days=self.config.memory.superseded_retention_days,
+            tombstone_retention_days=self.config.memory.tombstone_retention_days,
         )
+
+    @staticmethod
+    def _related_memories(
+        memory: MemoryManager,
+        turns: list[dict],
+        limit: int,
+    ) -> list[dict]:
+        related: list[dict] = []
+        seen: set[int] = set()
+        user_texts = [
+            str(turn.get("content", ""))
+            for turn in turns
+            if turn.get("role", turn.get("kind")) == "user"
+        ]
+        for text in reversed(user_texts):
+            for item in memory.query(text, top_k=limit, touch=False):
+                memory_id = int(item["id"])
+                if memory_id in seen:
+                    continue
+                seen.add(memory_id)
+                related.append(item)
+                if len(related) >= limit:
+                    return related
+        for item in memory.list():
+            memory_id = int(item["id"])
+            if memory_id in seen:
+                continue
+            seen.add(memory_id)
+            related.append(item)
+            if len(related) >= limit:
+                break
+        return related
 
     def _build_speech_buffer(self) -> SpeechBuffer:
         stt_cfg = self.config.stt

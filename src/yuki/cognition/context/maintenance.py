@@ -2,9 +2,12 @@ import threading
 import time
 from collections.abc import Callable
 
+from yuki.cognition.context.consolidation import ConsolidationStore
+from yuki.cognition.context.sediment import CandidateValidationError, Sedimenter
 from yuki.cognition.context.store import SegmentSummaryJob, ThreadTurnStore
 from yuki.cognition.l2.client import CloudClient
 from yuki.logger import get_logger
+from yuki.memory.embedding import EmbeddingOutboxWorker
 
 logger = get_logger("yuki.cognition.context.maintenance")
 
@@ -66,12 +69,22 @@ class ThreadMaintenanceScheduler:
         summary_failures_max: int,
         tick_s: float = 30.0,
         clock: Callable[[], float] = time.time,
+        consolidation_store: ConsolidationStore | None = None,
+        sedimenter: Sedimenter | None = None,
+        retry_base_s: float = 60.0,
+        retry_max_s: float = 3600.0,
+        outbox_worker: EmbeddingOutboxWorker | None = None,
     ) -> None:
         self._store = store
         self._summarizer = summarizer
         self._summary_failures_max = max(1, int(summary_failures_max))
         self._tick_s = max(0.01, float(tick_s))
         self._clock = clock
+        self._consolidation_store = consolidation_store
+        self._sedimenter = sedimenter
+        self._retry_base_s = max(1.0, float(retry_base_s))
+        self._retry_max_s = max(self._retry_base_s, float(retry_max_s))
+        self._outbox_worker = outbox_worker
         self._tick_lock = threading.Lock()
         self._state_lock = threading.Lock()
         self._stop = threading.Event()
@@ -79,6 +92,8 @@ class ThreadMaintenanceScheduler:
         self._thread: threading.Thread | None = None
         self._failure_streak = 0
         self._retry_not_before = 0.0
+        self._consolidation_failure_streak = 0
+        self._consolidation_retry_not_before = 0.0
 
     def start(self) -> None:
         with self._state_lock:
@@ -111,6 +126,7 @@ class ThreadMaintenanceScheduler:
             thread.join(timeout=timeout_s)
         remaining = None if deadline is None else max(0.0, deadline - time.monotonic())
         if remaining == 0.0:
+            self._close_consolidation_after(thread)
             return
         flush = threading.Thread(
             target=lambda: self.tick(close_idle=False),
@@ -121,6 +137,27 @@ class ThreadMaintenanceScheduler:
         flush.join(timeout=remaining)
         if flush.is_alive():
             logger.warning("thread maintenance flush exceeded shutdown timeout")
+        self._close_consolidation_after(thread, flush)
+
+    def _close_consolidation_after(self, *threads: threading.Thread | None) -> None:
+        if self._consolidation_store is None:
+            return
+        active = tuple(thread for thread in threads if thread is not None and thread.is_alive())
+        if not active and not self._tick_lock.locked():
+            self._consolidation_store.close()
+            return
+
+        def wait_and_close() -> None:
+            for active_thread in active:
+                active_thread.join()
+            with self._tick_lock:
+                self._consolidation_store.close()
+
+        threading.Thread(
+            target=wait_and_close,
+            daemon=True,
+            name="yuki-consolidation-store-close",
+        ).start()
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -138,43 +175,101 @@ class ThreadMaintenanceScheduler:
             closed_episode = (
                 self._store.close_idle_episode(at=now) if close_idle else None
             )
-            # 退避只针对摘要失败（L418），不阻塞 idle Episode 检查。
-            if self._clock() < self._retry_not_before:
-                return closed_episode is not None
-            lease_s = max(self._tick_s * 2, self._summarizer.timeout_s + 5.0)
-            job = self._store.claim_segment_summary(at=now, lease_s=lease_s)
-            if job is None:
-                return closed_episode is not None
-            try:
-                summary = self._summarizer.summarize(job)
-            except Exception:
-                self._failure_streak += 1
-                backoff_s = min(
-                    300.0,
-                    self._tick_s * (2 ** (self._failure_streak - 1)),
-                )
-                self._retry_not_before = self._clock() + backoff_s
-                logger.warning(
-                    "segment summary failed",
-                    segment_id=job.segment_id,
-                    attempt=job.attempt,
-                    exc_info=True,
-                )
-                self._store.fail_segment_summary(
-                    job.segment_id,
-                    attempt=job.attempt,
-                    max_failures=self._summary_failures_max,
-                )
-                return True
-            self._failure_streak = 0
-            self._retry_not_before = 0.0
-            self._store.complete_segment_summary(
-                job.segment_id,
-                summary,
-                model=self._summarizer.model,
-                prompt_version=self._summarizer.prompt_version,
-                attempt=job.attempt,
-            )
-            return True
+            worked = closed_episode is not None
+            if self._clock() >= self._retry_not_before:
+                worked = self._summarize_one(now) or worked
+            if self._clock() >= self._consolidation_retry_not_before:
+                worked = self._consolidate_one(now) or worked
+            if self._outbox_worker is not None:
+                worked = bool(self._outbox_worker.tick()) or worked
+            return worked
         finally:
             self._tick_lock.release()
+
+    def _summarize_one(self, now: float) -> bool:
+        lease_s = max(self._tick_s * 2, self._summarizer.timeout_s + 5.0)
+        job = self._store.claim_segment_summary(at=now, lease_s=lease_s)
+        if job is None:
+            return False
+        try:
+            summary = self._summarizer.summarize(job)
+        except Exception:
+            self._failure_streak += 1
+            backoff_s = min(300.0, self._tick_s * (2 ** (self._failure_streak - 1)))
+            self._retry_not_before = self._clock() + backoff_s
+            logger.warning(
+                "segment summary failed",
+                segment_id=job.segment_id,
+                attempt=job.attempt,
+                exc_info=True,
+            )
+            self._store.fail_segment_summary(
+                job.segment_id,
+                attempt=job.attempt,
+                max_failures=self._summary_failures_max,
+            )
+            return True
+        self._failure_streak = 0
+        self._retry_not_before = 0.0
+        self._store.complete_segment_summary(
+            job.segment_id,
+            summary,
+            model=self._summarizer.model,
+            prompt_version=self._summarizer.prompt_version,
+            attempt=job.attempt,
+        )
+        return True
+
+    def _consolidate_one(self, now: float) -> bool:
+        if self._consolidation_store is None or self._sedimenter is None:
+            return False
+        lease_s = max(self._tick_s * 2, self._sedimenter.timeout_s + 5.0)
+        job = self._consolidation_store.claim(at=now, lease_s=lease_s)
+        if job is None:
+            return False
+        try:
+            candidates = self._sedimenter.consolidate(job.turns, job.related)
+            self._consolidation_store.complete(
+                job,
+                candidates,
+                model=self._sedimenter.model,
+                prompt_version=self._sedimenter.prompt_version,
+                at=self._clock(),
+            )
+        except CandidateValidationError as exc:
+            self._consolidation_failure_streak = 0
+            self._consolidation_retry_not_before = 0.0
+            logger.warning(
+                "episode consolidation rejected",
+                episode_id=job.episode_id,
+                attempt=job.attempt,
+                error=str(exc),
+            )
+            self._consolidation_store.release(
+                job,
+                str(exc),
+                at=self._clock(),
+                failed=True,
+            )
+            return True
+        except Exception as exc:
+            self._consolidation_failure_streak += 1
+            backoff_s = min(
+                self._retry_max_s,
+                self._retry_base_s * (2 ** (self._consolidation_failure_streak - 1)),
+            )
+            self._consolidation_retry_not_before = self._clock() + backoff_s
+            logger.warning(
+                "episode consolidation failed",
+                episode_id=job.episode_id,
+                attempt=job.attempt,
+                exc_info=True,
+            )
+            try:
+                self._consolidation_store.release(job, str(exc), at=self._clock())
+            except ValueError:
+                logger.info("episode consolidation lease was reclaimed", episode_id=job.episode_id)
+            return True
+        self._consolidation_failure_streak = 0
+        self._consolidation_retry_not_before = 0.0
+        return True

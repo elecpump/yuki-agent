@@ -288,6 +288,11 @@ class MemoryEmbeddingIndexer:
         self._matrix_cache.clear()
         return count
 
+    def delete(self, memory_id: int) -> int:
+        deleted = self._store.delete_embeddings(memory_id)
+        self.clear_cache()
+        return deleted
+
     def rebuild(self, *, memory_type: str | None = None, min_sensitivity: int = 0) -> int:
         count = 0
         for memory in self._store.list(memory_type=memory_type, min_sensitivity=min_sensitivity):
@@ -394,6 +399,20 @@ class MemoryEmbeddingIndexer:
             return
         weight = int(cached.matrix.nbytes) + len(cached.memory_ids) * 8
         self._cache_manager.put("memory_vector_matrix", key, cached, weight=weight)
+
+
+class EmbeddingOutboxProcessor(Protocol):
+    def process_embedding_outbox(self, *, limit: int = 20) -> int: ...
+
+
+class EmbeddingOutboxWorker:
+    """Memory-layer maintenance worker for deferred embedding mutations."""
+
+    def __init__(self, processor: EmbeddingOutboxProcessor) -> None:
+        self._processor = processor
+
+    def tick(self, *, limit: int = 20) -> int:
+        return int(self._processor.process_embedding_outbox(limit=limit))
 
 
 def build_embedding_indexer(

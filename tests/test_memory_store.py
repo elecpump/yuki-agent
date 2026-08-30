@@ -376,3 +376,50 @@ def test_memory_create_writes_audit(tmp_path, monkeypatch):
         assert calls[0][1]["memory_type"] == "personal"
     finally:
         store.close()
+
+
+def test_cleanup_inactive_requires_history_and_cleared_embedding(store):
+    eligible_id = store.create("preference", "有审计的旧偏好")
+    no_history_id = store.create("preference", "没有审计的旧偏好")
+    embedded_id = store.create("preference", "仍有向量的旧偏好")
+    tombstoned_id = store.create("preference", "永久审计墓碑")
+    with sqlite3.connect(store.db_path) as connection:
+        connection.execute(
+            "CREATE TABLE memory_history (memory_id INTEGER NOT NULL, snapshot_json TEXT NOT NULL)"
+        )
+        connection.executemany(
+            "INSERT INTO memory_history (memory_id, snapshot_json) VALUES (?, '{}')",
+            [(eligible_id,), (embedded_id,)],
+        )
+        connection.execute(
+            "UPDATE memories SET state = 'superseded', updated_at = 100 "
+            "WHERE id IN (?, ?, ?)",
+            (eligible_id, no_history_id, embedded_id),
+        )
+        connection.execute(
+            "UPDATE memories SET state = 'tombstoned', updated_at = 100 WHERE id = ?",
+            (tombstoned_id,),
+        )
+    store.upsert_embedding(
+        embedded_id,
+        provider="test",
+        model="test",
+        dimension=2,
+        embedding=encode_vector([1.0, 0.0]),
+        content_hash="hash",
+    )
+
+    deleted = store.cleanup_inactive(
+        now=100 + 31 * 86400,
+        superseded_retention_days=30,
+        tombstone_retention_days=0,
+    )
+
+    assert deleted == 1
+    with sqlite3.connect(store.db_path) as connection:
+        remaining = dict(connection.execute("SELECT id, state FROM memories"))
+    assert remaining == {
+        no_history_id: "superseded",
+        embedded_id: "superseded",
+        tombstoned_id: "tombstoned",
+    }

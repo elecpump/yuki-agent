@@ -16,6 +16,10 @@ _Avoid_: episodic memory
 用户的偏好、习惯、事实，用户级、长期有效；新提取结果默认进入 candidate，达到自动晋升门槛后才成为 active memory，用户不直接参与确认或编辑。
 _Avoid_: semantic memory
 
+**Personal（个人事实记忆）**:
+用户在对话中明确陈述的个人事实；必须具有可定位到用户原话的证据，新提取结果默认进入
+candidate，并按自动晋升门槛演进。不得从 agent 转述或推测中生成。
+
 **Strengthened（强化记忆）**:
 置位后衰减权重恒 1.0 且豁免自动清理；只能由确定性的自动演进策略根据跨 Episode 证据、置信度和冲突检查置位，candidate 永远不参与 agent 推理、Persona 或 Soul 演进。
 

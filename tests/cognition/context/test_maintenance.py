@@ -1,9 +1,14 @@
+import json
+import sqlite3
 import threading
 
+from yuki.cognition.context.consolidation import ConsolidationStore
 from yuki.cognition.context.maintenance import SegmentSummarizer, ThreadMaintenanceScheduler
+from yuki.cognition.context.sediment import Sedimenter
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
+from yuki.memory.store import MemoryStore
 
 
 class FakeCloudClient:
@@ -36,6 +41,14 @@ class BlockingCloudClient(FakeCloudClient):
         self.called.set()
         assert self.release.wait(1.0)
         return {"choices": [{"message": {"content": self.content}}]}
+
+
+class CloseTrackingConsolidationStore:
+    def __init__(self) -> None:
+        self.closed = threading.Event()
+
+    def close(self) -> None:
+        self.closed.set()
 
 
 def test_maintenance_tick_summarizes_one_closed_segment(tmp_path):
@@ -99,6 +112,29 @@ def test_scheduler_close_performs_bounded_flush_of_closed_segment(tmp_path):
     context.close()
 
 
+def test_scheduler_defers_consolidation_close_until_timed_out_worker_exits(tmp_path):
+    store = ThreadTurnStore(tmp_path / "memory.db", segment_max_turns=1)
+    store.add_user("阻塞摘要", at=100.0)
+    client = BlockingCloudClient()
+    consolidation = CloseTrackingConsolidationStore()
+    scheduler = ThreadMaintenanceScheduler(
+        store,
+        SegmentSummarizer(client, model="test-model", timeout_s=2.0),
+        summary_failures_max=3,
+        tick_s=10.0,
+        consolidation_store=consolidation,
+    )
+    scheduler.start()
+    assert client.called.wait(1.0)
+
+    scheduler.close(timeout_s=0.01)
+
+    assert consolidation.closed.is_set() is False
+    client.release.set()
+    assert consolidation.closed.wait(1.0)
+    store.close()
+
+
 def test_maintenance_tick_closes_idle_episode_without_waiting_for_next_user(tmp_path):
     store = ThreadTurnStore(
         tmp_path / "memory.db",
@@ -114,7 +150,7 @@ def test_maintenance_tick_closes_idle_episode_without_waiting_for_next_user(tmp_
             timeout_s=2.0,
         ),
         summary_failures_max=3,
-        clock=lambda: 111.0,
+        clock=lambda: 112.0,
     )
 
     scheduler.tick()
@@ -197,3 +233,77 @@ def test_running_summary_is_single_flight_and_keeps_raw_fallback(tmp_path):
     worker.join(timeout=1.0)
     assert worker.is_alive() is False
     context.close()
+
+
+def test_scheduler_consolidates_closed_episode_without_user_intervention(tmp_path):
+    path = tmp_path / "memory.db"
+    memory = MemoryStore(path)
+    store = ThreadTurnStore(path, episode_idle_s=10)
+    user_turn_id = store.add_user("今天去了西湖", at=100.0)
+    store.add_agent("听起来不错", at=101.0, reply_to_turn_id=user_turn_id)
+    response = json.dumps(
+        {
+            "candidates": [
+                {
+                    "draft_key": "west-lake",
+                    "proposed_op": "add",
+                    "memory_type": "scenario",
+                    "canonical_key": "西湖游览",
+                    "content": "用户今天去了西湖",
+                    "confidence": 0.8,
+                    "sensitivity": 0,
+                    "evidence": [{"turn_id": user_turn_id, "quote": "今天去了西湖"}],
+                    "metadata": {},
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+    client = FakeCloudClient(response)
+    consolidation = ConsolidationStore(path)
+    scheduler = ThreadMaintenanceScheduler(
+        store,
+        SegmentSummarizer(client, model="test-model", timeout_s=2.0),
+        summary_failures_max=3,
+        clock=lambda: 112.0,
+        consolidation_store=consolidation,
+        sedimenter=Sedimenter(client, model="test-model", timeout_s=2.0),
+    )
+
+    assert scheduler.tick() is True
+
+    assert [item["content"] for item in memory.list()] == ["用户今天去了西湖"]
+    consolidation.close()
+    store.close()
+    memory.close()
+
+
+def test_invalid_candidate_response_marks_run_failed_without_retry(tmp_path):
+    path = tmp_path / "memory.db"
+    memory = MemoryStore(path)
+    store = ThreadTurnStore(path, episode_idle_s=10)
+    store.add_user("普通对话", at=100.0)
+    client = FakeCloudClient("{}")
+    consolidation = ConsolidationStore(path)
+    scheduler = ThreadMaintenanceScheduler(
+        store,
+        SegmentSummarizer(client, model="test-model", timeout_s=2.0),
+        summary_failures_max=3,
+        clock=lambda: 112.0,
+        consolidation_store=consolidation,
+        sedimenter=Sedimenter(client, model="test-model", timeout_s=2.0),
+    )
+
+    assert scheduler.tick() is True
+    assert scheduler.tick() is False
+
+    with sqlite3.connect(path) as connection:
+        run_state, error = connection.execute(
+            "SELECT state, last_error FROM consolidation_runs"
+        ).fetchone()
+        assert run_state == "failed"
+        assert "candidates" in error
+    assert len(client.calls) == 1
+    consolidation.close()
+    store.close()
+    memory.close()

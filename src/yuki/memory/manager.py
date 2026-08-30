@@ -63,6 +63,8 @@ class MemoryManager:
         embedding_indexer: MemoryEmbeddingIndexer | None = None,
         vector_enabled: bool = False,
         vector_candidates: int = 30,
+        superseded_retention_days: int = 30,
+        tombstone_retention_days: int = 0,
     ) -> None:
         self._store = store
         self._base = decay_base
@@ -71,6 +73,8 @@ class MemoryManager:
         self._embedding_indexer = embedding_indexer
         self._vector_enabled = vector_enabled
         self._vector_candidates = vector_candidates
+        self._superseded_retention_days = max(0, int(superseded_retention_days))
+        self._tombstone_retention_days = max(0, int(tombstone_retention_days))
         self._short_term = short_term or ShortTermMemory(
             ttl_s=short_term_ttl_s, capacity=short_term_capacity,
         )
@@ -247,6 +251,39 @@ class MemoryManager:
             min_sensitivity=min_sensitivity,
         )
 
+    def process_embedding_outbox(self, *, limit: int = 20) -> int:
+        processed = 0
+        for item in self._store.embedding_outbox(limit=limit):
+            memory_id = int(item["memory_id"])
+            operation = str(item["operation"])
+            try:
+                if operation == "upsert":
+                    memory = self._store.get(memory_id)
+                    if (
+                        memory is not None
+                        and self._vector_enabled
+                        and self._embedding_indexer is not None
+                    ):
+                        self._embedding_indexer.upsert(memory)
+                elif self._embedding_indexer is not None:
+                    self._embedding_indexer.delete(memory_id)
+                else:
+                    self._store.delete_embeddings(memory_id)
+                acknowledged = self._store.acknowledge_embedding_outbox(
+                    memory_id,
+                    operation,
+                    float(item["queued_at"]),
+                )
+                processed += int(acknowledged)
+            except Exception:
+                logger.warning(
+                    "memory embedding outbox item failed",
+                    memory_id=memory_id,
+                    operation=operation,
+                    exc_info=True,
+                )
+        return processed
+
     def decay_weight(self, memory: dict, now: float | None = None) -> float:
         now = time.time() if now is None else now
         if memory["strengthened"]:
@@ -259,6 +296,15 @@ class MemoryManager:
 
     def cleanup(self) -> int:
         now = time.time()
+        deleted = self._cleanup_decayed(now)
+        inactive_deleted = self._store.cleanup_inactive(
+            now=now,
+            superseded_retention_days=self._superseded_retention_days,
+            tombstone_retention_days=self._tombstone_retention_days,
+        )
+        return deleted + int(inactive_deleted or 0)
+
+    def _cleanup_decayed(self, now: float) -> int:
         if self._threshold <= 0:
             return 0
         if self._base <= 0:

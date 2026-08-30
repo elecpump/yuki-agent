@@ -462,6 +462,24 @@ def test_thread_defaults_include_fallback_and_shutdown_limits():
     assert config.thread.shutdown_timeout_s == 3.0
 
 
+def test_sediment_defaults_keep_candidates_internal_until_promoted():
+    config = Config()
+
+    assert config.sediment.promotion_min_episodes == 2
+    assert config.sediment.strengthen_min_episodes == 3
+    assert config.sediment.explicit_activation_confidence == 0.9
+
+
+def test_sediment_strengthening_requires_more_episodes_than_promotion():
+    with pytest.raises(ValueError, match="strengthen_min_episodes"):
+        Config(
+            sediment={
+                "promotion_min_episodes": 3,
+                "strengthen_min_episodes": 3,
+            }
+        )
+
+
 def test_load_ignores_removed_context_snapshot_section(tmp_path):
     path = tmp_path / "config.yaml"
     path.write_text("context:\n  snapshot_path: old.json\n", encoding="utf-8")

@@ -34,6 +34,19 @@ class StorageBackend(Protocol):
 
     def vacuum(self) -> None: ...
 
+    def embedding_outbox(self, *, limit: int = 20) -> list[dict]: ...
+    def acknowledge_embedding_outbox(
+        self, memory_id: int, operation: str, queued_at: float
+    ) -> bool: ...
+    def delete_embeddings(self, memory_id: int) -> int: ...
+    def cleanup_inactive(
+        self,
+        *,
+        now: float,
+        superseded_retention_days: int,
+        tombstone_retention_days: int,
+    ) -> int: ...
+
 
 class MemoryError(Exception):
     """记忆存储错误。"""
@@ -100,6 +113,15 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model "
         "ON memory_embeddings(provider, model, dimension)"
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS embedding_outbox (
+            memory_id INTEGER PRIMARY KEY,
+            operation TEXT NOT NULL CHECK (operation IN ('upsert','delete')),
+            queued_at REAL NOT NULL
+        )
+        """
     )
     conn.executescript(
         """
@@ -241,6 +263,63 @@ class MemoryStore(StorageBackend):
             self._conn.commit()
         return cur.rowcount
 
+    def cleanup_inactive(
+        self,
+        *,
+        now: float,
+        superseded_retention_days: int,
+        tombstone_retention_days: int,
+    ) -> int:
+        states = [("superseded", int(superseded_retention_days))]
+        if int(tombstone_retention_days) > 0:
+            states.append(("tombstoned", int(tombstone_retention_days)))
+        deleted = 0
+        with self._lock:
+            has_history = self._conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_history'"
+            ).fetchone()
+            if has_history is None:
+                return 0
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                for state, retention_days in states:
+                    cutoff = float(now) - max(0, retention_days) * 86400.0
+                    ids = [
+                        int(row[0])
+                        for row in self._conn.execute(
+                            """
+                            SELECT m.id
+                            FROM memories m
+                            WHERE m.state = ? AND m.updated_at < ?
+                              AND EXISTS (
+                                  SELECT 1 FROM memory_history h WHERE h.memory_id = m.id
+                              )
+                              AND NOT EXISTS (
+                                  SELECT 1 FROM memory_embeddings e WHERE e.memory_id = m.id
+                              )
+                            """,
+                            (state, cutoff),
+                        ).fetchall()
+                    ]
+                    if not ids:
+                        continue
+                    placeholders = ",".join("?" for _ in ids)
+                    self._conn.execute(
+                        f"UPDATE memories SET supersedes_id = NULL "
+                        f"WHERE supersedes_id IN ({placeholders})",
+                        ids,
+                    )
+                    cursor = self._conn.execute(
+                        f"DELETE FROM memories WHERE id IN ({placeholders})",
+                        ids,
+                    )
+                    deleted += cursor.rowcount
+                self._conn.commit()
+            except Exception:
+                self._conn.rollback()
+                raise
+        return deleted
+
     def list(self, *, memory_type: str | None = None, min_sensitivity: int = 0) -> list[dict]:
         sql = "SELECT * FROM memories WHERE state = 'active' AND sensitivity >= ?"
         params: list = [int(min_sensitivity)]
@@ -331,6 +410,40 @@ class MemoryStore(StorageBackend):
                 (int(memory_id), provider, model, int(dimension)),
             ).fetchone()
         return dict(row) if row else None
+
+    def embedding_outbox(self, *, limit: int = 20) -> list[dict]:
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM embedding_outbox ORDER BY queued_at, memory_id LIMIT ?",
+                (max(0, int(limit)),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def acknowledge_embedding_outbox(
+        self,
+        memory_id: int,
+        operation: str,
+        queued_at: float,
+    ) -> bool:
+        with self._lock:
+            cursor = self._conn.execute(
+                """
+                DELETE FROM embedding_outbox
+                WHERE memory_id = ? AND operation = ? AND queued_at = ?
+                """,
+                (int(memory_id), operation, float(queued_at)),
+            )
+            self._conn.commit()
+        return cursor.rowcount == 1
+
+    def delete_embeddings(self, memory_id: int) -> int:
+        with self._lock:
+            cursor = self._conn.execute(
+                "DELETE FROM memory_embeddings WHERE memory_id = ?",
+                (int(memory_id),),
+            )
+            self._conn.commit()
+        return cursor.rowcount
 
     def vector_rows(
         self,
