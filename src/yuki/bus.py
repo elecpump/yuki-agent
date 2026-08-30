@@ -177,8 +177,10 @@ class BusHub(_Base):
             logger.warning("service route expired", service=service)
 
     def _collect_health(self) -> dict:
-        proxy_age = time.monotonic() - self._last_proxy_forwarded
-        proxy_alive = proxy_age < PROXY_STALE_S
+        now = time.monotonic()
+        proxy_heartbeat_age = now - self._last_proxy_activity
+        proxy_alive = proxy_heartbeat_age < PROXY_STALE_S
+        forward_age = now - self._last_proxy_forwarded
         return {
             "process": "bus_server",
             "pid": os.getpid(),
@@ -186,7 +188,11 @@ class BusHub(_Base):
             "error_count": 0,
             "healthy": proxy_alive,
             "components": {
-                "proxy": {"ok": proxy_alive, "last_forwarded_s": round(proxy_age, 3)},
+                "proxy": {
+                    "ok": proxy_alive,
+                    "last_forwarded_s": round(forward_age, 3),
+                    "last_heartbeat_s": round(proxy_heartbeat_age, 3),
+                },
                 "router": {"ok": True},
             },
         }

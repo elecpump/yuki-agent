@@ -488,21 +488,50 @@ def test_auth_token_events_roundtrip_and_foreign_events_ignored():
         hub.close()
 
 
-def test_bus_hub_health_reflects_forwarding():
+def test_bus_hub_stays_healthy_while_idle_without_traffic():
+    """Regression: an idle-but-alive proxy loop must not report unhealthy.
+
+    BusHub liveness is defined by the proxy thread's heartbeat, not by
+    message forwarding volume. An idle system (no publishers, no gateway)
+    previously flipped BUS_HEALTH_SERVICE to healthy:false ~5s after start,
+    which made the supervisor restart yuki in a loop until the restart
+    window cap was hit.
+    """
     import yuki.bus as bus_mod
 
     port = 6913
+    hub = bus_mod.BusHub(base_port=port, hwm=10)
+    try:
+        hub._last_proxy_forwarded = time.monotonic() - bus_mod.PROXY_STALE_S - 1.0
+        # Proxy loop keeps beating; only forwarding is stale.
+        hub._last_proxy_activity = time.monotonic()
+        health = hub._collect_health()
+        assert health["healthy"] is True
+        assert health["components"]["proxy"]["ok"] is True
+        assert "last_forwarded_s" in health["components"]["proxy"]
+    finally:
+        hub.close()
+
+
+def test_bus_hub_health_reflects_proxy_loop_liveness():
+    import yuki.bus as bus_mod
+
+    port = 6914
     hub = bus_mod.BusHub(base_port=port, hwm=10)
     node = bus_mod.BusNode(base_port=port, hwm=10)
     try:
         received = threading.Event()
         node.subscribe("event/", lambda t, p: received.set())
         time.sleep(0.1)
-        health_before = hub._collect_health()
-        assert "last_forwarded_s" in health_before["components"]["proxy"]
+        # 1. Fresh heartbeat, stale forwarding -> alive (idle is not dead).
         hub._last_proxy_forwarded = time.monotonic() - bus_mod.PROXY_STALE_S - 1.0
         hub._last_proxy_activity = time.monotonic()
+        assert hub._collect_health()["healthy"] is True
+        # 2. Stale heartbeat -> proxy loop is actually dead -> unhealthy.
+        hub._last_proxy_activity = time.monotonic() - bus_mod.PROXY_STALE_S - 1.0
         assert hub._collect_health()["healthy"] is False
+        # 3. Traffic resumes and loop heartbeats -> healthy again.
+        hub._last_proxy_activity = time.monotonic()
         node.publish("event/x", {"x": 1})
         assert received.wait(timeout=2.0)
         deadline = time.monotonic() + 2.0
