@@ -128,7 +128,27 @@ class IndexTTSModel:
             # 懒导入：默认环境不装 indextts 也能跑（enabled=False 路径）。
             # 副作用注意：import 该模块会设置 os.environ["HF_HUB_CACHE"]（SDK 模块级行为），
             # 且推理时 SDK 会向 stdout 打印进度（不影响 [yuki] 前缀断言）。
-            from indextts.infer_v2_5 import IndexTTS2
+            # 该副作用会把后续 HF 模型加载（VLM/embedding）的缓存目录重定向到
+            # checkpoints/hf_cache：huggingface_hub 在导入时会把缓存目录固化为
+            # constants.HF_HUB_CACHE，仅恢复环境变量不足以解毒，因此导入前先
+            # 捕获常量、导入后连同环境变量一起恢复。
+            try:
+                import huggingface_hub.constants as hf_constants
+
+                saved_hf_cache = hf_constants.HF_HUB_CACHE
+            except Exception:
+                hf_constants = None
+                saved_hf_cache = None
+            saved_env = os.environ.get("HF_HUB_CACHE")
+            try:
+                from indextts.infer_v2_5 import IndexTTS2
+            finally:
+                if saved_env is None:
+                    os.environ.pop("HF_HUB_CACHE", None)
+                else:
+                    os.environ["HF_HUB_CACHE"] = saved_env
+                if hf_constants is not None and saved_hf_cache is not None:
+                    hf_constants.HF_HUB_CACHE = saved_hf_cache
 
             factory = IndexTTS2
         return factory(
