@@ -10,4 +10,5 @@ data/
 .codegraph/
 config.yaml
 .model
+checkpoints/
 test.py

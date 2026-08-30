@@ -60,6 +60,14 @@ memory:
   tombstone_retention_days: 0
   # 检索模式：BM25（FTS5）与向量双路召回，合并后按向量相似度 × 衰减重排取 top_k。
   # BM25 只负责召回候选；仅 BM25 命中的记忆排在向量命中之后，不足 top_k 时兜底。
+# 本地 TTS（IndexTTS-2.5，需安装 tts extra；模型文件放 checkpoints/，参考音频自备）：
+# tts:
+#   enabled: true
+#   cfg_path: checkpoints/config.yaml
+#   model_dir: checkpoints
+#   use_bf16: true
+#   language: zh
+#   reference_audio_path: data/tts/reference_audio/default.wav
 text:
   enabled: true
   dom_enabled: true
