@@ -28,6 +28,7 @@ def test_defaults():
     assert config.models.policies["stt"].evictable is False
     assert config.models.policies["embedding"].priority == 10
     assert config.runtime_bus.subscriber_queue_size == 256
+    assert config.thread.verbatim_turns == 4
 
 
 def test_model_policy_override_merges_with_catalog_defaults():
@@ -175,8 +176,6 @@ def test_memory_defaults():
     assert config.memory.decay_base == 1.0
     assert config.memory.decay_lambda == 0.1
     assert config.memory.decay_threshold == 0.02
-    assert config.memory.short_term_ttl_s == 1800
-    assert config.memory.short_term_capacity == 50
     assert config.memory.cleanup_interval_s == 300.0
     assert config.memory.vector_enabled is False
     assert config.memory.embedding_provider == "hashing"

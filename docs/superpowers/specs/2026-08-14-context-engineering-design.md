@@ -195,3 +195,6 @@ env：`YUKI_CONTEXT_MAX_TURNS` / `YUKI_CONTEXT_MAX_TOKENS` / `YUKI_CONTEXT_VERBA
 | 熔断（连续失败 ≥3 禁用摘要，回退计数占位） | 避免每次响应被慢/失败的摘要拖累 |
 | LLM 摘要折叠 + 缓存 | 长会话不爆窗口；缓存避免重复调用 |
 | 失败回退计数占位 | 摘要不可用不阻塞主响应 |
+> 状态说明（2026-08-30）：本文的 ShortTermMemory、JSON snapshot 和 TTL 会话持久化方案
+> 已被 `2026-08-29-thread-relationship-memory-design.md` 的 SQLite Thread/Segment/Episode
+> 模型取代；其余历史设计仅作背景参考。

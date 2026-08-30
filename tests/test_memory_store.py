@@ -32,6 +32,15 @@ def test_create_rejects_unknown_type(store):
         store.create("unknown", "x")
 
 
+def test_create_rejects_reserved_automatic_provenance(store):
+    with pytest.raises(MemoryError, match="reserved"):
+        store.create(
+            "preference",
+            "伪造自动强化",
+            metadata={"strengthened_by": "memory_evolver"},
+        )
+
+
 def test_get_missing_returns_none(store):
     assert store.get(999) is None
 
@@ -166,8 +175,45 @@ def test_opening_legacy_database_adds_memory_lifecycle_columns(tmp_path):
         assert memory["revision"] == 1
         assert memory["updated_at"] == 123.0
         assert memory["supersedes_id"] is None
+        assert [item["content"] for item in store.query("legacy memory")] == [
+            "legacy memory"
+        ]
     finally:
         store.close()
+
+    backup_path = path.with_name(path.name + ".pre-migration.bak")
+    assert backup_path.exists()
+    with sqlite3.connect(backup_path) as backup:
+        columns = {row[1] for row in backup.execute("PRAGMA table_info(memories)")}
+    assert "state" not in columns
+
+
+def test_fresh_memory_database_does_not_create_migration_backup(tmp_path):
+    path = tmp_path / "fresh.db"
+    store = MemoryStore(path)
+    store.close()
+
+    assert not path.with_name(path.name + ".pre-migration.bak").exists()
+
+
+def test_open_repairs_missing_fts_rows(tmp_path):
+    path = tmp_path / "stale-fts.db"
+    store = MemoryStore(path)
+    memory_id = store.create("scenario", "repairable search index")
+    content = store.get(memory_id)["content"]
+    store.close()
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO memories_fts(memories_fts, rowid, content) "
+            "VALUES ('delete', ?, ?)",
+            (memory_id, content),
+        )
+
+    reopened = MemoryStore(path)
+    try:
+        assert [item["id"] for item in reopened.query("repairable")] == [memory_id]
+    finally:
+        reopened.close()
 
 
 def test_delete_decayed_removes_only_eligible_old_memories(store):
@@ -245,6 +291,7 @@ def test_strengthen_marks_and_resets_last_access(store):
     assert store.strengthen(mem_id) is True
     mem = store.get(mem_id)
     assert mem["strengthened"] is True
+    assert mem["metadata"]["strengthened_by"] == "operator"
     assert mem["last_access"] > old["created_at"]
     assert store.strengthen(999) is False
 

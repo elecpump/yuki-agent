@@ -1,4 +1,5 @@
 import io
+import sqlite3
 
 import pytest
 
@@ -33,6 +34,26 @@ def test_get_missing_returns_error_code(db):
     assert main(["--db", db, "get", "999"]) == 1
 
 
+def test_inactive_revisions_require_explicit_admin_flags(db, capsys):
+    store = MemoryStore(db)
+    memory_id = store.create("preference", "旧偏好版本")
+    store.close()
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE memories SET state = 'superseded' WHERE id = ?",
+            (memory_id,),
+        )
+
+    assert main(["--db", db, "list"]) == 0
+    assert "旧偏好版本" not in capsys.readouterr().out
+    assert main(["--db", db, "list", "--state", "superseded"]) == 0
+    assert "state=superseded" in capsys.readouterr().out
+    assert main(["--db", db, "get", str(memory_id)]) == 1
+    capsys.readouterr()
+    assert main(["--db", db, "get", str(memory_id), "--include-inactive"]) == 0
+    assert "旧偏好版本" in capsys.readouterr().out
+
+
 def test_delete_and_strengthen(db):
     assert main(["--db", db, "add", "--type", "personal", "--content", "名字叫小羽"]) == 0
     assert main(["--db", db, "strengthen", "1"]) == 0
@@ -64,11 +85,6 @@ def test_wipe_force_skips_prompt(db, monkeypatch, capsys):
     monkeypatch.setattr("sys.stdin", io.StringIO(""))
     assert main(["--db", db, "wipe", "--force"]) == 0
     assert MemoryStore(db).all() == []
-
-
-def test_short_term_view_is_empty(db, capsys):
-    assert main(["--db", db, "short-term"]) == 0
-    assert capsys.readouterr().out == ""
 
 
 def test_embeddings_rebuild_indexes_existing_memories(db, capsys):

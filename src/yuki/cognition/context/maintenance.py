@@ -108,6 +108,27 @@ class ThreadMaintenanceScheduler:
             )
             self._thread.start()
 
+    def health(self) -> dict:
+        now = self._clock()
+        with self._state_lock:
+            thread = self._thread
+            detail = {
+                "worker_alive": bool(thread is not None and thread.is_alive()),
+                "closed": self._closed,
+                "tick_running": self._tick_lock.locked(),
+                "summary_failure_streak": self._failure_streak,
+                "summary_retry_in_s": max(0.0, self._retry_not_before - now),
+                "consolidation_failure_streak": self._consolidation_failure_streak,
+                "consolidation_retry_in_s": max(
+                    0.0,
+                    self._consolidation_retry_not_before - now,
+                ),
+            }
+        detail.update(self._store.maintenance_status())
+        if self._consolidation_store is not None:
+            detail.update(self._consolidation_store.maintenance_status())
+        return detail
+
     def close(self, timeout_s: float | None = None) -> None:
         """停止 worker 并尽力 flush。
 
@@ -176,9 +197,12 @@ class ThreadMaintenanceScheduler:
                 self._store.close_idle_episode(at=now) if close_idle else None
             )
             worked = closed_episode is not None
-            if self._clock() >= self._retry_not_before:
+            with self._state_lock:
+                summary_ready = self._clock() >= self._retry_not_before
+                consolidation_ready = self._clock() >= self._consolidation_retry_not_before
+            if summary_ready:
                 worked = self._summarize_one(now) or worked
-            if self._clock() >= self._consolidation_retry_not_before:
+            if consolidation_ready:
                 worked = self._consolidate_one(now) or worked
             if self._outbox_worker is not None:
                 worked = bool(self._outbox_worker.tick()) or worked
@@ -194,9 +218,10 @@ class ThreadMaintenanceScheduler:
         try:
             summary = self._summarizer.summarize(job)
         except Exception:
-            self._failure_streak += 1
-            backoff_s = min(300.0, self._tick_s * (2 ** (self._failure_streak - 1)))
-            self._retry_not_before = self._clock() + backoff_s
+            with self._state_lock:
+                self._failure_streak += 1
+                backoff_s = min(300.0, self._tick_s * (2 ** (self._failure_streak - 1)))
+                self._retry_not_before = self._clock() + backoff_s
             logger.warning(
                 "segment summary failed",
                 segment_id=job.segment_id,
@@ -209,8 +234,9 @@ class ThreadMaintenanceScheduler:
                 max_failures=self._summary_failures_max,
             )
             return True
-        self._failure_streak = 0
-        self._retry_not_before = 0.0
+        with self._state_lock:
+            self._failure_streak = 0
+            self._retry_not_before = 0.0
         self._store.complete_segment_summary(
             job.segment_id,
             summary,
@@ -237,8 +263,9 @@ class ThreadMaintenanceScheduler:
                 at=self._clock(),
             )
         except CandidateValidationError as exc:
-            self._consolidation_failure_streak = 0
-            self._consolidation_retry_not_before = 0.0
+            with self._state_lock:
+                self._consolidation_failure_streak = 0
+                self._consolidation_retry_not_before = 0.0
             logger.warning(
                 "episode consolidation rejected",
                 episode_id=job.episode_id,
@@ -253,12 +280,13 @@ class ThreadMaintenanceScheduler:
             )
             return True
         except Exception as exc:
-            self._consolidation_failure_streak += 1
-            backoff_s = min(
-                self._retry_max_s,
-                self._retry_base_s * (2 ** (self._consolidation_failure_streak - 1)),
-            )
-            self._consolidation_retry_not_before = self._clock() + backoff_s
+            with self._state_lock:
+                self._consolidation_failure_streak += 1
+                backoff_s = min(
+                    self._retry_max_s,
+                    self._retry_base_s * (2 ** (self._consolidation_failure_streak - 1)),
+                )
+                self._consolidation_retry_not_before = self._clock() + backoff_s
             logger.warning(
                 "episode consolidation failed",
                 episode_id=job.episode_id,
@@ -270,6 +298,7 @@ class ThreadMaintenanceScheduler:
             except ValueError:
                 logger.info("episode consolidation lease was reclaimed", episode_id=job.episode_id)
             return True
-        self._consolidation_failure_streak = 0
-        self._consolidation_retry_not_before = 0.0
+        with self._state_lock:
+            self._consolidation_failure_streak = 0
+            self._consolidation_retry_not_before = 0.0
         return True

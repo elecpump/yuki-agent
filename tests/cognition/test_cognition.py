@@ -8,12 +8,11 @@ from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
 from yuki.memory.manager import MemoryManager
-from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.service import MEMORY_SERVICES
 from yuki.memory.store import MemoryStore
 from yuki.topics import Topics
 
-from tests.fakes import FakeBus
+from tests.fakes import FakeBus, mark_automatically_strengthened
 
 
 class FakeL1:
@@ -353,6 +352,43 @@ def test_cognition_agent_assembles_persona(tmp_path):
         agent.teardown()
 
 
+def test_cognition_health_exposes_thread_maintenance_state(tmp_path):
+    agent = CognitionAgent(
+        Config(persona={"snapshots_path": str(tmp_path / "persona.json")}),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+
+    status = agent.health_components()["thread_maintenance"]()
+
+    assert status.ok is True
+    assert status.detail == {
+        "enabled": False,
+        "degraded": False,
+        "reason": "cloud_disabled",
+    }
+
+
+def test_cognition_health_names_missing_cloud_api_key(tmp_path, monkeypatch):
+    monkeypatch.delenv("YUKI_CLOUD_API_KEY", raising=False)
+    agent = CognitionAgent(
+        Config(
+            cloud={"enabled": True},
+            persona={"snapshots_path": str(tmp_path / "persona.json")},
+        ),
+        bus=FakeBus(),
+        pipeline=FakePipeline(),
+        memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
+    )
+
+    status = agent.health_components()["thread_maintenance"]()
+
+    assert status.ok is True
+    assert status.detail["degraded"] == "missing_api_key"
+    assert status.detail["reason"] == "missing_api_key"
+
+
 def test_cognition_agent_registers_soul_update_and_refreshes_persona(tmp_path):
     bus = FakeBus()
     agent = CognitionAgent(
@@ -564,9 +600,8 @@ def test_persona_refresh_only_sees_automatic_stable_preferences(tmp_path, monkey
         "preference",
         "自动成熟偏好",
         sensitivity=0,
-        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
     )
-    memory.strengthen(stable_id)
+    mark_automatically_strengthened(tmp_path / "mem.db", stable_id)
     memory.write("preference", "私密偏好", sensitivity=1)
     memory.write("preference", "高敏偏好", sensitivity=2)
 

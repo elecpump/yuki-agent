@@ -1281,3 +1281,9 @@ git commit -m "feat: assemble WorkingContext and ContextProjector into Cognition
 - **一致性**：`TurnStore.add(content, kind, ts)` 在 Task 1 定义、Task 2 WorkingContext 消费；`MemoryManager.short_term_add(at=)` 在 Task 1 扩展、ShortTermTurnStore 消费；`CloudViewBuilder.enrich/format` 在 Task 4 定义、Task 5 bridge 消费；`ContextSnapshot` 在 Task 3 定义、Task 4/5/6 消费；`build_brain(context=, projector=)` 在 Task 6 定义、Task 7 agent 消费。
 - **兼容**：hub 的 `self._context`（情境 dict）语义保留；无 context wrapper 时行为与现在完全一致；e2e 不变。
 - **测试注意**：`test_estimate_tokens("你好")==2`、熔断测试按真实 `SUMMARIZE_MAX_FAILURES` 断言（连续失败≥3 熔断）；agent 测试用 tmp_path 注入 snapshot_path 避免污染 data/。
+# Superseded implementation plan
+
+> This plan is retained as historical context. Its `ShortTermTurnStore`, `short_term`
+> APIs, and JSON snapshot persistence steps have been superseded by
+> `2026-08-29-thread-relationship-memory-design.md`. Do not implement those obsolete
+> steps; use the persistent Thread/Segment/Episode model in the newer specification.

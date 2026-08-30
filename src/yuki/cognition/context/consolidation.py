@@ -11,7 +11,7 @@ from pathlib import Path
 
 from yuki.cognition.context.sediment import MemoryCandidate, normalize_surface
 from yuki.logger import get_logger
-from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER, without_reserved_provenance
 
 logger = get_logger("yuki.cognition.context.consolidation")
 
@@ -290,6 +290,23 @@ class ConsolidationStore:
         with self._lock:
             self._conn.close()
 
+    def maintenance_status(self) -> dict:
+        with self._lock:
+            run_rows = self._conn.execute(
+                "SELECT state, count(*) FROM consolidation_runs GROUP BY state"
+            ).fetchall()
+            candidate_rows = self._conn.execute(
+                "SELECT state, count(*) FROM memory_candidates GROUP BY state"
+            ).fetchall()
+            outbox_pending = int(
+                self._conn.execute("SELECT count(*) FROM embedding_outbox").fetchone()[0]
+            )
+        return {
+            "runs": {str(row[0]): int(row[1]) for row in run_rows},
+            "candidates": {str(row[0]): int(row[1]) for row in candidate_rows},
+            "embedding_outbox_pending": outbox_pending,
+        }
+
     def _resolve_candidate(self, candidate: MemoryCandidate, *, now: float) -> MemoryCandidate:
         proposed = candidate.canonical_key_norm
         alias = self._conn.execute(
@@ -372,7 +389,7 @@ class ConsolidationStore:
                 candidate.target_id,
                 candidate.target_revision,
                 json.dumps([item.__dict__ for item in candidate.evidence], ensure_ascii=False),
-                json.dumps(candidate.metadata, ensure_ascii=False),
+                json.dumps(without_reserved_provenance(candidate.metadata), ensure_ascii=False),
                 now,
             ),
         )
@@ -556,7 +573,7 @@ class ConsolidationStore:
         supersedes_id: int | None,
         now: float,
     ) -> int:
-        metadata = dict(candidate.metadata)
+        metadata = without_reserved_provenance(candidate.metadata)
         metadata.update(
             {
                 "canonical_key": candidate.canonical_key,

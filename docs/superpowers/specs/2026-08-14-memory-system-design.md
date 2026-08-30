@@ -218,3 +218,6 @@ memory:
 | `last_access` 初值 = `created_at` | 设计文档 §5.2 v3 修正，避免新建记忆永远高权重 |
 | `personal` 排除自动清理 | 个人信息不可被衰减误删，须用户显式删除 |
 | 模型读取必须声明 purpose | 忘写过滤时更容易 fail-closed，而不是把私密/高敏数据当普通记忆外发 |
+> 状态说明（2026-08-30）：本文的 ShortTermMemory 配置与 `short-term` CLI 已被
+> `2026-08-29-thread-relationship-memory-design.md` 的持久 Thread 模型取代；持久记忆基础
+> 设计仍作历史参考。

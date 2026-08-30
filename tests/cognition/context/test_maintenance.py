@@ -185,6 +185,30 @@ def test_summary_failure_backs_off_then_recovers_without_permanent_fuse(tmp_path
     context.close()
 
 
+def test_scheduler_health_reports_backlog_and_retry_state(tmp_path):
+    now = [100.0]
+    store = ThreadTurnStore(tmp_path / "memory.db", segment_max_turns=1)
+    store.add_user("等待摘要", at=100.0)
+    scheduler = ThreadMaintenanceScheduler(
+        store,
+        SegmentSummarizer(FlakyCloudClient(), model="test-model", timeout_s=2.0),
+        summary_failures_max=3,
+        tick_s=5.0,
+        clock=lambda: now[0],
+    )
+
+    before = scheduler.health()
+    assert before["worker_alive"] is False
+    assert before["segments"]["pending"] == 1
+
+    assert scheduler.tick() is True
+    failed = scheduler.health()
+    assert failed["summary_failure_streak"] == 1
+    assert failed["summary_retry_in_s"] == 5.0
+    assert failed["segments"]["pending"] == 1
+    store.close()
+
+
 def test_backoff_does_not_block_idle_episode_close(tmp_path):
     now = [100.0]
     store = ThreadTurnStore(

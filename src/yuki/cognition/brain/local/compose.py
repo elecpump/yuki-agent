@@ -13,7 +13,7 @@ class LocalViewBuilder:
         self,
         *,
         max_tokens: int = 6000,
-        verbatim_turns: int = 5,
+        verbatim_turns: int = 4,
         memory_top_k: int = 3,
         crisis_keywords: tuple[str, ...] = CRISIS_KEYWORDS,
     ) -> None:

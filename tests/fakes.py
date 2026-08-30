@@ -1,3 +1,29 @@
+import json
+import sqlite3
+from pathlib import Path
+
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
+
+
+def mark_automatically_strengthened(
+    db_path: str | Path,
+    *memory_ids: int,
+    episode_count: int = 3,
+) -> None:
+    """Set system-owned provenance when arranging personality-evidence fixtures."""
+    metadata = json.dumps(
+        {
+            "strengthened_by": AUTOMATIC_STRENGTHENER,
+            "strengthened_episode_count": episode_count,
+        }
+    )
+    with sqlite3.connect(db_path) as connection:
+        connection.executemany(
+            "UPDATE memories SET strengthened = 1, metadata = ? WHERE id = ?",
+            ((metadata, memory_id) for memory_id in memory_ids),
+        )
+
+
 class FakeBus:
     """镜像 BusNode 语义：多 handler + 前缀匹配 + 同步 service map。
 

@@ -108,8 +108,6 @@ class MemoryConfig(BaseModel):
     decay_base: float = Field(1.0, ge=0.0)
     decay_lambda: float = Field(0.1, ge=0.0)
     decay_threshold: float = Field(0.02, ge=0.0)
-    short_term_ttl_s: float = Field(1800, ge=1)
-    short_term_capacity: int = Field(50, ge=1)
     cleanup_interval_s: float = Field(300.0, ge=10.0)
     vector_enabled: bool = False
     embedding_provider: str = "hashing"
@@ -288,6 +286,7 @@ class GatewayConfig(BaseModel):
 class ThreadConfig(BaseModel):
     segment_max_turns: int = Field(20, ge=1)
     segment_verbatim_max: int = Field(20, ge=1)
+    verbatim_turns: int = Field(4, ge=1)
     fallback_turns: int = Field(8, ge=0)
     episode_idle_s: float = Field(300.0, ge=0.0)
     maintenance_tick_s: float = Field(30.0, ge=1.0)

@@ -132,6 +132,7 @@ class CognitionAgent(ProcessAgent):
             "l2": self._health_l2,
             "pipeline": self._health_pipeline,
             "memory": self._health_memory,
+            "thread_maintenance": self._health_thread_maintenance,
             "models": self._health_models,
         }
 
@@ -168,10 +169,16 @@ class CognitionAgent(ProcessAgent):
         api_key_present = bool(os.environ.get(self.config.cloud.api_key_env))
         installed = self._bridge is not None
         # §8.2：云端不可用是设计内的降级路径（L1 兜底），不是进程故障，不触发重启。
-        degraded = enabled and not (installed and configured and api_key_present)
+        degraded_reason: str | bool = False
+        if enabled and not api_key_present:
+            degraded_reason = "missing_api_key"
+        elif enabled and not configured:
+            degraded_reason = "missing_cloud_config"
+        elif enabled and not installed:
+            degraded_reason = "cloud_unavailable"
         return HealthStatus(True, {
             "enabled": enabled,
-            "degraded": degraded,
+            "degraded": degraded_reason,
             "installed": installed,
             "configured": configured,
             "api_key_present": api_key_present,
@@ -185,6 +192,28 @@ class CognitionAgent(ProcessAgent):
     def _health_memory(self) -> HealthStatus:
         ok = self._memory is not None and self._memory.ping()
         return HealthStatus(ok, {"db": self.config.memory.db_path})
+
+    def _health_thread_maintenance(self) -> HealthStatus:
+        scheduler = self._thread_maintenance_scheduler
+        if scheduler is None:
+            enabled = self.config.cloud.enabled
+            api_key_present = bool(os.environ.get(self.config.cloud.api_key_env))
+            reason = "cloud_disabled"
+            if enabled and not api_key_present:
+                reason = "missing_api_key"
+            elif enabled:
+                reason = "cloud_unavailable"
+            return HealthStatus(
+                True,
+                {
+                    "enabled": False,
+                    "degraded": reason if enabled else False,
+                    "reason": reason,
+                },
+            )
+        detail = scheduler.health()
+        ok = bool(detail["worker_alive"]) and not bool(detail["closed"])
+        return HealthStatus(ok, {"enabled": True, **detail})
 
     def _health_models(self) -> HealthStatus:
         if self._model_registry is None:

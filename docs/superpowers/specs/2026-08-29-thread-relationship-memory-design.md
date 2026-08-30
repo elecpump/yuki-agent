@@ -534,7 +534,8 @@ LLM prompt；领域接入还必须注册对应的 `validate_candidate`，不能�
 - gateway 移除 `/api/memory*`、`/api/soul` 端点（对用户隐藏，§0，2026-08-30）；
   总线 `memory/*`、`SOUL_GET_SERVICE` 服务与 CLI 管理面保留。
 - 历史存量 strengthened preference 无 `strengthened_by` provenance：保守排除出人格
-  演进证据，不自动迁移；如需恢复可经 CLI 手工补 metadata。
+  演进证据且不自动迁移。自动 provenance 字段为系统保留字段，CLI 不能伪造；运维侧
+  `strengthen` 只标记为 `operator`，不能成为人格演进证据。
 - memories 增加状态/revision 后，所有查询、list、persona 和 cleanup 路径必须显式过滤
   `state='active'`；管理 CLI 可通过内部参数查看历史状态。
 - schema migration 必须先备份数据库，并验证 FTS/embedding 与 active revision 一致。

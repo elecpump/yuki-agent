@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
 
-from yuki.memory.manager import MemoryManager
+from yuki.memory.migration import backup_before_migration
 
 ResponseState = Literal["completed", "failed", "interrupted"]
 
@@ -22,7 +22,6 @@ class SegmentSummaryJob:
 class TurnStore(Protocol):
     """会话轮次存储接口（未来 Redis 实现同协议即可替换）。"""
 
-    def add(self, content: str, kind: str, ts: float) -> int | None: ...
     def add_user(
         self,
         content: str,
@@ -41,52 +40,6 @@ class TurnStore(Protocol):
     def items(self) -> list[dict]: ...
     def projection_items(self) -> tuple[list[dict], list[str], list[dict]]: ...
     def close(self) -> None: ...
-
-
-class ShortTermTurnStore:
-    """默认实现：包装 MemoryManager.short_term（TTL 30min/容量 50）。"""
-
-    def __init__(self, manager: MemoryManager) -> None:
-        self._manager = manager
-
-    def add(self, content: str, kind: str, ts: float) -> None:
-        self._manager.short_term_add(content, kind=kind, at=ts)
-
-    def add_user(
-        self,
-        content: str,
-        *,
-        at: float,
-        request_id: str | None = None,
-    ) -> None:
-        del request_id
-        self.add(content, "user", at)
-
-    def add_agent(
-        self,
-        content: str,
-        *,
-        at: float,
-        reply_to_turn_id: int | None = None,
-    ) -> None:
-        del reply_to_turn_id
-        self.add(content, "agent", at)
-
-    def mark_response(self, user_turn_id: int, state: ResponseState) -> None:
-        del user_turn_id, state
-
-    def items(self) -> list[dict]:
-        return self._manager.short_term_items()
-
-    def projection_items(self) -> tuple[list[dict], list[str], list[dict]]:
-        return self.items(), [], []
-
-    def clear(self) -> None:
-        self._manager.short_term_clear()
-
-    def close(self) -> None:
-        pass
-
 
 _THREAD_SCHEMA = """
 CREATE TABLE IF NOT EXISTS threads (
@@ -213,6 +166,33 @@ ON memory_history(memory_id, revision);
 """
 
 
+def _thread_schema_needs_migration(conn: sqlite3.Connection) -> bool:
+    tables = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    required_tables = {
+        "threads",
+        "segments",
+        "episodes",
+        "thread_turns",
+        "consolidation_runs",
+        "memory_candidates",
+        "memory_history",
+        "memory_key_aliases",
+    }
+    if not required_tables.issubset(tables):
+        if "threads" not in tables and "memories" in tables:
+            memory_count = int(conn.execute("SELECT count(*) FROM memories").fetchone()[0])
+            if memory_count == 0:
+                return False
+        return True
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(segments)")}
+    return not {"summary_model", "summary_prompt_version", "summary_lease_until"}.issubset(
+        columns
+    )
+
+
 class ThreadTurnStore:
     """SQLite-backed store for the single persistent Thread."""
 
@@ -225,6 +205,7 @@ class ThreadTurnStore:
     ) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        backup_before_migration(self._path, _thread_schema_needs_migration)
         self._segment_max_turns = max(1, int(segment_max_turns))
         self._episode_idle_s = max(0.0, float(episode_idle_s))
         self._lock = threading.RLock()
@@ -521,6 +502,24 @@ class ThreadTurnStore:
     def close(self) -> None:
         with self._lock:
             self._conn.close()
+
+    def maintenance_status(self) -> dict:
+        with self._lock:
+            summary_rows = self._conn.execute(
+                """
+                SELECT summary_state, count(*)
+                FROM segments
+                WHERE state = 'closed'
+                GROUP BY summary_state
+                """
+            ).fetchall()
+            episode_rows = self._conn.execute(
+                "SELECT state, count(*) FROM episodes GROUP BY state"
+            ).fetchall()
+        return {
+            "segments": {str(row[0]): int(row[1]) for row in summary_rows},
+            "episodes": {str(row[0]): int(row[1]) for row in episode_rows},
+        }
 
     def _migrate_schema(self) -> None:
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(segments)")}

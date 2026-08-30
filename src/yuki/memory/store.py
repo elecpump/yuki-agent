@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 from yuki.logger import get_audit_logger, get_logger
+from yuki.memory.migration import backup_before_migration
+from yuki.memory.provenance import OPERATOR_STRENGTHENER, RESERVED_PROVENANCE_KEYS
 
 logger = get_logger("yuki.memory.store")
 
@@ -32,6 +34,15 @@ class StorageBackend(Protocol):
         min_sensitivity: int = 0,
     ) -> list[dict]: ...
 
+    def admin_get(self, memory_id: int) -> dict | None: ...
+    def admin_list(
+        self,
+        *,
+        state: str | None = None,
+        memory_type: str | None = None,
+        min_sensitivity: int = 0,
+    ) -> list[dict]: ...
+
     def vacuum(self) -> None: ...
 
     def embedding_outbox(self, *, limit: int = 20) -> list[dict]: ...
@@ -52,7 +63,22 @@ class MemoryError(Exception):
     """记忆存储错误。"""
 
 
+def _memory_schema_needs_migration(conn: sqlite3.Connection) -> bool:
+    tables = {
+        str(row[0])
+        for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+    }
+    required_tables = {"memories", "memories_fts", "memory_embeddings", "embedding_outbox"}
+    if not required_tables.issubset(tables):
+        return True
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(memories)")}
+    return not {"state", "revision", "updated_at", "supersedes_id"}.issubset(columns)
+
+
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    fts_existed = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories_fts'"
+    ).fetchone() is not None
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS memories (
@@ -96,6 +122,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5("
         "content, content='memories', content_rowid='id', tokenize='trigram')"
     )
+    if not fts_existed:
+        conn.execute("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS memory_embeddings (
@@ -156,6 +184,7 @@ class MemoryStore(StorageBackend):
     def __init__(self, db_path: str | Path) -> None:
         self._path = Path(db_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        backup_before_migration(self._path, _memory_schema_needs_migration)
         self._conn = sqlite3.connect(
             str(self._path), check_same_thread=False, timeout=5.0
         )
@@ -166,6 +195,7 @@ class MemoryStore(StorageBackend):
         self._lock = threading.Lock()
         _ensure_schema(self._conn)
         self._conn.commit()
+        self._validate_active_indexes()
 
     @property
     def db_path(self) -> Path:
@@ -183,12 +213,70 @@ class MemoryStore(StorageBackend):
         except sqlite3.Error:
             return False
 
+    def _validate_active_indexes(self) -> None:
+        fts_corrupt = False
+        try:
+            self._conn.execute(
+                "INSERT INTO memories_fts(memories_fts, rank) VALUES ('integrity-check', 1)"
+            )
+            self._conn.commit()
+        except sqlite3.DatabaseError:
+            self._conn.rollback()
+            fts_corrupt = True
+        missing_fts, unsafe_embeddings = self._active_index_issues()
+        if fts_corrupt or missing_fts:
+            logger.warning(
+                "memory.fts_rebuild",
+                integrity_failed=fts_corrupt,
+                missing_rows=missing_fts,
+            )
+            self._conn.execute("INSERT INTO memories_fts(memories_fts) VALUES ('rebuild')")
+            self._conn.commit()
+            missing_fts, unsafe_embeddings = self._active_index_issues()
+        if missing_fts or unsafe_embeddings:
+            raise MemoryError(
+                "memory index consistency check failed: "
+                f"missing_fts={missing_fts}, unsafe_embeddings={unsafe_embeddings}"
+            )
+
+    def _active_index_issues(self) -> tuple[int, int]:
+        missing_fts = int(
+            self._conn.execute(
+                """
+                SELECT count(*)
+                FROM memories m
+                LEFT JOIN memories_fts f ON f.rowid = m.id
+                WHERE m.state = 'active' AND f.rowid IS NULL
+                """
+            ).fetchone()[0]
+        )
+        unsafe_embeddings = int(
+            self._conn.execute(
+                """
+                SELECT count(*)
+                FROM memory_embeddings e
+                JOIN memories m ON m.id = e.memory_id
+                LEFT JOIN embedding_outbox o
+                  ON o.memory_id = e.memory_id AND o.operation = 'delete'
+                WHERE m.state != 'active' AND o.memory_id IS NULL
+                """
+            ).fetchone()[0]
+        )
+        return missing_fts, unsafe_embeddings
+
+    @staticmethod
+    def _metadata(raw: object, *, memory_id: object = None) -> dict:
+        try:
+            metadata = json.loads(raw or "{}")
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise MemoryError(f"corrupt metadata for memory id={memory_id}") from exc
+        if not isinstance(metadata, dict):
+            raise MemoryError(f"corrupt metadata for memory id={memory_id}")
+        return metadata
+
     def _row(self, row) -> dict:
         d = dict(row)
-        try:
-            d["metadata"] = json.loads(d.get("metadata") or "{}")
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise MemoryError(f"corrupt metadata for memory id={d.get('id')}") from exc
+        d["metadata"] = self._metadata(d.get("metadata"), memory_id=d.get("id"))
         d["strengthened"] = bool(d["strengthened"])
         return d
 
@@ -208,6 +296,11 @@ class MemoryStore(StorageBackend):
             raise MemoryError(f"sensitivity must be 0, 1 or 2, got {sensitivity!r}")
         if not (0.0 <= confidence <= 1.0):
             raise MemoryError(f"confidence must be in [0, 1], got {confidence!r}")
+        reserved = RESERVED_PROVENANCE_KEYS.intersection(metadata or {})
+        if reserved:
+            raise MemoryError(
+                "automatic provenance metadata is reserved: " + ", ".join(sorted(reserved))
+            )
         now = time.time()
         meta = json.dumps(metadata or {}, ensure_ascii=False)
         with self._lock:
@@ -240,6 +333,14 @@ class MemoryStore(StorageBackend):
             row = self._conn.execute(
                 "SELECT * FROM memories WHERE id = ? AND state = 'active'",
                 (memory_id,),
+            ).fetchone()
+        return self._row(row) if row else None
+
+    def admin_get(self, memory_id: int) -> dict | None:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM memories WHERE id = ?",
+                (int(memory_id),),
             ).fetchone()
         return self._row(row) if row else None
 
@@ -331,6 +432,28 @@ class MemoryStore(StorageBackend):
             rows = self._conn.execute(sql, params).fetchall()
         return [self._row(r) for r in rows]
 
+    def admin_list(
+        self,
+        *,
+        state: str | None = None,
+        memory_type: str | None = None,
+        min_sensitivity: int = 0,
+    ) -> list[dict]:
+        if state not in {None, "active", "superseded", "tombstoned"}:
+            raise MemoryError(f"unknown memory state: {state!r}")
+        sql = "SELECT * FROM memories WHERE sensitivity >= ?"
+        params: list = [int(min_sensitivity)]
+        if state is not None:
+            sql += " AND state = ?"
+            params.append(state)
+        if memory_type is not None:
+            sql += " AND memory_type = ?"
+            params.append(memory_type)
+        sql += " ORDER BY created_at DESC"
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._row(row) for row in rows]
+
     def all(self) -> list[dict]:
         with self._lock:
             rows = self._conn.execute(
@@ -349,9 +472,22 @@ class MemoryStore(StorageBackend):
 
     def strengthen(self, memory_id: int) -> bool:
         with self._lock:
+            row = self._conn.execute(
+                "SELECT metadata FROM memories WHERE id = ?",
+                (int(memory_id),),
+            ).fetchone()
+            if row is None:
+                return False
+            metadata = self._metadata(row["metadata"], memory_id=memory_id)
+            metadata["strengthened_by"] = OPERATOR_STRENGTHENER
+            metadata.pop("strengthened_episode_count", None)
             cur = self._conn.execute(
-                "UPDATE memories SET strengthened = 1, last_access = ? WHERE id = ?",
-                (time.time(), memory_id),
+                """
+                UPDATE memories
+                SET strengthened = 1, metadata = ?, last_access = ?
+                WHERE id = ?
+                """,
+                (json.dumps(metadata, ensure_ascii=False), time.time(), memory_id),
             )
             self._conn.commit()
         return cur.rowcount > 0

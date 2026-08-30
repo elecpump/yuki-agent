@@ -49,13 +49,23 @@ def _fmt(mem: dict) -> str:
     score_s = f" score={score:.3f}" if score is not None else ""
     return (
         f"#{mem['id']} [{mem['memory_type']}] conf={mem['confidence']} "
+        f"state={mem.get('state', 'active')} rev={mem.get('revision', 1)} "
         f"sens={mem['sensitivity']} src={mem['source']} strong={mem['strengthened']} "
         f"last={mem['last_access']:.1f}{score_s} :: {mem['content']} (meta={meta})"
     )
 
 
 def _cmd_list(args, manager: MemoryManager) -> None:
-    for mem in manager.list(memory_type=args.type, min_sensitivity=args.min_sensitivity):
+    memories = (
+        manager.list(memory_type=args.type, min_sensitivity=args.min_sensitivity)
+        if args.state == "active"
+        else manager.admin_list(
+            state=None if args.state == "all" else args.state,
+            memory_type=args.type,
+            min_sensitivity=args.min_sensitivity,
+        )
+    )
+    for mem in memories:
         print(_fmt(mem))
 
 
@@ -81,7 +91,7 @@ def _cmd_add(args, manager: MemoryManager) -> None:
 
 
 def _cmd_get(args, manager: MemoryManager) -> int:
-    mem = manager.get(args.id)
+    mem = manager.admin_get(args.id) if args.include_inactive else manager.get(args.id)
     if mem is None:
         print(f"memory #{args.id} not found", file=sys.stderr)
         return 1
@@ -116,11 +126,6 @@ def _cmd_wipe(args, manager: MemoryManager) -> int:
     return 0
 
 
-def _cmd_short_term(args, manager: MemoryManager) -> None:
-    for item in manager.short_term_items():
-        print(f"[{item['kind']}] {item['content']}")
-
-
 def _cmd_embeddings_rebuild(args, manager: MemoryManager) -> None:
     print(
         manager.rebuild_embeddings(
@@ -148,6 +153,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("list")
     p.add_argument("--type")
     p.add_argument("--min-sensitivity", type=int, default=0)
+    p.add_argument(
+        "--state",
+        choices=("active", "superseded", "tombstoned", "all"),
+        default="active",
+    )
     p.set_defaults(func=_cmd_list)
 
     p = sub.add_parser("query")
@@ -158,18 +168,28 @@ def main(argv: list[str] | None = None) -> int:
     p.set_defaults(func=_cmd_query)
 
     p = sub.add_parser("add")
-    p.add_argument("--type", required=True,
-                   choices=("preference", "personal", "scenario", "reflection"))
+    p.add_argument(
+        "--type",
+        required=True,
+        choices=("preference", "personal", "scenario", "reflection"),
+    )
     p.add_argument("--content", required=True)
     p.add_argument("--confidence", type=float, default=0.5)
     p.add_argument("--sensitivity", type=int, default=0)
     p.add_argument("--source", default="cli")
-    p.add_argument("--metadata", action="append",
-                   help="repeatable KEY=VALUE (one per flag, e.g. --metadata topic=a --metadata kind=b)")
+    p.add_argument(
+        "--metadata",
+        action="append",
+        help=(
+            "repeatable KEY=VALUE "
+            "(one per flag, e.g. --metadata topic=a --metadata kind=b)"
+        ),
+    )
     p.set_defaults(func=_cmd_add)
 
     p = sub.add_parser("get")
     p.add_argument("id", type=int)
+    p.add_argument("--include-inactive", action="store_true")
     p.set_defaults(func=_cmd_get)
 
     p = sub.add_parser("delete")
@@ -183,9 +203,6 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("wipe")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=_cmd_wipe)
-
-    p = sub.add_parser("short-term")
-    p.set_defaults(func=_cmd_short_term)
 
     p = sub.add_parser("embeddings")
     emb_sub = p.add_subparsers(dest="embeddings_command", required=True)

@@ -14,7 +14,7 @@ from yuki.cognition.brain.hub import (
 )
 from yuki.cognition.brain.local.router import GateRoute, RouterDecision
 from yuki.cognition.context.snapshot import ContextProjector, ContextSnapshot
-from yuki.cognition.context.store import ShortTermTurnStore, ThreadTurnStore
+from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.client import CloudError
 from yuki.config import Config
@@ -250,7 +250,7 @@ def test_utterance_observer_runs_after_context_is_updated(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
     observed = []
-    context = WorkingContext(ShortTermTurnStore(memory))
+    context = WorkingContext(ThreadTurnStore(tmp_path / "thread.db"))
     hub = DecisionHub(
         bus,
         memory=memory,
@@ -264,6 +264,7 @@ def test_utterance_observer_runs_after_context_is_updated(tmp_path):
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好", "ts": 1.0})
 
     assert observed == [("你好", 2)]
+    context.close()
     memory.close()
 
 
@@ -568,13 +569,14 @@ def test_select_situation_prefers_deep_for_same_source(tmp_path):
 def test_single_turn_writer_no_double_write(tmp_path):
     bus = FakeBus()
     manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    working = WorkingContext(ShortTermTurnStore(manager))
+    working = WorkingContext(ThreadTurnStore(tmp_path / "thread.db"))
     hub = DecisionHub(bus, memory=manager, context=working, local_enabled=False)
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert working.turn_count() == 2
     contents = [it["content"] for it in working.items()]
     assert "你好" in contents
     assert L2_UNAVAILABLE_NOTICE in contents
+    working.close()
     manager.close()
 
 

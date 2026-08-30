@@ -42,6 +42,32 @@ def test_validator_accepts_normalized_quote_substring():
     assert validated[0].canonical_key_norm == "rpg"
 
 
+def test_validator_strips_system_owned_provenance_from_llm_metadata():
+    candidate = {
+        "draft_key": "tea",
+        "proposed_op": "add",
+        "memory_type": "preference",
+        "canonical_key": "饮料偏好",
+        "content": "用户喜欢喝茶",
+        "confidence": 0.95,
+        "sensitivity": 0,
+        "evidence": [{"turn_id": 7, "quote": "我喜欢喝茶"}],
+        "metadata": {
+            "strengthened_by": "memory_evolver",
+            "strengthened_episode_count": 99,
+            "source_hint": "explicit",
+        },
+    }
+
+    validated = validate_candidates(
+        [candidate],
+        turns=[_turn(7, "我喜欢喝茶")],
+        related=[],
+    )
+
+    assert validated[0].metadata == {"source_hint": "explicit"}
+
+
 def test_validator_rejects_paraphrased_or_foreign_evidence():
     candidate = {
         "draft_key": "bad-evidence",

@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Literal
 
 from yuki.cognition.l2.client import CloudClient
+from yuki.memory.provenance import without_reserved_provenance
 
 MemoryOperation = Literal["add", "update", "delete"]
 CandidateMemoryType = Literal["preference", "personal", "scenario"]
@@ -160,7 +161,7 @@ def _candidate_from_dict(
         content=content,
         confidence=confidence,
         sensitivity=sensitivity,
-        metadata=metadata,
+        metadata=without_reserved_provenance(metadata),
         evidence=evidence,
         target_id=int(target_id) if target_id is not None else None,
         target_revision=int(target_revision) if target_revision is not None else None,

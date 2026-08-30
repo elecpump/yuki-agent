@@ -38,6 +38,7 @@ from yuki.cognition.context.working import WorkingContext
 from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.l2.proactive import ProactiveAgent
+from yuki.cognition.l2.view import CloudViewBuilder
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.vad import FsmnVadBackend
@@ -203,6 +204,9 @@ class CognitionAssembler:
                 cloud_client,
                 timeout_s=self.config.brain.proactive_timeout_s,
                 max_chars=self.config.brain.proactive_max_chars,
+                view_builder=CloudViewBuilder(
+                    verbatim_turns=self.config.thread.verbatim_turns
+                ),
             )
             if cloud_client is not None
             else None
@@ -365,8 +369,6 @@ class CognitionAssembler:
             decay_base=self.config.memory.decay_base,
             decay_lambda=self.config.memory.decay_lambda,
             decay_threshold=self.config.memory.decay_threshold,
-            short_term_ttl_s=self.config.memory.short_term_ttl_s,
-            short_term_capacity=self.config.memory.short_term_capacity,
             embedding_indexer=embedding_indexer,
             vector_enabled=self.config.memory.vector_enabled,
             vector_candidates=self.config.memory.vector_candidates,
@@ -441,6 +443,9 @@ class CognitionAssembler:
         return CloudBridge(
             client,
             registry=registry,
+            view_builder=CloudViewBuilder(
+                verbatim_turns=self.config.thread.verbatim_turns
+            ),
             max_turns=(
                 self.config.agent_loop.max_steps
                 if self.config.agent_loop.max_steps is not None
@@ -476,7 +481,10 @@ class CognitionAssembler:
         composer = LocalComposer(
             model,
             persona_name=self.config.persona_name,
-            view_builder=LocalViewBuilder(max_tokens=local_cfg.local_prompt_max_tokens),
+            view_builder=LocalViewBuilder(
+                max_tokens=local_cfg.local_prompt_max_tokens,
+                verbatim_turns=self.config.thread.verbatim_turns,
+            ),
             reply_max_tokens=local_cfg.reply_max_tokens,
             timeout_ms=local_cfg.local_reply_timeout_ms,
         )

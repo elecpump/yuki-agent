@@ -283,3 +283,5 @@ python -m yuki.memory.cli embeddings rebuild [--type memory_type]
 | 查询侧 embed 失败降级 FTS | 向量是增量能力，失败不影响主路径 |
 | **2026-08-29：双路召回 + 向量重排，取代加权融合** | BM25 只做召回者、向量统一重排，语义排序干净；BM25 分数不再被压平为常数，也无需打分权重 |
 | CLI rebuild 而非启动时懒加载 | 避免 cognition 启动突然给全库算 embedding |
+> 状态说明（2026-08-30）：本文示例中的 `short_term_*` 构造参数已移除；当前上下文来源为
+> `2026-08-29-thread-relationship-memory-design.md` 定义的持久 Thread 投影。

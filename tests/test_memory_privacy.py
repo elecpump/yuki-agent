@@ -1,7 +1,8 @@
 from yuki.memory.manager import MemoryManager
 from yuki.memory.privacy import MemoryAccess, MemoryPrivacyPolicy, MemoryPurpose
-from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.store import MemoryStore
+
+from tests.fakes import mark_automatically_strengthened
 
 
 def test_privacy_policy_is_purpose_aware() -> None:
@@ -67,23 +68,20 @@ def test_personality_evidence_requires_automatic_strengthening(tmp_path) -> None
         "preference",
         "自动成熟偏好",
         sensitivity=0,
-        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
     )
-    manager.strengthen(automatic_id)
     private_id = manager.write(
         "preference",
         "私密自动成熟偏好",
         sensitivity=1,
-        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
     )
-    manager.strengthen(private_id)
     scenario_id = manager.write(
         "scenario",
         "自动强化场景",
         sensitivity=0,
-        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
     )
-    manager.strengthen(scenario_id)
+    mark_automatically_strengthened(
+        tmp_path / "m.db", automatic_id, private_id, scenario_id
+    )
 
     evidence = MemoryAccess(manager).personality_evidence()
 

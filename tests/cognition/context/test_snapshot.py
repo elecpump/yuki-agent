@@ -1,19 +1,19 @@
 import pytest
 
 from yuki.cognition.context.snapshot import ContextProjector, ContextSnapshot
-from yuki.cognition.context.store import ShortTermTurnStore, ThreadTurnStore
+from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.working import WorkingContext
-from yuki.memory.manager import MemoryManager
-from yuki.memory.store import MemoryStore
 
 
-def make_ctx(tmp_path):
-    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
-    return WorkingContext(ShortTermTurnStore(manager))
+@pytest.fixture()
+def context(tmp_path):
+    value = WorkingContext(ThreadTurnStore(tmp_path / "m.db"))
+    yield value
+    value.close()
 
 
-def test_project_fills_situation_and_recent_turns(tmp_path):
-    ctx = make_ctx(tmp_path)
+def test_project_fills_situation_and_recent_turns(context):
+    ctx = context
     ctx.update_situation({"topic": "量子计算", "sensitive": False})
     ctx.add_user("你好")
     ctx.add_agent("我在")
@@ -23,8 +23,8 @@ def test_project_fills_situation_and_recent_turns(tmp_path):
     assert [t["kind"] for t in snap.recent_turns] == ["agent", "user"]
 
 
-def test_project_dedups_consecutive_repeats(tmp_path):
-    ctx = make_ctx(tmp_path)
+def test_project_dedups_consecutive_repeats(context):
+    ctx = context
     ctx.add_user("嗯嗯")
     ctx.add_user("嗯嗯")
     ctx.add_agent("好")
@@ -32,8 +32,8 @@ def test_project_dedups_consecutive_repeats(tmp_path):
     assert [t["content"] for t in snap.recent_turns] == ["好", "嗯嗯"]
 
 
-def test_project_caps_max_turns(tmp_path):
-    ctx = make_ctx(tmp_path)
+def test_project_caps_max_turns(context):
+    ctx = context
     for i in range(30):
         ctx.add_user(f"t{i}")
     snap = ContextProjector(max_turns=5).build(ctx)

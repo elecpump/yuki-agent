@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -129,6 +130,47 @@ def test_scenario_candidate_is_applied_atomically_with_history_and_outbox(tmp_pa
     assert MemoryManager(memory).process_embedding_outbox() == 1
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT count(*) FROM embedding_outbox").fetchone()[0] == 0
+    store.close()
+    thread.close()
+    memory.close()
+
+
+def test_consolidation_strips_reserved_provenance_at_persistence_boundary(tmp_path):
+    path, memory, thread, store = _stores(tmp_path)
+    _close_episode(thread, "今天去了西湖", at=100.0)
+    job = store.claim(at=121.0)
+    candidate = _candidate(
+        job,
+        {
+            "draft_key": "west-lake",
+            "proposed_op": "add",
+            "memory_type": "scenario",
+            "canonical_key": "西湖游览",
+            "content": "用户今天去了西湖",
+            "confidence": 0.8,
+            "sensitivity": 0,
+            "evidence": [{"turn_id": job.turns[0]["id"], "quote": "今天去了西湖"}],
+            "metadata": {},
+        },
+    )
+    candidate = replace(
+        candidate,
+        metadata={
+            "strengthened_by": AUTOMATIC_STRENGTHENER,
+            "strengthened_episode_count": 99,
+            "safe": "kept",
+        },
+    )
+
+    store.complete(job, [candidate])
+
+    assert memory.list()[0]["metadata"]["safe"] == "kept"
+    assert "strengthened_by" not in memory.list()[0]["metadata"]
+    with sqlite3.connect(path) as connection:
+        metadata = json.loads(
+            connection.execute("SELECT metadata FROM memory_candidates").fetchone()[0]
+        )
+    assert metadata == {"safe": "kept"}
     store.close()
     thread.close()
     memory.close()

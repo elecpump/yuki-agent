@@ -5,6 +5,7 @@ import pytest
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.cognition.context.snapshot import ContextProjector
 from yuki.cognition.context.working import WorkingContext
+from yuki.memory.store import MemoryStore
 
 
 def test_thread_turns_survive_store_restart(tmp_path):
@@ -104,6 +105,36 @@ def test_thread_schema_contains_maintenance_and_candidate_tables(tmp_path):
         "memory_key_aliases",
         "embedding_outbox",
     } <= tables
+
+
+def test_thread_schema_migration_backs_up_existing_memory_database(tmp_path):
+    path = tmp_path / "memory.db"
+    memory = MemoryStore(path)
+    memory.create("preference", "升级前记忆")
+    memory.close()
+
+    store = ThreadTurnStore(path)
+    store.close()
+
+    backup_path = path.with_name(path.name + ".pre-migration.bak")
+    assert backup_path.exists()
+    with sqlite3.connect(backup_path) as backup:
+        assert backup.execute("SELECT content FROM memories").fetchone()[0] == "升级前记忆"
+        thread_table = backup.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'threads'"
+        ).fetchone()
+    assert thread_table is None
+
+
+def test_adding_thread_schema_to_empty_memory_database_skips_backup(tmp_path):
+    path = tmp_path / "memory.db"
+    memory = MemoryStore(path)
+    memory.close()
+
+    store = ThreadTurnStore(path)
+    store.close()
+
+    assert not path.with_name(path.name + ".pre-migration.bak").exists()
 
 
 def test_restart_recovers_expired_maintenance_leases(tmp_path):

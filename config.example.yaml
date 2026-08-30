@@ -43,8 +43,6 @@ memory:
   decay_base: 1.0
   decay_lambda: 0.1
   decay_threshold: 0.02
-  short_term_ttl_s: 1800
-  short_term_capacity: 50
   cleanup_interval_s: 300.0
   vector_enabled: false
   embedding_provider: hashing
@@ -163,6 +161,7 @@ gateway:
 thread:
   segment_max_turns: 20
   segment_verbatim_max: 20
+  verbatim_turns: 4
   fallback_turns: 8
   episode_idle_s: 300
   maintenance_tick_s: 30

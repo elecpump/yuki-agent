@@ -1,13 +1,13 @@
 import json
-
 import pytest
 
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.soul_reflector import SoulReflector
 from yuki.cognition.l2.client import CloudClient, CloudError
 from yuki.memory.manager import MemoryManager
-from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.store import MemoryStore
+
+from tests.fakes import mark_automatically_strengthened
 
 
 class FakeClient:
@@ -29,9 +29,8 @@ def test_reflector_uses_only_automatic_stable_preferences_and_commits_candidate(
         "preference",
         "自动成熟偏好",
         sensitivity=0,
-        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
     )
-    memory.strengthen(stable_id)
+    mark_automatically_strengthened(tmp_path / "memory.db", stable_id)
     memory.write("preference", "私密偏好", sensitivity=1)
     store = SoulStore(tmp_path / "soul.json", "yuki", min_snapshot_interval_s=0)
     store.ensure()

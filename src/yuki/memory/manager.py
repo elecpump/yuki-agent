@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import math
 import time
-from collections import deque
 from pathlib import Path
 
 from yuki.logger import get_logger
@@ -19,36 +18,8 @@ class Reflector:
         raise NotImplementedError("reflection generation requires an LLM (future)")
 
 
-class ShortTermMemory:
-    """短期（工作）记忆：进程内 TTL 队列，不落盘。"""
-
-    def __init__(self, ttl_s: float = 1800, capacity: int = 50) -> None:
-        self._ttl = ttl_s
-        self._cap = capacity
-        self._items: deque[dict] = deque()
-
-    def add(self, content: str, *, kind: str = "event", at: float | None = None) -> None:
-        self._items.append(
-            {"content": content, "kind": kind, "ts": time.time() if at is None else at}
-        )
-        while len(self._items) > self._cap:
-            self._items.popleft()
-
-    def items(self, now: float | None = None) -> list[dict]:
-        now = time.time() if now is None else now
-        fresh = [it for it in self._items if now - it["ts"] <= self._ttl]
-        self._items = deque(fresh, maxlen=self._cap)
-        return list(reversed(fresh))
-
-    def recent(self, n: int = 5, now: float | None = None) -> list[dict]:
-        return self.items(now)[:n]
-
-    def clear(self) -> None:
-        self._items.clear()
-
-
 class MemoryManager:
-    """记忆门面：检索（FTS5 BM25 / 向量双路召回 + 向量重排）、清理策略、短期工作记忆。"""
+    """记忆门面：检索、向量重排和持久记忆清理策略。"""
 
     def __init__(
         self,
@@ -57,9 +28,6 @@ class MemoryManager:
         decay_base: float = 1.0,
         decay_lambda: float = 0.1,
         decay_threshold: float = 0.02,
-        short_term_ttl_s: float = 1800,
-        short_term_capacity: int = 50,
-        short_term: ShortTermMemory | None = None,
         embedding_indexer: MemoryEmbeddingIndexer | None = None,
         vector_enabled: bool = False,
         vector_candidates: int = 30,
@@ -75,9 +43,6 @@ class MemoryManager:
         self._vector_candidates = vector_candidates
         self._superseded_retention_days = max(0, int(superseded_retention_days))
         self._tombstone_retention_days = max(0, int(tombstone_retention_days))
-        self._short_term = short_term or ShortTermMemory(
-            ttl_s=short_term_ttl_s, capacity=short_term_capacity,
-        )
 
     @property
     def db_path(self) -> Path | None:
@@ -117,6 +82,10 @@ class MemoryManager:
             self._store.touch(memory_id)
         return mem
 
+    def admin_get(self, memory_id: int) -> dict | None:
+        """Internal diagnostics read that may include inactive memory revisions."""
+        return self._store.admin_get(memory_id)
+
     def touch(self, memory_id: int) -> None:
         self._store.touch(memory_id)
 
@@ -125,6 +94,20 @@ class MemoryManager:
 
     def list(self, *, memory_type: str | None = None, min_sensitivity: int = 0) -> list[dict]:
         return self._store.list(memory_type=memory_type, min_sensitivity=min_sensitivity)
+
+    def admin_list(
+        self,
+        *,
+        state: str | None = None,
+        memory_type: str | None = None,
+        min_sensitivity: int = 0,
+    ) -> list[dict]:
+        """Internal diagnostics list; ``state=None`` explicitly includes all revisions."""
+        return self._store.admin_list(
+            state=state,
+            memory_type=memory_type,
+            min_sensitivity=min_sensitivity,
+        )
 
     def query(
         self,
@@ -322,15 +305,6 @@ class MemoryManager:
 
     def ping(self) -> bool:
         return self._store.ping()
-
-    def short_term_add(self, content: str, *, kind: str = "event", at: float | None = None) -> None:
-        self._short_term.add(content, kind=kind, at=at)
-
-    def short_term_items(self) -> list[dict]:
-        return self._short_term.items()
-
-    def short_term_clear(self) -> None:
-        self._short_term.clear()
 
     def close(self) -> None:
         self._store.close()

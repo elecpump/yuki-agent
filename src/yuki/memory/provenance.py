@@ -1,4 +1,17 @@
 AUTOMATIC_STRENGTHENER = "memory_evolver"
+OPERATOR_STRENGTHENER = "operator"
+RESERVED_PROVENANCE_KEYS = frozenset(
+    {"strengthened_by", "strengthened_episode_count"}
+)
+
+
+def without_reserved_provenance(metadata: dict | None) -> dict:
+    """Return untrusted metadata without system-owned personality provenance."""
+    return {
+        key: value
+        for key, value in (metadata or {}).items()
+        if key not in RESERVED_PROVENANCE_KEYS
+    }
 
 
 def is_automatic_personality_evidence(memory: dict) -> bool:

@@ -10,7 +10,7 @@ from yuki.memory.embedding import (
     MemoryEmbeddingIndexer,
     build_embedding_indexer,
 )
-from yuki.memory.manager import MemoryManager, Reflector, ShortTermMemory
+from yuki.memory.manager import MemoryManager, Reflector
 from yuki.memory.store import MemoryStore
 from yuki.model_cache import ModelCacheManager
 
@@ -441,59 +441,9 @@ def test_wipe_and_ping(manager):
     assert manager.wipe() == 1
 
 
-def test_short_term_ttl_evicts_expired():
-    st = ShortTermMemory(ttl_s=10, capacity=3)
-    st.add("a", at=100.0)
-    st.add("b", at=200.0)
-    assert [it["content"] for it in st.items(now=205.0)] == ["b"]
-    assert [it["content"] for it in st.items(now=215.0)] == []
-
-
-def test_short_term_capacity_evicts_oldest():
-    st = ShortTermMemory(ttl_s=100, capacity=3)
-    for i in range(4):
-        st.add(f"item{i}", at=float(i))
-    assert [it["content"] for it in st.items(now=50.0)] == ["item3", "item2", "item1"]
-
-
 def test_reflector_generate_not_implemented():
     with pytest.raises(NotImplementedError):
         Reflector().generate([1, 2])
-
-
-def test_manager_short_term_capacity_param_honored(tmp_path):
-    m = MemoryManager(
-        MemoryStore(tmp_path / "mem.db"),
-        short_term_capacity=2,
-    )
-    m.short_term_add("a")
-    m.short_term_add("b")
-    m.short_term_add("c")
-    assert len(m.short_term_items()) == 2
-    m.close()
-
-
-def test_manager_short_term_ttl_param_honored(tmp_path):
-    m = MemoryManager(
-        MemoryStore(tmp_path / "mem.db"),
-        short_term_ttl_s=-1,
-        short_term_capacity=10,
-    )
-    m.short_term_add("a")
-    assert m.short_term_items() == []
-    m.close()
-
-
-def test_short_term_add_with_at_and_clear():
-    manager = MemoryManager(MemoryStore(":memory:"))
-    t0 = time.time()
-    manager.short_term_add("a", kind="turn", at=t0)
-    manager.short_term_add("b", kind="turn", at=t0 + 100.0)
-    items = manager.short_term_items()
-    assert [it["content"] for it in items] == ["b", "a"]
-    assert items[1]["ts"] == t0
-    manager.short_term_clear()
-    assert manager.short_term_items() == []
 
 
 def test_embedding_registry_builds_hashing_by_default():
@@ -546,6 +496,14 @@ def test_memory_manager_accepts_any_storage_backend():
 
         def query(self, text, *, memory_type=None, top_k=5, min_sensitivity=0):
             self.calls.append(("query", text, memory_type, top_k, min_sensitivity))
+            return []
+
+        def admin_get(self, memory_id):
+            self.calls.append(("admin_get", memory_id))
+            return None
+
+        def admin_list(self, *, state=None, memory_type=None, min_sensitivity=0):
+            self.calls.append(("admin_list", state, memory_type, min_sensitivity))
             return []
 
         def vacuum(self):

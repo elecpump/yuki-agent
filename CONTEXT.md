@@ -21,7 +21,9 @@ _Avoid_: semantic memory
 candidate，并按自动晋升门槛演进。不得从 agent 转述或推测中生成。
 
 **Strengthened（强化记忆）**:
-置位后衰减权重恒 1.0 且豁免自动清理；只能由确定性的自动演进策略根据跨 Episode 证据、置信度和冲突检查置位，candidate 永远不参与 agent 推理、Persona 或 Soul 演进。
+置位后衰减权重恒 1.0 且豁免自动清理。长期人格证据还必须带有自动演进器生成的
+provenance；CLI/运维强化只标记为 `operator`，不能影响 Persona 或 Soul。candidate 永远
+不参与 agent 推理、Persona 或 Soul 演进。
 
 **Sedimenter（记忆巩固）**:
 只通过 LLM 从对话轮次提取记忆草稿（偏好/事件/事实），无规则兜底；LLM 不可用或失败时跳过巩固并保留轮次原文，待后续重放。
