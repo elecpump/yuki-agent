@@ -56,7 +56,7 @@ from yuki.memory.embedding import (
     build_embedding_indexer,
 )
 from yuki.memory.manager import MemoryManager
-from yuki.memory.privacy import MemoryAccess, MemoryPurpose
+from yuki.memory.privacy import MemoryAccess
 from yuki.memory.service import register_memory_services
 from yuki.memory.store import MemoryStore
 from yuki.model_cache import ModelCacheManager
@@ -281,7 +281,6 @@ class CognitionAssembler:
                 cloud_client,
                 soul_store,
                 memory,
-                snapshot_provider=lambda: projector.build(context),
                 timeout_s=self.config.cloud.timeout_s,
             )
             soul_reflection_scheduler = SoulReflectionScheduler(
@@ -517,10 +516,7 @@ class CognitionAssembler:
         def persona_refresh(*, refine: bool = True) -> None:
             with refresh_lock:
                 soul = soul_store.load_or_default()
-                prefs = MemoryAccess(memory).list(
-                    purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
-                    memory_type="preference",
-                )
+                prefs = MemoryAccess(memory).personality_evidence()
                 refine_fn = (
                     bridge.refine_persona
                     if refine and self.config.persona.enable_llm_refine and bridge

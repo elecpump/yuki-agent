@@ -4,9 +4,9 @@ import pytest
 
 from yuki.cognition.brain.soul import SoulStore
 from yuki.cognition.brain.soul_reflector import SoulReflector
-from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.client import CloudClient, CloudError
 from yuki.memory.manager import MemoryManager
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.store import MemoryStore
 
 
@@ -20,9 +20,18 @@ class FakeClient:
         return {"choices": [{"message": {"content": self.content}}]}
 
 
-def test_reflector_uses_bounded_public_context_and_commits_candidate(tmp_path):
+def test_reflector_uses_only_automatic_stable_preferences_and_commits_candidate(tmp_path):
     memory = MemoryManager(MemoryStore(tmp_path / "memory.db"))
-    memory.write("preference", "公开偏好", sensitivity=0)
+    memory.write("preference", "普通公开偏好", sensitivity=0)
+    manual_id = memory.write("preference", "人工强化偏好", sensitivity=0)
+    memory.strengthen(manual_id)
+    stable_id = memory.write(
+        "preference",
+        "自动成熟偏好",
+        sensitivity=0,
+        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
+    )
+    memory.strengthen(stable_id)
     memory.write("preference", "私密偏好", sensitivity=1)
     store = SoulStore(tmp_path / "soul.json", "yuki", min_snapshot_interval_s=0)
     store.ensure()
@@ -32,15 +41,8 @@ def test_reflector_uses_bounded_public_context_and_commits_candidate(tmp_path):
         client,
         store,
         memory,
-        snapshot_provider=lambda: ContextSnapshot(
-            recent_turns=tuple(
-                {"kind": "user", "content": f"turn-{index}-" + "x" * 800}
-                for index in range(20)
-            )
-        ),
         on_updated=lambda: refreshed.append(True),
         timeout_s=3.0,
-        max_turns=2,
     )
 
     assert reflector.reflect() is True
@@ -56,9 +58,8 @@ def test_reflector_uses_bounded_public_context_and_commits_candidate(tmp_path):
             "\n</reflection-data>"
         )
     )
-    assert [item["content"] for item in payload["preferences"]] == ["公开偏好"]
-    assert len(payload["recent_turns"]) == 2
-    assert all(len(item["content"]) <= 500 for item in payload["recent_turns"])
+    assert [item["content"] for item in payload["preferences"]] == ["自动成熟偏好"]
+    assert "recent_turns" not in payload
     memory.close()
 
 
@@ -79,7 +80,6 @@ def test_reflector_skips_invalid_or_empty_candidate(tmp_path, content):
         FakeClient(content),
         store,
         memory,
-        snapshot_provider=ContextSnapshot,
     )
 
     assert reflector.reflect() is False
@@ -98,7 +98,6 @@ def test_reflector_skips_cloud_failure(tmp_path):
         FailingClient(),
         store,
         memory,
-        snapshot_provider=ContextSnapshot,
     )
 
     assert reflector.reflect() is False
@@ -121,7 +120,6 @@ def test_reflector_skips_cloud_timeout(tmp_path):
         client,
         store,
         memory,
-        snapshot_provider=ContextSnapshot,
         timeout_s=0.1,
     )
 
@@ -144,7 +142,6 @@ def test_reflector_rejects_candidate_generated_from_stale_revision(tmp_path):
         RacingClient(),
         store,
         memory,
-        snapshot_provider=ContextSnapshot,
     )
 
     assert reflector.reflect() is False
@@ -159,7 +156,6 @@ def test_reflector_honors_cancellation_before_commit(tmp_path):
         FakeClient('{"description":"不应提交"}'),
         store,
         memory,
-        snapshot_provider=ContextSnapshot,
     )
 
     assert reflector.reflect(cancelled=lambda: True) is False

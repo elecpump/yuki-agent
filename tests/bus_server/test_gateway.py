@@ -10,7 +10,6 @@ from yuki.bus import BUS_HEALTH_SERVICE
 from yuki.bus_server.ws_channels import WsChannelSpec
 from yuki.bus_server.gateway import (
     COGNITION_CHAT_SERVICE,
-    SOUL_GET_SERVICE,
     ChatTaskStore,
     GatewayRuntime,
     create_gateway_app,
@@ -43,17 +42,13 @@ def test_gateway_health_aggregates_hub_and_heartbeats():
     assert "health/gateway" in bus.services
 
 
-def test_gateway_memory_endpoints_proxy_memory_rpc():
-    bus = FakeBus()
-    bus.respond("memory/list", lambda payload: {"results": [{"id": 1}]})
-    bus.respond("memory/get", lambda payload: {"memory": {"id": payload["id"]}})
-    bus.respond("memory/delete", lambda payload: {"deleted": True})
-    runtime, client = _client(bus=bus)
+def test_gateway_does_not_expose_memory_management_endpoints():
+    runtime, client = _client(bus=FakeBus())
 
     with client:
-        assert client.get("/api/memory").json() == {"results": [{"id": 1}]}
-        assert client.get("/api/memory/7").json() == {"memory": {"id": 7}}
-        assert client.delete("/api/memory/7").json() == {"deleted": True}
+        assert client.get("/api/memory").status_code == 404
+        assert client.get("/api/memory/7").status_code == 404
+        assert client.delete("/api/memory/7").status_code == 404
 
     assert runtime._started is False
 
@@ -84,16 +79,13 @@ def test_gateway_chat_rest_uses_cognition_chat_rpc_and_stores_task():
     assert not any(topic == Topics.REPLY for topic, _ in bus.published)
 
 
-def test_gateway_soul_endpoint_proxies_registered_soul_rpc():
-    bus = FakeBus()
-    bus.respond(SOUL_GET_SERVICE, lambda payload: {"soul": {"persona_name": "yuki"}})
-    runtime, client = _client(bus=bus)
+def test_gateway_does_not_expose_soul_endpoint():
+    _, client = _client(bus=FakeBus())
 
     with client:
         response = client.get("/api/soul")
 
-    assert response.status_code == 200
-    assert response.json() == {"soul": {"persona_name": "yuki"}}
+    assert response.status_code == 404
 
 
 def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():

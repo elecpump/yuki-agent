@@ -11,6 +11,7 @@ from yuki.cognition.context.consolidation import (
 from yuki.cognition.context.sediment import validate_candidates
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.memory.manager import MemoryManager
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.store import MemoryStore
 
 
@@ -159,6 +160,41 @@ def test_preference_stays_candidate_then_promotes_across_two_episodes(tmp_path):
             assert memory.list() == []
 
     assert len(memory.list(memory_type="preference")) == 1
+    store.close()
+    thread.close()
+    memory.close()
+
+
+def test_preference_is_marked_as_automatically_strengthened(tmp_path):
+    _, memory, thread, store = _stores(tmp_path)
+    store.policy = EvolutionPolicy(
+        promotion_min_episodes=2,
+        strengthen_min_episodes=3,
+        explicit_activation_confidence=0.9,
+    )
+    for index, at in enumerate((100.0, 200.0, 300.0), start=1):
+        _close_episode(thread, "我喜欢喝茶", at=at)
+        job = store.claim(at=at + 21)
+        candidate = _candidate(
+            job,
+            {
+                "draft_key": f"tea-{index}",
+                "proposed_op": "add",
+                "memory_type": "preference",
+                "canonical_key": "饮料偏好",
+                "content": "用户喜欢喝茶",
+                "confidence": 0.8,
+                "sensitivity": 0,
+                "evidence": [{"turn_id": job.turns[0]["id"], "quote": "我喜欢喝茶"}],
+                "metadata": {},
+            },
+        )
+        store.complete(job, [candidate])
+
+    preference = memory.list(memory_type="preference")[0]
+    assert preference["strengthened"] is True
+    assert preference["metadata"]["strengthened_by"] == AUTOMATIC_STRENGTHENER
+    assert preference["metadata"]["strengthened_episode_count"] == 3
     store.close()
     thread.close()
     memory.close()

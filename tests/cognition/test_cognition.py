@@ -8,6 +8,7 @@ from yuki.cognition.vlm import VisualUnderstander
 from yuki.config import Config
 from yuki.functions.service import FUNCTIONS_CALL_SERVICE
 from yuki.memory.manager import MemoryManager
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.service import MEMORY_SERVICES
 from yuki.memory.store import MemoryStore
 from yuki.topics import Topics
@@ -542,7 +543,7 @@ def test_cognition_agent_vlm_health_degraded_via_gate(tmp_path):
     assert status.detail["enabled"] is False
 
 
-def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, monkeypatch):
+def test_persona_refresh_only_sees_automatic_stable_preferences(tmp_path, monkeypatch):
     class FakeCloudClient:
         def __init__(self, **kwargs):
             self.calls = []
@@ -556,7 +557,16 @@ def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, mon
     monkeypatch.setenv("YUKI_CLOUD_API_KEY", "test-key")
 
     memory = MemoryManager(MemoryStore(tmp_path / "mem.db"))
-    memory.write("preference", "公开偏好", sensitivity=0)
+    memory.write("preference", "普通公开偏好", sensitivity=0)
+    manual_id = memory.write("preference", "人工强化偏好", sensitivity=0)
+    memory.strengthen(manual_id)
+    stable_id = memory.write(
+        "preference",
+        "自动成熟偏好",
+        sensitivity=0,
+        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
+    )
+    memory.strengthen(stable_id)
     memory.write("preference", "私密偏好", sensitivity=1)
     memory.write("preference", "高敏偏好", sensitivity=2)
 
@@ -571,14 +581,16 @@ def test_persona_refresh_cloud_refine_only_sees_public_preferences(tmp_path, mon
     agent.setup()
     try:
         refine_prompt = fake.calls[0][-1]["content"]
-        assert "公开偏好" in refine_prompt
+        assert "自动成熟偏好" in refine_prompt
+        assert "普通公开偏好" not in refine_prompt
+        assert "人工强化偏好" not in refine_prompt
         assert "私密偏好" not in refine_prompt
         assert "高敏偏好" not in refine_prompt
     finally:
         agent.teardown()
 
 
-def test_persona_refresh_includes_safe_explicit_preference(tmp_path, monkeypatch):
+def test_persona_refresh_does_not_include_direct_user_preference(tmp_path, monkeypatch):
     class FakeCloudClient:
         def __init__(self, **kwargs):
             self.calls = []
@@ -609,6 +621,6 @@ def test_persona_refresh_includes_safe_explicit_preference(tmp_path, monkeypatch
         )
         agent._persona_refresh()
         refine_prompt = fake.calls[-1][-1]["content"]
-        assert "请回复简短一些" in refine_prompt
+        assert "请回复简短一些" not in refine_prompt
     finally:
         agent.teardown()

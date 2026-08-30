@@ -11,6 +11,7 @@ from pathlib import Path
 
 from yuki.cognition.context.sediment import MemoryCandidate, normalize_surface
 from yuki.logger import get_logger
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 
 logger = get_logger("yuki.cognition.context.consolidation")
 
@@ -408,9 +409,20 @@ class ConsolidationStore:
                     and support >= self.policy.strengthen_min_episodes
                 )
                 if should_strengthen:
+                    metadata = self._metadata(existing["metadata"])
+                    metadata.update(
+                        {
+                            "strengthened_by": AUTOMATIC_STRENGTHENER,
+                            "strengthened_episode_count": support,
+                        }
+                    )
                     self._conn.execute(
-                        "UPDATE memories SET strengthened = 1, updated_at = ? WHERE id = ?",
-                        (now, int(existing["id"])),
+                        """
+                        UPDATE memories
+                        SET strengthened = 1, metadata = ?, updated_at = ?
+                        WHERE id = ?
+                        """,
+                        (json.dumps(metadata, ensure_ascii=False), now, int(existing["id"])),
                     )
                 self._accept_support(candidate, candidate_id)
             return

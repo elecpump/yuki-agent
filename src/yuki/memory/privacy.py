@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 from enum import StrEnum
 
 from yuki.memory.manager import MemoryManager
+from yuki.memory.provenance import is_automatic_personality_evidence
 
 
 class MemoryPurpose(StrEnum):
@@ -87,6 +90,14 @@ class MemoryAccess:
             self._manager.list(memory_type=memory_type, min_sensitivity=min_sensitivity),
             purpose,
         )
+
+    def personality_evidence(self) -> list[dict]:
+        """Return only stable preferences matured by the automatic evolver."""
+        preferences = self.list(
+            purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
+            memory_type="preference",
+        )
+        return [memory for memory in preferences if is_automatic_personality_evidence(memory)]
 
     def get(self, memory_id: int, *, purpose: MemoryPurpose | str) -> dict | None:
         memory = self._manager.get(memory_id)

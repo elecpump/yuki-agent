@@ -14,7 +14,9 @@
 - 单机单用户；不设计多用户隔离和租户模型。
 - 完整 Episode 可交给已配置的 cloud LLM；不把云端数据出站风险作为本阶段阻断项。
 - Thread、记忆候选、人格和 Soul 的演进均由 agent 内部维护，对用户隐藏。
-- 不新增让用户查看、确认、编辑、强化、删除或回滚记忆/人格的产品交互。
+- 不新增让用户查看、确认、编辑、强化、删除或回滚记忆/人格的产品交互；
+  gateway 亦不暴露记忆/灵魂管理端点（`/api/memory*`、`/api/soul` 已移除）；
+  内部 CLI/诊断能力保留为运维边界（2026-08-30 收紧）。
   用户在普通对话中的表达只是证据，不能绕过自动演进策略直接执行 mutation。
 
 系统必须满足以下不变量：
@@ -296,7 +298,9 @@ Segment 关闭后由 scheduler 调用 LLM summarizer：
 - Builder 的 `verbatim_turns=4` 保留原语义：预算再紧也优先保留最近 4 轮；随后才在
   剩余预算中从 `recent_turns` 候选池继续填充。投影裁剪只读
   `thread.segment_verbatim_max`，两个参数不得互相复用。
-- `LocalViewBuilder`、SoulReflector 和 proactive 路径消费同一个投影，保证 L1/L2 一致。
+- `LocalViewBuilder` 和 proactive 路径消费同一个投影，保证 L1/L2 一致。
+- SoulReflector 不消费投影（2026-08-30 收紧）：反思输入仅 soul +
+  `personality_evidence()`（§7 的自动 strengthened 稳定 preference），不含 recent turns。
 
 ## 6. Sedimenter 与全自动记忆演进
 
@@ -403,6 +407,10 @@ candidate、memory、Persona 或 Soul 状态。
 
 - Sedimenter 只产生记忆 candidate，不直接修改 Persona 或 Soul。
 - Persona refresh 和 SoulReflector 只能读取 active memories；candidate 永远不可见。
+- 人格演进证据 = `personality_evidence()`：仅 `preference` + `strengthened` +
+  `metadata.strengthened_by == "memory_evolver"`（自动演进器写入的 provenance，
+  2026-08-30 落地）；人工/工具 strengthen 与历史存量 preference（无 provenance）
+  不进入人格演进。
 - Soul 更新继续使用现有 revision、快照和冲突保护机制。
 - 只有自动 strengthened 的稳定 preference 才能作为长期人格演进证据；scenario 不直接改变
   人格。
@@ -469,7 +477,8 @@ LLM prompt；领域接入还必须注册对应的 `validate_candidate`，不能�
 1. **Thread persistence**：schema/migration、ThreadTurnStore、先写 user turn 的调用时序、
    Segment/Episode 状态机和重启恢复。
 2. **Projection**：扩展 ContextSnapshot/ContextProjector；改造 CloudViewBuilder、
-   LocalViewBuilder、SoulReflector 和 proactive 消费路径；删除请求内 `_fold()`。
+   LocalViewBuilder 和 proactive 消费路径；SoulReflector 改为只读
+   `personality_evidence()`（§7，不消费投影）；删除请求内 `_fold()`。
 3. **Maintenance**：Segment summarizer、ThreadMaintenanceScheduler、lease/重试和 shutdown 顺序。
 4. **Candidate pipeline**：MemoryCandidate、consolidation_runs、校验、MemoryEvolver、
    CandidateResolver/key aliases、memory_history、revision/tombstone 和 embedding outbox。
@@ -489,6 +498,9 @@ LLM prompt；领域接入还必须注册对应的 `validate_candidate`，不能�
 - consolidation 原子性：在候选写入、memory mutation、水位线推进的每个边界注入崩溃，
   重放不得重复生效。
 - candidate 不出现在 MemoryAccess、Cloud/Local view、Persona 或 SoulReflector 中。
+- 人格证据门控：仅 `strengthened_by="memory_evolver"` 的 preference 进入
+  persona_refresh/SoulReflector；人工强化与存量无 provenance 偏好被排除；
+  gateway 记忆/灵魂端点返回 404。
 - target allowlist、revision conflict、evidence ownership、原始/归一化子串证据、schema 和
   domain validator；只改述但无法匹配原文的 quote 仍应拒绝。
 - canonical key 的大小写、空白、标点、停用词和 alias 归一化；跨 Episode 的
@@ -519,6 +531,10 @@ LLM prompt；领域接入还必须注册对应的 `validate_candidate`，不能�
 ## 12. 风险与兼容
 
 - 用户侧 ChatRequest/session_id 和 bus 协议不新增产品操作；内部存储语义改变。
+- gateway 移除 `/api/memory*`、`/api/soul` 端点（对用户隐藏，§0，2026-08-30）；
+  总线 `memory/*`、`SOUL_GET_SERVICE` 服务与 CLI 管理面保留。
+- 历史存量 strengthened preference 无 `strengthened_by` provenance：保守排除出人格
+  演进证据，不自动迁移；如需恢复可经 CLI 手工补 metadata。
 - memories 增加状态/revision 后，所有查询、list、persona 和 cleanup 路径必须显式过滤
   `state='active'`；管理 CLI 可通过内部参数查看历史状态。
 - schema migration 必须先备份数据库，并验证 FTS/embedding 与 active revision 一致。

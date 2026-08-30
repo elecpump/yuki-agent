@@ -1,5 +1,6 @@
 from yuki.memory.manager import MemoryManager
 from yuki.memory.privacy import MemoryAccess, MemoryPrivacyPolicy, MemoryPurpose
+from yuki.memory.provenance import AUTOMATIC_STRENGTHENER
 from yuki.memory.store import MemoryStore
 
 
@@ -55,3 +56,36 @@ def test_memory_access_query_only_touches_filtered_results(tmp_path) -> None:
     assert manager._store.get(public_id)["access_count"] == 1
     assert manager._store.get(private_id)["access_count"] == 0
     assert manager._store.get(high_id)["access_count"] == 0
+
+
+def test_personality_evidence_requires_automatic_strengthening(tmp_path) -> None:
+    manager = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    manager.write("preference", "普通活跃偏好", sensitivity=0)
+    manual_id = manager.write("preference", "人工强化偏好", sensitivity=0)
+    manager.strengthen(manual_id)
+    automatic_id = manager.write(
+        "preference",
+        "自动成熟偏好",
+        sensitivity=0,
+        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
+    )
+    manager.strengthen(automatic_id)
+    private_id = manager.write(
+        "preference",
+        "私密自动成熟偏好",
+        sensitivity=1,
+        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
+    )
+    manager.strengthen(private_id)
+    scenario_id = manager.write(
+        "scenario",
+        "自动强化场景",
+        sensitivity=0,
+        metadata={"strengthened_by": AUTOMATIC_STRENGTHENER},
+    )
+    manager.strengthen(scenario_id)
+
+    evidence = MemoryAccess(manager).personality_evidence()
+
+    assert [item["content"] for item in evidence] == ["自动成熟偏好"]
+    manager.close()

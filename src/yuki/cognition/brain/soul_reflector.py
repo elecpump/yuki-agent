@@ -6,14 +6,12 @@ from yuki.cognition.brain.soul import (
     SoulStore,
     SoulValidationError,
 )
-from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.client import CloudClient, CloudError
 from yuki.logger import get_logger
 from yuki.memory.manager import MemoryManager
-from yuki.memory.privacy import MemoryAccess, MemoryPurpose
+from yuki.memory.privacy import MemoryAccess
 
 logger = get_logger("yuki.cognition.brain.soul_reflector")
-MAX_TURN_KIND_CHARS = 32
 MAX_EVIDENCE_CHARS = 500
 MAX_COMPACT_CORE_VALUES = 10
 MAX_CORE_VALUE_ID_CHARS = 100
@@ -38,21 +36,17 @@ class SoulReflector:
         client: CloudClient,
         store: SoulStore,
         memory: MemoryManager,
-        snapshot_provider: Callable[[], ContextSnapshot],
         *,
         on_updated: Callable[[], None] | None = None,
         timeout_s: float = 10.0,
-        max_turns: int = 12,
         max_preferences: int = 20,
         max_input_chars: int = 12000,
     ) -> None:
         self._client = client
         self._store = store
         self._memory = memory
-        self._snapshot_provider = snapshot_provider
         self._on_updated = on_updated
         self._timeout_s = max(0.1, float(timeout_s))
-        self._max_turns = max(1, int(max_turns))
         self._max_preferences = max(1, int(max_preferences))
         self._max_input_chars = max(1000, int(max_input_chars))
 
@@ -63,7 +57,7 @@ class SoulReflector:
     def reflect(self, *, cancelled: Callable[[], bool] | None = None) -> bool:
         soul = self._store.load_or_default()
         base_revision = int(soul.get("revision", 0))
-        payload = self._build_payload(soul, self._snapshot_provider())
+        payload = self._build_payload(soul)
         try:
             response = self._client.chat(
                 [
@@ -108,19 +102,8 @@ class SoulReflector:
             self._on_updated()
         return bool(result["changed"])
 
-    def _build_payload(self, soul: dict, snapshot: ContextSnapshot) -> str:
-        turns = []
-        for turn in list(snapshot.recent_turns or ())[: self._max_turns]:
-            if not isinstance(turn, dict):
-                continue
-            turns.append({
-                "kind": str(turn.get("kind", "turn"))[:MAX_TURN_KIND_CHARS],
-                "content": str(turn.get("content", ""))[:MAX_EVIDENCE_CHARS],
-            })
-        preferences = MemoryAccess(self._memory).list(
-            purpose=MemoryPurpose.PERSONA_REFINE_CLOUD,
-            memory_type="preference",
-        )[: self._max_preferences]
+    def _build_payload(self, soul: dict) -> str:
+        preferences = MemoryAccess(self._memory).personality_evidence()[: self._max_preferences]
         data = {
             "soul": {
                 "revision": soul.get("revision", 0),
@@ -128,7 +111,6 @@ class SoulReflector:
                 "personality_traits": soul.get("personality_traits", {}),
                 "personality_description": soul.get("personality_description", ""),
             },
-            "recent_turns": turns,
             "preferences": [
                 {
                     "content": str(item.get("content", ""))[:MAX_EVIDENCE_CHARS],
@@ -138,9 +120,6 @@ class SoulReflector:
             ],
         }
         serialized = json.dumps(data, ensure_ascii=False)
-        while len(serialized) > self._max_input_chars and data["recent_turns"]:
-            data["recent_turns"].pop()
-            serialized = json.dumps(data, ensure_ascii=False)
         while len(serialized) > self._max_input_chars and data["preferences"]:
             data["preferences"].pop()
             serialized = json.dumps(data, ensure_ascii=False)

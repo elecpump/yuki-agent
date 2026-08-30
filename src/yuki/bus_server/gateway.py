@@ -18,7 +18,7 @@ from yuki.bus_server.ws_channels import (
     register_ws_channel,
     ws_channels,
 )
-from yuki.cognition.brain.hub import COGNITION_CHAT_SERVICE, SOUL_GET_SERVICE
+from yuki.cognition.brain.hub import COGNITION_CHAT_SERVICE
 from yuki.config import Config
 from yuki.topics import Topics
 
@@ -474,18 +474,6 @@ def create_gateway_app(
     def health() -> dict:
         return runtime.health_snapshot()
 
-    @app.get("/api/memory")
-    def memory_list(type: str | None = None, min_sensitivity: int = 0) -> dict:
-        return runtime.request("memory/list", {"type": type, "min_sensitivity": min_sensitivity})
-
-    @app.get("/api/memory/{memory_id}")
-    def memory_get(memory_id: int) -> dict:
-        return runtime.request("memory/get", {"id": memory_id})
-
-    @app.delete("/api/memory/{memory_id}")
-    def memory_delete(memory_id: int) -> dict:
-        return runtime.request("memory/delete", {"id": memory_id})
-
     @app.get("/api/history/sessions")
     def history_sessions() -> dict:
         return runtime.list_history_sessions()
@@ -508,10 +496,6 @@ def create_gateway_app(
     @app.get("/api/config")
     def config() -> dict:
         return runtime.public_config()
-
-    @app.get("/api/soul")
-    def soul() -> dict:
-        return runtime.request(SOUL_GET_SERVICE, {})
 
     @app.get("/api/perception/status")
     def perception_status() -> dict:
