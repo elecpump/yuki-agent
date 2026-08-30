@@ -9,6 +9,8 @@ describe("chat slice", () => {
       sendLocked: false,
       requestGeneration: 0,
       ignoreGeneration: null,
+      nextRequestMayQueue: false,
+      requestMayBeQueued: false,
       chatError: null,
     });
   });
@@ -57,5 +59,15 @@ describe("chat slice", () => {
     useAppStore.getState().failPendingOnDisconnect();
     expect(useAppStore.getState()).toMatchObject({ pending: false, sendLocked: true });
     expect(useAppStore.getState().chatError).toContain("结果无法恢复");
+  });
+
+  it("marks the first request after local cancel as potentially queued", () => {
+    useAppStore.getState().beginRequest("旧请求");
+    useAppStore.getState().cancelLocal();
+    useAppStore.getState().finishLocalCancel();
+    useAppStore.getState().beginRequest("新请求");
+
+    expect(useAppStore.getState().requestMayBeQueued).toBe(true);
+    expect(useAppStore.getState().nextRequestMayQueue).toBe(false);
   });
 });

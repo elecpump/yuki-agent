@@ -3,10 +3,11 @@ import { useState, type KeyboardEvent } from "react";
 
 interface ChatInputProps {
   disabled: boolean;
+  disabledReason?: string;
   onSend: (text: string) => boolean;
 }
 
-export function ChatInput({ disabled, onSend }: ChatInputProps) {
+export function ChatInput({ disabled, disabledReason, onSend }: ChatInputProps) {
   const [value, setValue] = useState("");
 
   const send = () => {
@@ -26,7 +27,7 @@ export function ChatInput({ disabled, onSend }: ChatInputProps) {
         <div className="composer-box">
           <textarea
             aria-label="给 Yuki 发消息"
-            placeholder={disabled ? "等待当前请求结束…" : "和 Yuki 说点什么…"}
+            placeholder="和 Yuki 说点什么…"
             value={value}
             rows={1}
             onChange={(event) => setValue(event.target.value)}
@@ -36,7 +37,9 @@ export function ChatInput({ disabled, onSend }: ChatInputProps) {
             发送
           </Button>
         </div>
-        <div className="composer-hint">Enter 发送 · Shift + Enter 换行</div>
+        <div className="composer-hint">
+          {disabledReason || "Enter 发送 · Shift + Enter 换行"}
+        </div>
       </div>
     </div>
   );

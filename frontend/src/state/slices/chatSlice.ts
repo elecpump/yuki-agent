@@ -17,6 +17,8 @@ export interface ChatSlice {
   sendLocked: boolean;
   requestGeneration: number;
   ignoreGeneration: number | null;
+  nextRequestMayQueue: boolean;
+  requestMayBeQueued: boolean;
   chatError: string | null;
   beginRequest: (text: string) => number;
   receiveAssistant: (message: AssistantChunkMessage) => void;
@@ -35,6 +37,8 @@ export const createChatSlice: StateCreator<ChatSlice, [], [], ChatSlice> = (set,
   sendLocked: false,
   requestGeneration: 0,
   ignoreGeneration: null,
+  nextRequestMayQueue: false,
+  requestMayBeQueued: false,
   chatError: null,
 
   beginRequest: (text) => {
@@ -48,6 +52,8 @@ export const createChatSlice: StateCreator<ChatSlice, [], [], ChatSlice> = (set,
       sendLocked: true,
       requestGeneration: generation,
       ignoreGeneration: null,
+      requestMayBeQueued: state.nextRequestMayQueue,
+      nextRequestMayQueue: false,
       chatError: null,
     }));
     return generation;
@@ -74,6 +80,7 @@ export const createChatSlice: StateCreator<ChatSlice, [], [], ChatSlice> = (set,
           : state.messages,
       pending: false,
       sendLocked: false,
+      requestMayBeQueued: false,
       chatError: message.status === "failed" ? message.error || "回复失败" : null,
     }));
   },
@@ -85,6 +92,8 @@ export const createChatSlice: StateCreator<ChatSlice, [], [], ChatSlice> = (set,
       pending: false,
       sendLocked: true,
       ignoreGeneration: state.requestGeneration,
+      nextRequestMayQueue: true,
+      requestMayBeQueued: false,
       chatError: null,
     });
     return state.requestGeneration;
@@ -97,6 +106,7 @@ export const createChatSlice: StateCreator<ChatSlice, [], [], ChatSlice> = (set,
     set({
       pending: false,
       sendLocked: true,
+      requestMayBeQueued: false,
       chatError: "连接中断，回复可能已执行但结果无法恢复。连接恢复后可手动重试。",
     });
   },

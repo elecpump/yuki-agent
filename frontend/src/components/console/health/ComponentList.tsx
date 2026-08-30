@@ -1,5 +1,18 @@
 import type { ComponentHealth } from "../../../types/api";
 
+function formatDetailValue(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "boolean") return value ? "true" : "false";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return "[无法序列化]";
+    }
+  }
+  return String(value);
+}
+
 export function ComponentList({ components }: { components: Record<string, ComponentHealth> }) {
   const entries = Object.entries(components);
   if (!entries.length) return <div className="component-detail">暂无组件数据</div>;
@@ -14,7 +27,7 @@ export function ComponentList({ components }: { components: Record<string, Compo
           {Object.keys(health.detail || {}).length > 0 && (
             <div className="component-detail">
               {Object.entries(health.detail)
-                .map(([key, value]) => `${key}: ${String(value)}`)
+                .map(([key, value]) => `${key}: ${formatDetailValue(value)}`)
                 .join(" · ")}
             </div>
           )}

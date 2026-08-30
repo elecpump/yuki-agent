@@ -25,6 +25,8 @@ describe("useChat integration", () => {
       sendLocked: false,
       requestGeneration: 0,
       ignoreGeneration: null,
+      nextRequestMayQueue: false,
+      requestMayBeQueued: false,
       chatError: null,
       chatWsState: "idle",
       chatLastMessageAt: null,

@@ -14,6 +14,8 @@ export function ChatPanel({ onSend, onCancel }: ChatPanelProps) {
   const messages = useAppStore((state) => state.messages);
   const pending = useAppStore((state) => state.pending);
   const sendLocked = useAppStore((state) => state.sendLocked);
+  const chatWsState = useAppStore((state) => state.chatWsState);
+  const requestMayBeQueued = useAppStore((state) => state.requestMayBeQueued);
   const error = useAppStore((state) => state.chatError);
   const toggleConsole = useAppStore((state) => state.toggleConsole);
   const listRef = useRef<HTMLDivElement>(null);
@@ -46,11 +48,23 @@ export function ChatPanel({ onSend, onCancel }: ChatPanelProps) {
           ) : (
             messages.map((message) => <MessageBubble key={message.id} message={message} />)
           )}
-          {pending && <ThinkingIndicator onCancel={onCancel} />}
+          {pending && (
+            <ThinkingIndicator onCancel={onCancel} mayBeQueued={requestMayBeQueued} />
+          )}
         </div>
       </div>
       {error && <div className="chat-composer-inner chat-error">{error}</div>}
-      <ChatInput disabled={sendLocked} onSend={onSend} />
+      <ChatInput
+        disabled={sendLocked || chatWsState !== "open"}
+        disabledReason={
+          sendLocked
+            ? "等待当前请求结束…"
+            : chatWsState !== "open"
+              ? "对话通道连接中，输入内容会保留"
+              : undefined
+        }
+        onSend={onSend}
+      />
     </main>
   );
 }

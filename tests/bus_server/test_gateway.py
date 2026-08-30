@@ -47,6 +47,47 @@ def test_gateway_health_aggregates_hub_and_heartbeats():
     assert "health/gateway" in bus.services
 
 
+def test_gateway_desktop_frontend_health_contract_and_windows_cors():
+    bus = FakeBus()
+    bus.respond(
+        BUS_HEALTH_SERVICE,
+        lambda payload: {
+            "healthy": True,
+            "process": "bus_server",
+            "components": {"proxy": {"ok": True, "last_forwarded_s": 0.5}},
+        },
+    )
+    runtime, client = _client(bus=bus)
+
+    with client:
+        runtime.on_heartbeat(
+            Topics.HEARTBEAT,
+            {
+                "process": "yuki",
+                "ts": time.time(),
+                "healthy": True,
+                "components": {"cognition.brain": {"ok": True, "detail": {}}},
+            },
+        )
+        preflight = client.options(
+            "/api/health",
+            headers={
+                "Origin": "http://tauri.localhost",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        with client.websocket_connect("/ws/status") as ws:
+            initial = ws.receive_json()
+
+    assert preflight.status_code == 200
+    assert preflight.headers["access-control-allow-origin"] == "http://tauri.localhost"
+    assert initial["type"] == "health"
+    assert initial["data"]["gateway"]["healthy"] is True
+    assert initial["data"]["hub"]["components"]["proxy"]["ok"] is True
+    assert initial["data"]["processes"]["yuki"]["fresh"] is True
+    assert initial["data"]["processes"]["yuki"]["last_seen_age_s"] >= 0
+
+
 def test_gateway_health_marks_stale_or_invalid_heartbeats_not_fresh():
     runtime, _ = _client(config=Config(health={"heartbeat_interval_s": 5.0}))
     runtime.on_heartbeat(
