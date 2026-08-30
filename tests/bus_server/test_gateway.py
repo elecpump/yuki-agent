@@ -47,6 +47,27 @@ def test_gateway_health_aggregates_hub_and_heartbeats():
     assert "health/gateway" in bus.services
 
 
+def test_gateway_health_prefers_in_process_hub_snapshot():
+    class Hub:
+        def health_snapshot(self):
+            return {"healthy": True, "process": "bus_server", "source": "in-process"}
+
+    bus = FakeBus()
+    bus.respond(
+        BUS_HEALTH_SERVICE,
+        lambda payload: pytest.fail("local service bus must not query remote hub health"),
+    )
+    runtime = GatewayRuntime(Config(), bus, hub=Hub())
+
+    snapshot = runtime.health_snapshot()
+
+    assert snapshot["hub"] == {
+        "healthy": True,
+        "process": "bus_server",
+        "source": "in-process",
+    }
+
+
 def test_gateway_desktop_frontend_health_contract_and_windows_cors():
     bus = FakeBus()
     bus.respond(

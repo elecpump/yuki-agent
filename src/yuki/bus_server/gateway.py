@@ -152,9 +152,10 @@ class ConnectionManager:
 
 
 class GatewayRuntime:
-    def __init__(self, config: Config, bus) -> None:
+    def __init__(self, config: Config, bus, *, hub=None) -> None:
         self.config = config
         self.bus = bus
+        self.hub = hub
         self.tasks = ChatTaskStore()
         self._heartbeats: dict[str, dict] = {}
         self._foreground: dict = {}
@@ -256,7 +257,10 @@ class GatewayRuntime:
 
     def health_snapshot(self) -> dict:
         try:
-            hub = self.bus.request(BUS_HEALTH_SERVICE, {}, timeout_ms=1000)
+            if self.hub is not None:
+                hub = self.hub.health_snapshot()
+            else:
+                hub = self.bus.request(BUS_HEALTH_SERVICE, {}, timeout_ms=1000)
         except Exception as exc:
             hub = {"healthy": False, "error": str(exc)}
         return self._health_snapshot(hub)
@@ -530,7 +534,7 @@ def create_gateway_app(
 
 
 class GatewayServer:
-    def __init__(self, config: Config, bus=None) -> None:
+    def __init__(self, config: Config, bus=None, *, hub=None) -> None:
         self.config = config
         self._owns_bus = bus is None
         self.bus = bus or BusNode(
@@ -539,7 +543,7 @@ class GatewayServer:
             auth_token=config.bus.auth_token,
             max_msg_size=config.bus.max_msg_size,
         )
-        self.runtime = GatewayRuntime(config, self.bus)
+        self.runtime = GatewayRuntime(config, self.bus, hub=hub)
         self.app = create_gateway_app(self.runtime)
         self._server = None
         self._thread: threading.Thread | None = None

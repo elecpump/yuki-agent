@@ -132,6 +132,7 @@ class YukiApp:
                 self.gateway = self.gateway or GatewayServer(
                     self.config,
                     bus=self.local_bus,
+                    hub=self.hub,
                 )
                 self.gateway.start()
             self._started = True
