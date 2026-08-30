@@ -101,6 +101,11 @@ true）的自启动策略。若 8765 已有健康 Yuki Gateway，桌面端进入
 时不会关闭它。旧 `config.yaml` 若显式设置 `gateway.cors_origins`，Windows release 需
 包含 `http://tauri.localhost`。
 
+Windows 自有后端退出会先尝试向 supervisor 进程组投递 `CTRL_BREAK`。实测表明
+`AttachConsole`/`GenerateConsoleCtrlEvent` 返回成功并不保证目标已处理信号，因此桌面端
+只等待 2 秒；未退出时使用 `taskkill /T /F` 清理自有进程树，再以根进程 kill 作为最终
+兜底。外部 supervisor 不受该逻辑影响。
+
 ## 配置
 
 复制 `config.example.yaml` 为 `config.yaml`。主要分区：`bus`、`runtime_bus`、`models`、`supervisor`、

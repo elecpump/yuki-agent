@@ -15,12 +15,13 @@ use tauri::{Manager, RunEvent};
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use windows_sys::Win32::System::Console::{
-    AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler,
-    CTRL_BREAK_EVENT,
+    AttachConsole, FreeConsole, GenerateConsoleCtrlEvent, SetConsoleCtrlHandler, CTRL_BREAK_EVENT,
 };
 
 const GATEWAY_ADDRESS: &str = "127.0.0.1:8765";
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+const CTRL_BREAK_GRACE_PERIOD: Duration = Duration::from_secs(2);
+const FORCE_KILL_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProbeResult {
@@ -35,7 +36,9 @@ struct BackendState {
 }
 
 fn probe_gateway() -> ProbeResult {
-    let address: SocketAddr = GATEWAY_ADDRESS.parse().expect("static gateway address is valid");
+    let address: SocketAddr = GATEWAY_ADDRESS
+        .parse()
+        .expect("static gateway address is valid");
     let mut stream = match TcpStream::connect_timeout(&address, Duration::from_secs(1)) {
         Ok(stream) => stream,
         Err(_) => return ProbeResult::Unreachable,
@@ -56,7 +59,11 @@ fn probe_gateway() -> ProbeResult {
     let Some((headers, body)) = response.split_once("\r\n\r\n") else {
         return ProbeResult::Occupied;
     };
-    if !headers.lines().next().is_some_and(|line| line.contains(" 200 ")) {
+    if !headers
+        .lines()
+        .next()
+        .is_some_and(|line| line.contains(" 200 "))
+    {
         return ProbeResult::Occupied;
     }
     let Ok(payload) = serde_json::from_str::<Value>(body) else {
@@ -73,11 +80,13 @@ fn probe_gateway() -> ProbeResult {
 }
 
 fn env_flag(name: &str) -> Option<bool> {
-    env::var(name).ok().and_then(|value| match value.to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" => Some(true),
-        "0" | "false" | "no" => Some(false),
-        _ => None,
-    })
+    env::var(name)
+        .ok()
+        .and_then(|value| match value.to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" => Some(true),
+            "0" | "false" | "no" => Some(false),
+            _ => None,
+        })
 }
 
 fn python_invocation() -> Result<(OsString, Vec<OsString>), String> {
@@ -199,16 +208,23 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> bool {
     false
 }
 
-fn force_kill_tree(pid: u32) {
+fn force_kill_tree(pid: u32) -> bool {
     #[cfg(windows)]
     {
         let pid_str = pid.to_string();
-        let _ = Command::new("taskkill")
+        Command::new("taskkill")
             .args(["/PID", pid_str.as_str(), "/T", "/F"])
-            .status();
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
     }
     #[cfg(not(windows))]
-    let _ = pid;
+    {
+        let _ = pid;
+        false
+    }
 }
 
 fn shutdown_backend(state: &BackendState) {
@@ -217,7 +233,7 @@ fn shutdown_backend(state: &BackendState) {
     };
     let pid = child.id();
     if try_send_ctrl_break(pid) {
-        if wait_for_exit(&mut child, Duration::from_secs(5)) {
+        if wait_for_exit(&mut child, CTRL_BREAK_GRACE_PERIOD) {
             eprintln!("[yuki-desktop] supervisor exited after CTRL_BREAK");
             return;
         }
@@ -225,8 +241,51 @@ fn shutdown_backend(state: &BackendState) {
     } else {
         eprintln!("[yuki-desktop] CTRL_BREAK delivery failed; forcing process tree shutdown");
     }
-    force_kill_tree(pid);
+
+    if force_kill_tree(pid) && wait_for_exit(&mut child, FORCE_KILL_GRACE_PERIOD) {
+        eprintln!("[yuki-desktop] supervisor process tree terminated by taskkill");
+        return;
+    }
+
+    // Never block application exit indefinitely if taskkill is unavailable or reports success
+    // before the root process actually terminates. Child::kill is a last-resort root-only fallback.
+    eprintln!("[yuki-desktop] taskkill failed or timed out; killing supervisor root process");
+    let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wait_for_exit_detects_completed_child() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "exit", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn completed child");
+
+        assert!(wait_for_exit(&mut child, Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn taskkill_fallback_terminates_owned_process() {
+        let mut child = Command::new("cmd.exe")
+            .args(["/d", "/c", "ping", "-t", "127.0.0.1"])
+            .creation_flags(CREATE_NEW_PROCESS_GROUP)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn isolated process group");
+        let pid = child.id();
+
+        assert!(force_kill_tree(pid));
+        assert!(wait_for_exit(&mut child, Duration::from_secs(3)));
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]

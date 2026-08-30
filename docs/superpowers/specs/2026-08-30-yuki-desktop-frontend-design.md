@@ -377,15 +377,22 @@ server ping、health 都只更新 status 时间戳；assistant_chunk 只更新 c
 - **工作目录**：自启动必须使用 `YUKI_WORKDIR` 的绝对路径；该目录必须存在并包含
   `config.yaml`。release 若未提供则拒绝自启动并给出配置提示，不能继承 GUI 的随机
   current directory。进程环境显式设置 `YUKI_GATEWAY_ENABLED=true`；
-- **进程所有权与关闭（step 9 必做 spike，非既定可行）**：Rust 以
+- **进程所有权与关闭（step 9 spike 已执行）**：Rust 以
   `CREATE_NEW_PROCESS_GROUP` 启动并只保存自己 spawn 的 supervisor PID。Tauri GUI
   父进程通常没有控制台，而 `GenerateConsoleCtrlEvent` 要求共享控制台，直接向独立
-  子进程组投递 CTRL_BREAK 可能失败；step 9 必须在 Windows release 形态实测并记录
-  结果。首选 fallback 是通过 `windows-sys` 调用
+  子进程组投递 CTRL_BREAK 可能失败。2026-08-31 在 Windows/ConPTY 实测中，
+  `AttachConsole` 与 `GenerateConsoleCtrlEvent` 均返回成功，但显式注册 `SIGBREAK`
+  handler 的 Python 子进程仍未在 5s 内退出；Python `os.kill(..., CTRL_BREAK_EVENT)`
+  对照实验同样超时。因此 Win32 调用成功只能表示事件已提交，不能作为优雅关闭成功
+  的判据。另以 release GUI 完成 self-owned 冒烟：Gateway 成功上线，关闭窗口后自有
+  supervisor PID 消失且 8765 端口释放；独立 Rust 进程测试覆盖并通过强杀 fallback。
+  external 冒烟也确认关闭 Tauri 后手工 supervisor 与 8765 均保持存活。当前仍先通过
+  `windows-sys` 尝试
   `AttachConsole(supervisor_pid) → GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT,
-  supervisor_pid) → FreeConsole()`，成功后最多等待 5s；若 attach/投递失败或超时，
+  supervisor_pid) → FreeConsole()`，成功后最多等待 2s；若 attach/投递失败或超时，
   立即执行 `taskkill /pid <pid> /T /F`（接受丢失优雅清理，已知失败时不必固定空等
-  5s）。external 模式不做任何进程操作；
+  5s）。`taskkill` 失败或 2s 后根进程仍存活时再调用 `Child::kill`，避免 GUI 退出无限
+  阻塞。external 模式不做任何进程操作；
 - v1 release 是“本机已安装 Yuki Python 环境”的开发者发行物，不是独立终端用户
   安装包；打包 Python runtime 与自动创建工作目录/配置属于 v2 部署范围；
 - **vite.config.ts**：`server: { port: 5173, strictPort: true, host: "localhost" }`
@@ -446,8 +453,8 @@ server ping、health 都只更新 status 时间戳；assistant_chunk 只更新 c
   release origin 可访问 `/api/health` → 完成一次 chat → 退出应用 → 确认仅自有进程树
   退出且端口可重新绑定；
 - 另测 external 模式：预先启动 supervisor，关闭 Tauri 后 supervisor 仍存活。
-- Windows release 冒烟必须分别记录 CTRL_BREAK spike 的 attach、投递、5s 内退出结果，
-  并至少覆盖一次强杀 fallback；若已知 attach/投递失败，断言不会无意义等待完整 5s。
+- Windows release 冒烟必须分别记录 CTRL_BREAK spike 的 attach、投递、2s 内退出结果，
+  并至少覆盖一次强杀 fallback；不得只按 Win32 API 返回值判定信号已被目标处理。
 
 ## 实现顺序（每步可验证）
 
@@ -467,12 +474,12 @@ server ping、health 都只更新 status 时间戳；assistant_chunk 只更新 c
 7. **对话视图** — `useChat` + socket generation 本地取消 + ChatPanel 全组件。
    手动验证取消、pending 断线及不自动重发
 8. **控制台壳 + 占位标签** — ConsoleDrawer、ConsoleTabs、Placeholder
-9. **Tauri 集成 + Windows CTRL_BREAK spike** — src-tauri（v2 schema、
+9. **Tauri 集成 + Windows CTRL_BREAK spike（已完成）** — src-tauri（v2 schema、
    tauri-build/build.rs、icons、后端所有权、预检、固定工作目录）；验证 dev/release
    的 external/self-owned 组合。用 release GUI 实测直接 CTRL_BREAK 是否可行；若不行，
    落地并验证 `AttachConsole + GenerateConsoleCtrlEvent + FreeConsole`，投递前临时用
    `SetConsoleCtrlHandler(NULL, TRUE)` 避免当前进程处理该控制事件，随后恢复；失败/超时
-   走 `taskkill /T /F`。把实测结论与最终采用路径写入 README
+   走 `taskkill /T /F`。实测结论与最终采用路径写入 README
 10. **连接状态 + 收尾** — ConnectionStatus 四态、滚动、Enter/Shift+Enter；README
     文档化环境变量与开发/生产工作流；typecheck/lint/build/cargo check 和 v1 冒烟通过
 
