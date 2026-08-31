@@ -187,7 +187,7 @@ def test_hub_transition_cancel_flow_reaches_interaction_controller():
 
 def test_unavailable_tts_falls_back_to_console(capsys):
     class UnavailableTts:
-        def synthesize_stream(self, text, emotion_vector=None, ref_audio=None, lang=None):
+        def synthesize_stream(self, text, emotion_vector=None, **kwargs):
             raise RuntimeError("model_worker_unavailable")
 
         def health(self):

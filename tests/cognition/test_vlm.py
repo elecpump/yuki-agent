@@ -34,7 +34,7 @@ def test_understand_uses_cache():
             return "noop"
 
     class FakeProcessor:
-        def apply_chat_template(self, messages, tokenize=False, **kw):
+        def apply_chat_template(self, messages, **kw):
             return "template"
 
     vlm = VisualUnderstander(model=FakeModel(), processor=FakeProcessor())

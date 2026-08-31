@@ -61,7 +61,7 @@ def test_recorder_agent_records_events_and_frames():
 def test_main_propagates_run_exception(monkeypatch, tmp_path):
     monkeypatch.setattr("sys.argv", ["yuki.recorder", "--output-dir", str(tmp_path), "--no-frames"])
     monkeypatch.setattr(
-        cli.Config, "from_env", classmethod(lambda cls: Config())
+        cli.Config, "from_env", classmethod(lambda _cls: Config())
     )
     monkeypatch.setattr(
         cli.RecorderAgent,

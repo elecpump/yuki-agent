@@ -10,7 +10,7 @@ from yuki.memory.embedding import (
     MemoryEmbeddingIndexer,
     build_embedding_indexer,
 )
-from yuki.memory.manager import MemoryManager, Reflector
+from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
 from yuki.model_cache import ModelCacheManager
 
@@ -69,7 +69,7 @@ def test_vector_disabled_preserves_lexical_query_shape(tmp_path):
             raise AssertionError("disabled vector path should not index writes")
 
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             raise AssertionError("disabled vector path should not search")
 
@@ -116,7 +116,7 @@ def test_hybrid_reranks_by_vector_score_with_lexical_fallback(tmp_path):
 
     class FixedScoresIndexer:
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             return [(store.get(a), 0.9), (store.get(b), 0.1)]
 
@@ -140,7 +140,7 @@ def test_hybrid_score_multiplies_decay(tmp_path):
 
     class FixedScoresIndexer:
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             return [(store.get(mem_id), 0.8)]
 
@@ -204,7 +204,7 @@ def test_hybrid_does_not_embed_empty_query(tmp_path):
             self.search_calls = 0
 
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             self.search_calls += 1
             return []
@@ -229,7 +229,7 @@ def test_zero_score_vector_hit_precedes_lexical_only_fallback(tmp_path):
 
     class ZeroScoreIndexer:
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             return [(store.get(vector_id), 0.0)]
 
@@ -343,7 +343,7 @@ def test_vector_candidates_scale_with_top_k(tmp_path):
             self.top_k = None
 
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             self.top_k = top_k
             return []
@@ -365,7 +365,7 @@ def test_vector_candidates_scale_with_top_k(tmp_path):
 def test_vector_query_failure_falls_back_to_lexical(tmp_path):
     class FailingIndexer:
         def search(
-            self, text, *, top_k, memory_type=None, min_sensitivity=0, include_ids=(),
+            self, text, *, top_k, memory_type=None, min_sensitivity=0, **kwargs,
         ):
             raise RuntimeError("embedding provider down")
 
@@ -441,11 +441,6 @@ def test_wipe_and_ping(manager):
     assert manager.wipe() == 1
 
 
-def test_reflector_generate_not_implemented():
-    with pytest.raises(NotImplementedError):
-        Reflector().generate([1, 2])
-
-
 def test_embedding_registry_builds_hashing_by_default():
     registry = EmbeddingProviderRegistry()
     registry.register("hashing", lambda **kw: HashingEmbeddingProvider(**kw))
@@ -512,7 +507,7 @@ def test_memory_manager_accepts_any_storage_backend():
         def embedding_outbox(self, *, limit=20):
             return []
 
-        def acknowledge_embedding_outbox(self, memory_id, operation, queued_at):
+        def acknowledge_embedding_outbox(self, _memory_id, _operation, _queued_at):
             return True
 
         def delete_embeddings(self, memory_id):
@@ -522,8 +517,7 @@ def test_memory_manager_accepts_any_storage_backend():
             self,
             *,
             now,
-            superseded_retention_days,
-            tombstone_retention_days,
+            **kwargs,
         ):
             return 0
 

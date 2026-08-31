@@ -2,8 +2,6 @@ import pytest
 
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.cognition.l2.view import (
-    MAX_UTTERANCE_CHARS,
-    SITUATION_TOKENS,
     CloudViewBuilder,
     estimate_tokens,
 )

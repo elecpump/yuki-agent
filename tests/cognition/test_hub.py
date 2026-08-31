@@ -374,7 +374,7 @@ def test_decision_trace_includes_route(tmp_path):
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
     records = []
     hub = DecisionHub(bus, memory=memory, local_enabled=False)
-    hub._trace_logger = type("L", (), {"info": lambda self, evt, **kw: records.append(kw)})()
+    hub._trace_logger = type("L", (), {"info": lambda self, _evt, **kw: records.append(kw)})()
     hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "你好"})
     assert records[0]["route"] == "cloud"
     assert records[0]["reply_id"]

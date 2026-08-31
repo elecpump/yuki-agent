@@ -57,7 +57,7 @@ def test_consolidation_claim_has_database_lease_and_attempt_fencing(tmp_path):
 def test_resolver_refuses_ambiguous_semantic_merge():
     scores = {"rpg": 0.92, "桌游": 0.90}
     resolver = CandidateResolver(
-        similarity=lambda proposed, existing: scores.get(existing, 0.0),
+        similarity=lambda _proposed, existing: scores.get(existing, 0.0),
         threshold=0.88,
         competition_margin=0.03,
     )
