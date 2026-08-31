@@ -1,9 +1,8 @@
+from tests.fakes import RecordingCallTracker
 from yuki.cognition.brain.local.compose import LocalComposer, LocalViewBuilder
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.memory.manager import MemoryManager
 from yuki.memory.store import MemoryStore
-
-from tests.fakes import RecordingCallTracker
 
 
 class FakeModel:
@@ -34,19 +33,6 @@ def test_local_composer_records_call_tracker_metrics(tmp_path):
 
     assert tracker.success == 1
     assert tracker.failure == 0
-
-
-def test_local_view_builder_drops_crisis_history_turn():
-    view = LocalViewBuilder(max_tokens=1000).build(
-        ContextSnapshot(recent_turns=(
-            {"kind": "user", "content": "我不想活了"},
-            {"kind": "agent", "content": "普通回复"},
-        )),
-        None,
-        "继续聊",
-    )
-    assert "我不想活了" not in view
-    assert "普通回复" in view
 
 
 def test_local_view_builder_includes_pending_summary_fallback_turns():

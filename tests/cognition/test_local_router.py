@@ -1,6 +1,5 @@
-from yuki.cognition.brain.local.router import GateRoute, LocalRouter
-
 from tests.fakes import RecordingCallTracker
+from yuki.cognition.brain.local.router import GateRoute, LocalRouter
 
 
 class FakeModel:
@@ -16,24 +15,46 @@ class FakeModel:
         return value
 
 
-def test_crisis_short_circuits_to_cloud_before_model():
-    model = FakeModel(RuntimeError("should not run"))
+def test_model_crisis_flag_forces_cloud_and_marks_decision():
+    model = FakeModel('{"route":"local","confidence":0.91,"crisis":true}')
 
-    decision = LocalRouter(model).route("我不想活了")
+    decision = LocalRouter(model, threshold=0.7).route("我不想活了")
 
     assert decision.route == GateRoute.CLOUD
+    assert decision.crisis is True
     assert decision.reason == "crisis"
-    assert model.messages == []
+    assert len(model.messages) == 1
 
 
-def test_explicit_preference_short_circuits_to_cloud_before_model():
-    model = FakeModel(RuntimeError("should not run"))
+def test_model_judges_emotion_and_polarity():
+    model = FakeModel(
+        '{"route":"local","confidence":0.91,"emotion":"sadness","polarity":"negative"}'
+    )
 
-    decision = LocalRouter(model).route("请记住我喜欢黑咖啡")
+    decision = LocalRouter(model, threshold=0.7).route("我今天很难过")
+
+    assert decision.route == GateRoute.LOCAL
+    assert decision.emotion == "sadness"
+    assert decision.polarity == "negative"
+
+
+def test_missing_signal_fields_default_to_neutral():
+    model = FakeModel('{"route":"local","confidence":0.91}')
+
+    decision = LocalRouter(model, threshold=0.7).route("你好")
+
+    assert decision.crisis is False
+    assert decision.emotion == "neutral"
+    assert decision.polarity == "neutral"
+
+
+def test_invalid_crisis_type_is_rejected():
+    model = FakeModel('{"route":"local","confidence":0.91,"crisis":"true"}')
+
+    decision = LocalRouter(model, retry=0, threshold=0.7).route("你好")
 
     assert decision.route == GateRoute.CLOUD
-    assert decision.reason == "explicit_preference"
-    assert model.messages == []
+    assert decision.reason == "router_failed"
 
 
 def test_valid_json_routes_simple_chat_local():
@@ -73,7 +94,7 @@ def test_invalid_json_retries_then_cloud():
     assert len(model.messages) == 2
 
 
-def test_router_prompt_only_requests_binary_gate_fields():
+def test_router_prompt_requests_signal_fields():
     model = FakeModel('{"route":"local","confidence":0.91}')
 
     LocalRouter(model).route("你好")
@@ -81,8 +102,10 @@ def test_router_prompt_only_requests_binary_gate_fields():
     prompt = str(model.messages[0][0])
     assert '"local"' in prompt
     assert '"cloud"' in prompt
+    assert "crisis" in prompt
+    assert "emotion" in prompt
+    assert "polarity" in prompt
     assert "tool_call" not in prompt
-    assert "emotion" not in prompt
     assert "intent" not in prompt
 
 

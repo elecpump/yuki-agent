@@ -2,16 +2,16 @@ import json
 
 import pytest
 
-from yuki.cognition.brain.cooldown import CooldownCalculator, detect_polarity
+from yuki.cognition.brain.cooldown import CooldownCalculator
 
 
 def test_activity_bands_and_silence_priority():
     cooldown = CooldownCalculator()
     assert cooldown.base_cooldown(0.0) == 120.0
     for ts in (10.0, 20.0, 30.0):
-        cooldown.on_user_utterance("普通消息", ts)
+        cooldown.on_user_utterance(ts)
     assert cooldown.base_cooldown(40.0) == 120.0
-    cooldown.on_user_utterance("第四条", 40.0)
+    cooldown.on_user_utterance(40.0)
     assert cooldown.base_cooldown(50.0) == 300.0
     assert cooldown.base_cooldown(641.0) == 60.0
 
@@ -30,7 +30,7 @@ def test_silent_backoff_caps_exponent_and_speak_resets():
 def test_feedback_adjusts_effective_delay_without_changing_activity_bands():
     cooldown = CooldownCalculator()
     for ts in (1.0, 2.0, 3.0):
-        cooldown.on_user_utterance("别说了", ts)
+        cooldown.apply_polarity("negative", ts)
     assert cooldown.base_cooldown(4.0) == 120.0
     cooldown.on_decision("speak", 4.0)
     assert cooldown.next_available_ts - 4.0 == 405.0
@@ -70,11 +70,19 @@ def test_feedback_floor_persists_and_legacy_state_migrates(tmp_path):
     assert cooldown.cooldown_s == 240.0
     assert cooldown.floor_s == 60.0
     for ts in (1.0, 2.0, 3.0):
-        cooldown.on_user_utterance("别说了", ts)
+        cooldown.apply_polarity("negative", ts)
     restored = CooldownCalculator(path=path)
     assert restored.floor_s == 90.0
     assert restored.cooldown_s == pytest.approx(600.0)
-    assert detect_polarity("继续说") == "positive"
+    restored.apply_polarity("positive", 5.0)
+    assert restored.cooldown_s == pytest.approx(480.0)
+
+
+def test_apply_polarity_neutral_is_noop():
+    cooldown = CooldownCalculator()
+    before = cooldown.cooldown_s
+    cooldown.apply_polarity("neutral", 1.0)
+    assert cooldown.cooldown_s == before
 
 
 def test_persona_mismatch_is_ignored(tmp_path):

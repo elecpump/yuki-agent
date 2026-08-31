@@ -1,15 +1,22 @@
-from yuki.cognition.brain.classifier import Emotion, detect_emotion
+from yuki.cognition.brain.classifier import VALID_EMOTION_VALUES, Emotion
 
 
-def test_detect_emotion_from_user_language():
-    assert detect_emotion("太开心了") == Emotion.JOY
-    assert detect_emotion("我今天很难过") == Emotion.SADNESS
-    assert detect_emotion("压力好大") == Emotion.ANXIETY
-    assert detect_emotion("气死我了") == Emotion.ANGER
-    assert detect_emotion("想你了") == Emotion.LOVE
-    assert detect_emotion("好累") == Emotion.TIRED
+def test_emotion_enum_covers_expected_spectrum():
+    assert {emotion.value for emotion in Emotion} == {
+        "neutral",
+        "joy",
+        "sadness",
+        "anxiety",
+        "anger",
+        "love",
+        "tired",
+    }
 
 
-def test_detect_emotion_defaults_to_neutral():
-    assert detect_emotion("随便聊聊") == Emotion.NEUTRAL
-    assert detect_emotion("") == Emotion.NEUTRAL
+def test_valid_emotion_values_match_enum():
+    assert VALID_EMOTION_VALUES == {emotion.value for emotion in Emotion}
+
+
+def test_emotion_is_str_enum():
+    assert Emotion.JOY.value == "joy"
+    assert Emotion("sadness") == Emotion.SADNESS
