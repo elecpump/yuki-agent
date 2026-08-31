@@ -54,7 +54,7 @@ class AudioCapture:
             callback=callback,
         )
 
-    def _on_audio(self, indata, frames, time_info, status):
+    def _on_audio(self, indata, frames, _time_info, status):
         if status:
             logger.warning("audio status: %s", status)
         samples = np.asarray(indata)[:, 0] if indata.ndim > 1 else np.asarray(indata)

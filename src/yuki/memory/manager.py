@@ -11,13 +11,6 @@ from yuki.memory.store import StorageBackend
 logger = get_logger("yuki.memory.manager")
 
 
-class Reflector:
-    """反思生成接口。无 LLM，本次不可用；LLM 接入后实现 generate 并落库为 reflection。"""
-
-    def generate(self, scenario_ids: list[int], context: dict | None = None) -> list[str]:
-        raise NotImplementedError("reflection generation requires an LLM (future)")
-
-
 class MemoryManager:
     """记忆门面：检索、向量重排和持久记忆清理策略。"""
 

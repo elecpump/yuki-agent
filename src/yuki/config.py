@@ -156,7 +156,6 @@ class LocalBrainConfig(BaseModel):
     local_prompt_max_tokens: int = Field(6000, ge=100)
     reply_max_tokens: int = Field(256, ge=1)
     local_reply_timeout_ms: int = Field(700, ge=1)
-    vision_timeout_ms: int = Field(1200, ge=1)
     retry: int = Field(1, ge=0)
     fp8_dequantize: bool = True
     local_files_only: bool = False

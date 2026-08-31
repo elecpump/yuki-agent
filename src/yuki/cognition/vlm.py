@@ -140,7 +140,6 @@ class VisualUnderstander:
 
     def _infer_with_prompt(self, image, prompt: str, *, include_can_answer: bool) -> dict:
         self._load()
-        from qwen_vl_utils import process_vision_info
         messages = [
             {"role": "user", "content": [
                 {"type": "image", "image": image},

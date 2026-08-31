@@ -115,7 +115,6 @@ class PerceptionPipeline:
         frame_client: FrameClient,
         bus,
         speech_buffer: SpeechBuffer | None = None,
-        cache_scroll: bool = True,
         text_client: TextClient | None = None,
         text_summary_chars: int = 500,
         text_key_point_chars: int = 160,

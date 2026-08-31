@@ -33,7 +33,7 @@ class ShutdownManager:
             except (ValueError, OSError):
                 pass
 
-    def _handle(self, signum, frame) -> None:
+    def _handle(self, _signum, _frame) -> None:
         self._event.set()
 
     @property
