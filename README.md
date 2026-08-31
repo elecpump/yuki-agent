@@ -32,10 +32,22 @@ supervisor                    进程生命周期管理：独立探活、退避�
 
 ### ASR 全链路
 
-`音频采集(20ms帧)` → `唤醒词检测(openWakeWord)` → `VAD(webrtcvad)` →
+`音频采集(20ms帧)` → `唤醒词检测(openWakeWord)` → `VAD(FSMN-VAD)` →
 `STT(SenseVoice-Small)` → 结果发布 `event/perception/user_utterance`。
 识别会话带状态机（idle/listening/speaking/processing）：唤醒后无语音超时回落、
 一轮回复后进入续听窗口、过期 STT 结果丢弃。唤醒词与桌面 Gateway 均默认关闭。
+
+### 认知决策与路由
+
+用户发言由本地路由模型统一判断：1.7B 门卫一次推理同时输出 `route` / `crisis` /
+`emotion` / `polarity` 四个信号，判断不依赖预设关键词：
+
+- `crisis`：自伤/自杀等危机表达 → 强制走云端关怀路径，云端不可用时回退静态兜底话术
+- 显式偏好、工具调用、多步推理 → 云端 L2 Agent 循环
+- 简单闲聊/情感回应 → 本地模型直接回复
+- `emotion` 驱动 TTS 语气；`polarity` 调节主动发言冷却（负向反馈自动降低发言频率）
+
+模型输出缺失或非法时按中性值降级，路由失败统一回退云端。
 
 ## 安装
 
@@ -43,6 +55,7 @@ supervisor                    进程生命周期管理：独立探活、退避�
 pip install -e ".[dev,windows]"   # 标准开发环境
 pip install -e ".[ml]"            # 追加 VLM/STT 模型推理依赖
 pip install -e ".[asr]"           # 追加唤醒词检测（openWakeWord）
+pip install -e ".[tts]"           # 追加语音合成（IndexTTS-2.5）
 pip install -e ".[desktop]"       # 追加 HTTP/WS Gateway（FastAPI/uvicorn）
 ```
 
@@ -147,7 +160,7 @@ python -m yuki.soul_cli show          # 核对结果后再重启 Yuki
 ## 测试
 
 ```bash
-pytest                        # 单元测试
+pytest                        # 单元测试（800+）
 pytest -m e2e                 # 端到端集成测试（spawn 真实进程）
 
 cd frontend
