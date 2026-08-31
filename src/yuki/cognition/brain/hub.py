@@ -8,14 +8,14 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING
 
-from yuki.cognition.brain.classifier import Emotion, detect_emotion
+from yuki.cognition.brain.classifier import Emotion
 from yuki.cognition.brain.cooldown import CooldownCalculator
 from yuki.cognition.brain.decision_contract import (
     DecisionTrace,
     final_reply_payload,
     situation_provenance,
 )
-from yuki.cognition.brain.local.router import GateRoute, RouterDecision, is_crisis
+from yuki.cognition.brain.local.router import GateRoute, RouterDecision
 from yuki.cognition.brain.proactive_controller import ProactiveController
 from yuki.cognition.context.snapshot import ContextSnapshot
 from yuki.logger import get_decision_logger, get_logger
@@ -172,7 +172,7 @@ class DecisionHub:
             now = self._clock()
             with self._probe_lock:
                 self._pending_input_ts = max(self._pending_input_ts, now)
-            self._proactive.on_user_utterance(text, now)
+            self._proactive.on_user_utterance(now)
         with self._decision_lock:
             result = self._handle_locked(
                 trigger,
@@ -330,7 +330,13 @@ class DecisionHub:
         *,
         publish_reply: bool,
     ) -> dict:
-        if is_crisis(text):
+        decision = None
+        if self._local_enabled and self._local_router is not None:
+            decision = self._local_router.route(text, snapshot=snapshot, situation=situation)
+        if decision is not None:
+            self._proactive.apply_polarity(decision.polarity, self._clock())
+
+        if decision is not None and decision.crisis:
             cloud = self._call_cloud(text, snapshot, crisis=True, publish_reply=publish_reply)
             if cloud["failed"] or cloud["interrupted"] or not cloud["spoke"]:
                 rendered, spoke = CRISIS_FALLBACK_REPLY, True
@@ -345,7 +351,7 @@ class DecisionHub:
                 reply_id=cloud["reply_id"],
             )
 
-        if not self._local_enabled or self._local_router is None:
+        if decision is None:
             return self._cloud_or_notice(
                 text,
                 snapshot,
@@ -353,13 +359,13 @@ class DecisionHub:
                 publish_reply=publish_reply,
             )
 
-        decision = self._local_router.route(text, snapshot=snapshot, situation=situation)
         if decision.route == GateRoute.CLOUD:
             return self._cloud_or_notice(
                 text,
                 snapshot,
                 decision=decision,
                 reason="cloud",
+                emotion=decision.emotion,
                 publish_reply=publish_reply,
             )
         return self._dispatch_local(
@@ -383,6 +389,7 @@ class DecisionHub:
                 snapshot,
                 decision=decision,
                 reason="chat_local_failed",
+                emotion=decision.emotion,
                 publish_reply=publish_reply,
             )
         try:
@@ -394,6 +401,7 @@ class DecisionHub:
                 snapshot,
                 decision=decision,
                 reason="chat_local_failed",
+                emotion=decision.emotion,
                 publish_reply=publish_reply,
             )
         if not rendered:
@@ -402,6 +410,7 @@ class DecisionHub:
                 snapshot,
                 decision=decision,
                 reason="chat_local_empty",
+                emotion=decision.emotion,
                 publish_reply=publish_reply,
             )
         return self._result(
@@ -409,7 +418,7 @@ class DecisionHub:
             True,
             reason="chat_local",
             route=decision.route,
-            emotion=detect_emotion(text),
+            emotion=decision.emotion,
         )
 
     def _cloud_or_notice(
@@ -419,6 +428,7 @@ class DecisionHub:
         *,
         decision: RouterDecision | None = None,
         reason: str,
+        emotion: str = "neutral",
         publish_reply: bool = True,
     ) -> dict:
         cloud = self._call_cloud(text, snapshot, publish_reply=publish_reply)
@@ -444,7 +454,7 @@ class DecisionHub:
             True,
             reason=reason,
             route=GateRoute.CLOUD,
-            emotion=detect_emotion(text),
+            emotion=emotion,
             reply_id=cloud["reply_id"],
         )
 

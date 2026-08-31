@@ -116,11 +116,14 @@ class ProactiveController:
             if worker is not None and worker is not threading.current_thread():
                 worker.join(max(0.0, deadline - time.monotonic()))
 
-    def on_user_utterance(self, text: str, ts: float) -> None:
+    def on_user_utterance(self, ts: float) -> None:
         with self._probe_lock:
             self._last_utterance_ts = max(self._last_utterance_ts or 0.0, ts)
             self._pending_input_ts = max(self._pending_input_ts, ts)
-        self._cooldown.on_user_utterance(text, ts)
+        self._cooldown.on_user_utterance(ts)
+
+    def apply_polarity(self, polarity: str, ts: float) -> None:
+        self._cooldown.apply_polarity(polarity, ts)
 
     def on_input_probe(self, ts: float) -> None:
         with self._probe_lock:

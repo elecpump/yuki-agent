@@ -1,6 +1,5 @@
 from contextlib import nullcontext
 
-from yuki.cognition.brain.local.router import CRISIS_KEYWORDS, is_crisis
 from yuki.cognition.brain.persona import DEFAULT_BASE_PROMPT
 from yuki.cognition.call_tracker import CallTracker
 from yuki.cognition.context.snapshot import ContextSnapshot
@@ -15,12 +14,10 @@ class LocalViewBuilder:
         max_tokens: int = 6000,
         verbatim_turns: int = 4,
         memory_top_k: int = 3,
-        crisis_keywords: tuple[str, ...] = CRISIS_KEYWORDS,
     ) -> None:
         self._max_tokens = max_tokens
         self._verbatim_turns = verbatim_turns
         self._memory_top_k = memory_top_k
-        self._crisis_keywords = crisis_keywords
 
     def build(self, snapshot: ContextSnapshot | None, memory, utterance: str) -> str:
         snapshot = snapshot or ContextSnapshot()
@@ -55,14 +52,10 @@ class LocalViewBuilder:
 
         for turn in list(snapshot.recent_turns or ())[: self._verbatim_turns]:
             content = str(turn.get("content", ""))
-            if self._contains_crisis(content):
-                continue
             add(f"[{turn.get('kind', 'turn')}] ", content[:1200])
 
         for turn in list(snapshot.recent_turns or ())[self._verbatim_turns :]:
             content = str(turn.get("content", ""))
-            if self._contains_crisis(content):
-                continue
             add(f"[{turn.get('kind', 'turn')}] ", content[:1200])
 
         for memory_item in self._memories(memory, utterance):
@@ -104,10 +97,6 @@ class LocalViewBuilder:
         ][: max(0, self._memory_top_k - len(queried))]
         return queried + guaranteed
 
-    def _contains_crisis(self, text: str) -> bool:
-        lowered = (text or "").lower()
-        return any(keyword.lower() in lowered for keyword in self._crisis_keywords)
-
 
 class LocalComposer:
     def __init__(
@@ -134,8 +123,6 @@ class LocalComposer:
         self._system = text
 
     def generate(self, utterance: str, snapshot=None, memory=None) -> str:
-        if is_crisis(utterance):
-            raise RuntimeError("crisis input must not be answered by local model")
         view = self._view_builder.build(snapshot, memory, utterance)
         with self._model_call_tracker():
             reply = self._model.generate(

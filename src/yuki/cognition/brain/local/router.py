@@ -3,25 +3,11 @@ from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 
+from yuki.cognition.brain.classifier import VALID_EMOTION_VALUES
 from yuki.cognition.call_tracker import CallTracker
 from yuki.logger import get_logger
 
 logger = get_logger("yuki.cognition.brain.local.router")
-
-CRISIS_KEYWORDS = ("自杀", "自伤", "不想活", "想死", "活着没意思", "想结束生命", "割腕")
-EXPLICIT_PREFERENCE_MARKERS = (
-    "我喜欢",
-    "我不喜欢",
-    "以后请",
-    "以后不要",
-    "请记住",
-    "别再",
-    "不要再",
-    "说反了",
-    "简短一点",
-    "更简短",
-    "温柔一点",
-)
 
 
 class GateRoute(StrEnum):
@@ -34,6 +20,9 @@ class RouterDecision:
     route: GateRoute
     confidence: float
     reason: str = ""
+    crisis: bool = False
+    emotion: str = "neutral"
+    polarity: str = "neutral"
 
     @classmethod
     def cloud(cls, reason: str = "fallback") -> "RouterDecision":
@@ -67,10 +56,6 @@ class LocalRouter:
             self._model.warmup()
 
     def route(self, text: str, *, snapshot=None, situation: dict | None = None) -> RouterDecision:
-        if is_crisis(text):
-            return RouterDecision(GateRoute.CLOUD, 1.0, reason="crisis")
-        if is_explicit_preference(text):
-            return RouterDecision(GateRoute.CLOUD, 1.0, reason="explicit_preference")
         messages = self._messages(text, snapshot=snapshot, situation=situation)
         raw = ""
         for attempt in range(max(0, self._retry) + 1):
@@ -122,10 +107,15 @@ class LocalRouter:
             {
                 "role": "system",
                 "content": (
-                    "你是本地低延迟守门员。只输出严格 JSON，字段为 route、confidence。"
+                    "你是本地低延迟守门员。只输出严格 JSON，字段为 route、confidence、crisis、emotion、polarity。"
                     'route 只能取 "local" 或 "cloud"：local 表示简单对话/闲聊/情感回应，'
                     "本地模型即可自然回复；cloud 表示需要查信息、执行命令、多步推理、复杂问题，"
                     "以及任何需要长期记住的显式用户偏好或纠正。"
+                    'crisis 只能取 true 或 false：仅当用户明确表达自伤、自杀等严重危机或求助意图时为 true。'
+                    'emotion 只能取 "neutral"、"joy"、"sadness"、"anxiety"、"anger"、"love"、"tired" 之一，'
+                    "表示用户当前情绪。"
+                    'polarity 只能取 "negative"、"positive"、"neutral" 之一，'
+                    "表示用户对 agent 的反馈倾向：抱怨/嫌吵为 negative，表扬/认可为 positive，其余 neutral。"
                 ),
             },
             {"role": "user", "content": user},
@@ -137,19 +127,33 @@ class LocalRouter:
         confidence = float(data.get("confidence", 0.0))
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("confidence out of range")
+        crisis = data.get("crisis", False)
+        if not isinstance(crisis, bool):
+            raise TypeError("crisis must be boolean")
+        emotion = str(data.get("emotion", "neutral"))
+        polarity = str(data.get("polarity", "neutral"))
+        if emotion not in VALID_EMOTION_VALUES:
+            raise ValueError(f"invalid emotion: {emotion}")
+        if polarity not in ("negative", "positive", "neutral"):
+            raise ValueError(f"invalid polarity: {polarity}")
+        if crisis:
+            return RouterDecision(
+                GateRoute.CLOUD,
+                confidence,
+                crisis=True,
+                emotion=emotion,
+                polarity=polarity,
+                reason="crisis",
+            )
         if confidence < self._threshold:
             return RouterDecision.cloud("low_confidence")
-        return RouterDecision(route, confidence, reason="router")
-
-
-def is_crisis(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(keyword.lower() in lowered for keyword in CRISIS_KEYWORDS)
-
-
-def is_explicit_preference(text: str) -> bool:
-    normalized = (text or "").strip()
-    return any(marker in normalized for marker in EXPLICIT_PREFERENCE_MARKERS)
+        return RouterDecision(
+            route,
+            confidence,
+            emotion=emotion,
+            polarity=polarity,
+            reason="router",
+        )
 
 
 def _parse_json_object(raw: str) -> dict:

@@ -11,8 +11,6 @@ from yuki.persistence import atomic_write_json
 
 logger = get_logger("yuki.cognition.brain.cooldown")
 
-NEGATIVE_KEYWORDS = ("太吵", "吵", "话多", "话太多", "安静", "闭嘴", "少说", "啰嗦", "别说了")
-POSITIVE_KEYWORDS = ("说得好", "好听", "有意思", "继续", "再来", "棒", "可爱")
 DEFAULT_COOLDOWN_S = 120.0
 DEFAULT_FLOOR_S = 30.0
 DEFAULT_SILENT_STREAK = 0
@@ -20,15 +18,6 @@ SILENT_STREAK_CAP = 3
 QUIET_BREAK_S = 600.0
 ACTIVE_COOLDOWN_S = 300.0
 QUIET_COOLDOWN_S = 60.0
-
-
-def detect_polarity(text: str) -> str:
-    lowered = (text or "").lower()
-    if any(keyword in lowered for keyword in NEGATIVE_KEYWORDS):
-        return "negative"
-    if any(keyword in lowered for keyword in POSITIVE_KEYWORDS):
-        return "positive"
-    return "neutral"
 
 
 def _now_iso() -> str:
@@ -89,13 +78,16 @@ class CooldownCalculator:
         with self._lock:
             return self._last_utterance
 
-    def on_user_utterance(self, text: str, ts: float) -> None:
+    def on_user_utterance(self, ts: float) -> None:
         with self._lock:
             timestamp = float(ts)
             self._utterance_timestamps.append(timestamp)
             self._last_utterance = timestamp
             self._prune(timestamp)
-            polarity = detect_polarity(text)
+
+    def apply_polarity(self, polarity: str, ts: float) -> None:
+        """Adjust cooldown from model-judged feedback polarity (negative/positive/neutral)."""
+        with self._lock:
             if polarity == "negative":
                 self._negative_streak += 1
                 self._cooldown_s = min(
@@ -111,6 +103,7 @@ class CooldownCalculator:
                 self._negative_streak = 0
                 self._cooldown_s = max(self._cooldown_s * 0.8, self._floor_s)
                 self._persist()
+            # neutral: no state change
 
     def base_cooldown(self, now: float) -> float:
         with self._lock:
