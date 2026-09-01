@@ -117,7 +117,7 @@ def test_cognition_agent_chat_service_returns_without_publishing_reply(tmp_path)
     try:
         result = bus.request(
             COGNITION_CHAT_SERVICE,
-            {"text": "你好", "session_id": "ui", "task_id": "t1"},
+            {"text": "你好", "task_id": "t1"},
         )
         assert "text" in result
         assert "spoke" in result

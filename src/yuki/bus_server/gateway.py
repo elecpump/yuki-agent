@@ -1,10 +1,8 @@
 import asyncio
-import json
 import threading
 import time
 import uuid
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +23,6 @@ from yuki.topics import Topics
 
 class ChatRequest(BaseModel):
     text: str
-    session_id: str = "default"
 
 
 class ChatTaskStore:
@@ -303,7 +300,6 @@ class GatewayRuntime:
         for section, fields in {
             "memory": ("db_path", "embedding_cache_dir"),
             "soul": ("path", "cooldown_state_path"),
-            "gateway": ("history_dir",),
             "vlm": ("cache_dir",),
             "local_brain": ("cache_dir",),
         }.items():
@@ -327,43 +323,6 @@ class GatewayRuntime:
                 "text_extract": dict(self._text_extract),
             }
 
-    def list_history_sessions(self) -> dict:
-        root = Path(self.config.gateway.history_dir)
-        if not root.exists():
-            return {"degraded": True, "sessions": []}
-        sessions = []
-        for child in sorted(root.iterdir(), reverse=True):
-            events_path = child / "events.jsonl"
-            if child.is_dir() and events_path.exists():
-                sessions.append({
-                    "session_id": child.name,
-                    "events_path": str(events_path),
-                })
-        return {"degraded": False, "sessions": sessions}
-
-    def read_history(self, session_id: str) -> dict:
-        root = Path(self.config.gateway.history_dir).resolve()
-        session_dir = (root / session_id).resolve()
-        if root not in session_dir.parents and session_dir != root:
-            raise HTTPException(status_code=400, detail="invalid session_id")
-        events_path = session_dir / "events.jsonl"
-        if not events_path.exists():
-            raise HTTPException(status_code=404, detail="history session not found")
-        turns = []
-        with events_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                topic = event.get("topic")
-                payload = event.get("payload") or {}
-                if topic == Topics.USER_UTTERANCE:
-                    turns.append({"role": "user", "text": payload.get("text", ""), "ts": event.get("ts")})
-                if topic == Topics.REPLY and payload.get("kind", "final") == "final":
-                    turns.append({"role": "assistant", "text": payload.get("text", ""), "ts": event.get("ts")})
-        return {"session_id": session_id, "turns": turns}
-
     def request(self, service: str, payload: dict, *, timeout_ms: int | None = None) -> dict:
         return self.bus.request(
             service,
@@ -371,9 +330,9 @@ class GatewayRuntime:
             timeout_ms=timeout_ms or int(self.config.health.timeout_ms),
         )
 
-    def run_chat(self, text: str, session_id: str) -> dict:
+    def run_chat(self, text: str) -> dict:
         task_id = self.tasks.create()
-        payload = {"text": text, "session_id": session_id, "task_id": task_id}
+        payload = {"text": text, "task_id": task_id}
         try:
             result = self.request(
                 COGNITION_CHAT_SERVICE,
@@ -403,9 +362,8 @@ async def _chat_message_handler(runtime: GatewayRuntime, message: dict) -> dict 
         runtime.bus.publish("chat/interrupt", {"task_id": message.get("task_id")})
         return {"type": "interrupt_ack", "task": task}
     text = str(message.get("text") or message.get("user_input") or "")
-    session_id = str(message.get("session_id") or "default")
     try:
-        task = await asyncio.to_thread(runtime.run_chat, text, session_id)
+        task = await asyncio.to_thread(runtime.run_chat, text)
     except Exception as exc:
         return {
             "type": "assistant_chunk",
@@ -500,17 +458,9 @@ def create_gateway_app(
     def health() -> dict:
         return runtime.health_snapshot()
 
-    @app.get("/api/history/sessions")
-    def history_sessions() -> dict:
-        return runtime.list_history_sessions()
-
-    @app.get("/api/history/{session_id}")
-    def history(session_id: str) -> dict:
-        return runtime.read_history(session_id)
-
     @app.post("/api/chat")
     def chat(request: ChatRequest) -> dict:
-        return runtime.run_chat(request.text, request.session_id)
+        return runtime.run_chat(request.text)
 
     @app.get("/api/chat/{task_id}")
     def chat_task(task_id: str) -> dict:

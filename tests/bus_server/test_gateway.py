@@ -1,4 +1,3 @@
-import json
 import time
 
 import pytest
@@ -151,13 +150,13 @@ def test_gateway_chat_rest_uses_cognition_chat_rpc_and_stores_task():
     runtime, client = _client(bus=bus)
 
     with client:
-        response = client.post("/api/chat", json={"text": "你好", "session_id": "s1"})
+        response = client.post("/api/chat", json={"text": "你好"})
         body = response.json()
         task = client.get(f"/api/chat/{body['task_id']}").json()
 
     assert response.status_code == 200
     assert calls[0]["text"] == "你好"
-    assert calls[0]["session_id"] == "s1"
+    assert "session_id" not in calls[0]
     assert calls[0]["task_id"] == body["task_id"]
     assert body["status"] == "completed"
     assert body["result"]["text"] == "reply:你好"
@@ -190,7 +189,7 @@ def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():
 
     with client:
         with client.websocket_connect("/ws/chat") as ws:
-            ws.send_json({"type": "user_input", "text": "ping", "session_id": "s1"})
+            ws.send_json({"type": "user_input", "text": "ping"})
             message = ws.receive_json()
 
     assert message["type"] == "assistant_chunk"
@@ -289,7 +288,6 @@ def test_gateway_config_redacts_bus_auth_token():
         bus={"auth_token": "secret"},
         memory={"db_path": "C:/Users/me/yuki.db"},
         soul={"path": "C:/Users/me/soul.json", "cooldown_state_path": "C:/Users/me/cooldown.json"},
-        gateway={"history_dir": "C:/Users/me/recordings"},
     )
     runtime, client = _client(config=config)
 
@@ -300,96 +298,15 @@ def test_gateway_config_redacts_bus_auth_token():
     assert body["memory"]["db_path"] == "<redacted>"
     assert body["soul"]["path"] == "<redacted>"
     assert body["soul"]["cooldown_state_path"] == "<redacted>"
-    assert body["gateway"]["history_dir"] == "<redacted>"
+    assert "history_dir" not in body["gateway"]
 
 
-def test_gateway_errors_use_uniform_shape(tmp_path):
-    config = Config(gateway={"history_dir": str(tmp_path)})
-    runtime, client = _client(config=config)
-
-    with client:
-        response = client.get("/api/history/missing")
-
-    assert response.status_code == 404
-    assert response.json() == {
-        "error": {
-            "code": "not_found",
-            "message": "history session not found",
-            "details": {},
-        }
-    }
-
-
-def test_gateway_history_returns_degraded_when_dir_missing(tmp_path):
-    config = Config(gateway={"history_dir": str(tmp_path / "missing")})
-    runtime, client = _client(config=config)
+def test_gateway_does_not_expose_recorder_output_as_chat_history():
+    _, client = _client()
 
     with client:
-        body = client.get("/api/history/sessions").json()
-
-    assert body == {"degraded": True, "sessions": []}
-
-
-def test_gateway_history_reads_user_and_assistant_turns(tmp_path):
-    session = tmp_path / "sess-1"
-    session.mkdir()
-    events = [
-        {"ts": 1.0, "topic": Topics.USER_UTTERANCE, "payload": {"text": "hi"}},
-        {"ts": 2.0, "topic": Topics.REPLY, "payload": {"text": "hello"}},
-    ]
-    (session / "events.jsonl").write_text(
-        "\n".join(json.dumps(event) for event in events),
-        encoding="utf-8",
-    )
-    config = Config(gateway={"history_dir": str(tmp_path)})
-    runtime, client = _client(config=config)
-
-    with client:
-        sessions = client.get("/api/history/sessions").json()
-        history = client.get("/api/history/sess-1").json()
-
-    assert sessions["degraded"] is False
-    assert sessions["sessions"][0]["session_id"] == "sess-1"
-    assert history["turns"] == [
-        {"role": "user", "text": "hi", "ts": 1.0},
-        {"role": "assistant", "text": "hello", "ts": 2.0},
-    ]
-
-
-def test_gateway_history_only_keeps_final_replies(tmp_path):
-    session = tmp_path / "sess-1"
-    session.mkdir()
-    events = [
-        {"ts": 1.0, "topic": Topics.USER_UTTERANCE, "payload": {"text": "hi"}},
-        {
-            "ts": 2.0,
-            "topic": Topics.REPLY,
-            "payload": {"text": "one moment", "kind": "transition", "reply_id": "r1"},
-        },
-        {
-            "ts": 3.0,
-            "topic": Topics.REPLY,
-            "payload": {"text": "", "kind": "cancel", "reply_id": "r1"},
-        },
-        {
-            "ts": 4.0,
-            "topic": Topics.REPLY,
-            "payload": {"text": "answer", "kind": "final", "reply_id": "r1"},
-        },
-    ]
-    (session / "events.jsonl").write_text(
-        "\n".join(json.dumps(event) for event in events),
-        encoding="utf-8",
-    )
-    runtime, client = _client(Config(gateway={"history_dir": str(tmp_path)}))
-
-    with client:
-        history = client.get("/api/history/sess-1").json()
-
-    assert history["turns"] == [
-        {"role": "user", "text": "hi", "ts": 1.0},
-        {"role": "assistant", "text": "answer", "ts": 4.0},
-    ]
+        assert client.get("/api/history/sessions").status_code == 404
+        assert client.get("/api/history/recording-id").status_code == 404
 
 
 def test_chat_task_store_missing_ids_are_safe():

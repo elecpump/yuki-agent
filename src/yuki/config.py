@@ -281,7 +281,6 @@ class GatewayConfig(BaseModel):
     ws_heartbeat_timeout_s: float = Field(45.0, ge=1.0)
     cleanup_interval_s: float = Field(30.0, ge=1.0)
     chat_task_timeout_s: float = Field(60.0, ge=0.1)
-    history_dir: str = "data/recordings"
 
 
 class ThreadConfig(BaseModel):

@@ -168,7 +168,6 @@ gateway:
   ws_heartbeat_timeout_s: 45.0
   cleanup_interval_s: 30.0
   chat_task_timeout_s: 60.0
-  history_dir: data/recordings
 thread:
   segment_max_turns: 20
   segment_verbatim_max: 20

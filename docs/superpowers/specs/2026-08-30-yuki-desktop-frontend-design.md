@@ -164,7 +164,6 @@ App
 | `GET` | `/api/health` | `{gateway: {healthy, process, started, ts}, hub, processes}` | hub 为 1s 超时 RPC，失败时 `{healthy: false, error}` |
 | `GET` | `/api/config` | 脱敏全量 config | 已有，v1 不用 |
 | `GET` | `/api/perception/status` | `{degraded, components, heartbeat}` | 已有，v1 不用 |
-| `GET` | `/api/history/sessions` / `/api/history/{id}` | 会话列表 / turns | 已有，v1 不用 |
 | ~~`GET` `/api/soul`~~ | — | **未实现** | v2 后端工作 |
 | ~~`GET/DELETE` `/api/memory*`~~ | — | **未实现** | v2 后端工作 |
 
@@ -187,7 +186,7 @@ v1 对话 UI 只使用 `/ws/chat`。WS 在请求过程中断开时不能确定�
 - 客户端消息：内容被丢弃、仅更新 last_seen（可安全用作保活）
 
 **`/ws/chat`**（无初始消息；**串行**：一个请求完成后才读下一条）
-- Client→Server: `{text, session_id}` 或 `{type: "interrupt", task_id}`
+- Client→Server: `{text}` 或 `{type: "interrupt", task_id}`
 - Server→Client: `{type: "assistant_chunk", task_id, text, done, status, error}`
   （done 恒为 true，非流式；**无 reason/ts/spoke/emotion**）
 - Server→Client: `{type: "interrupt_ack", task}`（仅状态登记，不中止服务端）

@@ -33,7 +33,7 @@
 Yuki 是娱乐陪伴型 agent，用户期望跨天/周被记住。现状缺口：
 
 - 对话轮次 = 内存 + 单文件快照的尽力缓存：`WorkingContext` 使用 30min TTL
-  全局单缓冲，`session_id` 被 cognition 忽略；崩溃丢尾部，重启会过滤过期轮次。
+  全局单缓冲；崩溃丢尾部，重启会过滤过期轮次。
 - 当前 `DecisionHub` 在回复生成完成后才写入用户轮次；生成期间崩溃仍会丢输入。
 - recorder `events.jsonl` 是原始事件日志，不能作为可恢复上下文。
 - 长期记忆已是用户级、无 Thread 绑定，但没有候选态、证据、版本或冲突更新语义。
@@ -65,7 +65,7 @@ Yuki 是娱乐陪伴型 agent，用户期望跨天/周被记住。现状缺口�
 ## 3. 总体架构
 
 ```text
-ChatRequest(session_id)
+ChatRequest
   → 立即持久化 user turn（response_state=pending）
   → ContextProjector.build(exclude_turn_id=current_user_turn)
       → 最近历史 Segment summaries（有界）
@@ -530,7 +530,7 @@ LLM prompt；领域接入还必须注册对应的 `validate_candidate`，不能�
 
 ## 12. 风险与兼容
 
-- 用户侧 ChatRequest/session_id 和 bus 协议不新增产品操作；内部存储语义改变。
+- 用户侧 ChatRequest 和 bus 协议不新增 Thread 操作；内部存储语义改变。
 - gateway 移除 `/api/memory*`、`/api/soul` 端点（对用户隐藏，§0，2026-08-30）；
   总线 `memory/*`、`SOUL_GET_SERVICE` 服务与 CLI 管理面保留。
 - 历史存量 strengthened preference 无 `strengthened_by` provenance：保守排除出人格

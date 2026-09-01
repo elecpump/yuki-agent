@@ -65,7 +65,7 @@ bus_server 进程（bus_server agent 内嵌 gateway，不新增进程）：
   `enabled=false`、`host="127.0.0.1"`、`port=8765`、
   `cors_origins=["tauri://localhost"]`、`cors_origin_regex="^http://localhost:\\d+$"`、
   `ws_heartbeat_timeout_s=45`、`cleanup_interval_s=30`、
-  `chat_task_timeout_s=60`、`history_dir="data/recordings"`
+  `chat_task_timeout_s=60`
 - `gateway.enabled` 默认关闭，避免未安装 `desktop` extra 的核心运行路径
   (`python -m yuki.supervisor` / `python -m yuki.bus_server`) 因 FastAPI/uvicorn
   缺失而崩溃；Tauri/桌面打包配置显式打开。
@@ -84,9 +84,7 @@ bus_server 进程（bus_server agent 内嵌 gateway，不新增进程）：
 | GET `/api/memory` | 记忆列表 | 代理现有 `memory/list` RPC（`register_memory_services`） |
 | GET `/api/memory/{id}` | 记忆详情 | 代理现有 `memory/get` RPC |
 | DELETE `/api/memory/{id}` | 删除记忆 | 代理现有 `memory/delete` RPC |
-| GET `/api/history/sessions` | 会话列表 | 扫描 `GatewayConfig.history_dir` 下 recorder `Session` 输出目录；若 recorder 未启用或目录不存在，返回空列表 + `degraded=true` |
-| GET `/api/history/{session_id}` | 某会话 turns | 解析该 session 的 `events.jsonl`（过滤 `event/perception/user_utterance` 与 `event/reply`）；注意 recorder 当前不在 supervisor 默认子进程中，v1 需新增 `RecorderConfig` 并纳入 supervisor，或 gateway 自己记录 chat history |
-| POST `/api/chat` | 非流式对话 | **新增 `cognition.chat` RPC 服务**（cognition 侧注册 `bus.respond`，接收 `{text, session_id}`，复用 `_handle(UTTERANCE)`，返回 `{text, ts}`）；gateway 生成 task_id → `bus.request` → 存结果；GET `/api/chat/{task_id}` 返回。比 USER_UTTERANCE+REPLY 匹配更干净（request/response 天然相关，`interaction` 的 hotkey 已用同模式） |
+| POST `/api/chat` | 非流式对话 | **新增 `cognition.chat` RPC 服务**（cognition 侧注册 `bus.respond`，接收 `{text, task_id}`，复用 `_handle(UTTERANCE)`，返回 `{text, ts}`）；gateway 生成 task_id → `bus.request` → 存结果；GET `/api/chat/{task_id}` 返回。比 USER_UTTERANCE+REPLY 匹配更干净（request/response 天然相关，`interaction` 的 hotkey 已用同模式） |
 | GET `/api/chat/{task_id}` | 查询异步 chat 结果 | gateway 内存 task store，完成后返回 `{status,result,error}`；超时由 `chat_task_timeout_s` 控制 |
 | GET `/api/config` | 读取公开配置 | bus_server 本进程 `Config` 转 `PublicConfig` DTO；必须脱敏 `bus.auth_token`、本地敏感路径和未来 secret，不直接全量 `model_dump()` |
 | GET `/api/soul` | 读取 soul | 代理 cognition 新增 `soul.get` RPC（cognition 进程持有 SoulStore） |
@@ -98,7 +96,7 @@ v1 新增 `cognition.chat`，作为 REST/WS chat 的唯一对话入口：
 
 ```json
 // request
-{"text": "你好", "session_id": "ui-session", "task_id": "gateway-task"}
+{"text": "你好", "task_id": "gateway-task"}
 
 // response
 {"text": "你好呀。", "ts": 123.45, "spoke": true, "reason": "utterance"}

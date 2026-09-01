@@ -1,4 +1,4 @@
-from yuki.cognition.assembly import CognitionAssembler
+from yuki.cognition.assembly import CognitionAssembler, CognitionRuntime
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.config import Config
@@ -38,6 +38,20 @@ class FakePipeline:
 
     def warmup_stt(self):
         self.stt_warmups += 1
+
+
+def test_cognition_runtime_does_not_invent_chat_session_id():
+    class Hub:
+        def handle_chat_request(self, payload):
+            return payload
+
+    runtime = object.__new__(CognitionRuntime)
+    runtime.hub = Hub()
+
+    assert runtime.handle_chat_request({"text": "你好"}) == {
+        "text": "你好",
+        "task_id": "",
+    }
 
 
 def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):

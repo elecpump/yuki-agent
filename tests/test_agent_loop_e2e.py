@@ -4,7 +4,6 @@ import time
 import pytest
 
 from tests.fakes import FakeBus
-from yuki.bus_server.gateway import GatewayRuntime
 from yuki.cognition.brain.hub import DecisionHub
 from yuki.config import Config
 from yuki.interaction.agent import InteractionAgent
@@ -68,10 +67,8 @@ class InterruptedThenFinalLoop:
 
 
 @pytest.mark.e2e
-def test_interrupted_transition_is_cancelled_and_only_final_enters_history(tmp_path):
-    session_id = "agent-loop"
-    history_dir = tmp_path / "recordings"
-    events_path = history_dir / session_id / "events.jsonl"
+def test_interrupted_transition_is_cancelled_before_final_reply(tmp_path):
+    events_path = tmp_path / "recordings" / "agent-loop" / "events.jsonl"
     bus = DispatchingRecordingBus(events_path)
     tts = RecordingTTS()
     interaction = InteractionAgent(Config(), bus=bus, hotkeys=FakeHotkeys(), tts=tts)
@@ -101,14 +98,4 @@ def test_interrupted_transition_is_cancelled_and_only_final_enters_history(tmp_p
         ("让我想想。", "transition", replies[0]["reply_id"]),
         ("让我想想。", "transition", replies[2]["reply_id"]),
         ("这是最终回答。", "final", replies[3]["reply_id"]),
-    ]
-
-    runtime = GatewayRuntime(
-        Config(gateway={"history_dir": str(history_dir)}),
-        bus,
-    )
-    assert runtime.read_history(session_id)["turns"] == [
-        {"role": "user", "text": "第一个问题", "ts": first["ts"]},
-        {"role": "user", "text": "第二个问题", "ts": second["ts"]},
-        {"role": "assistant", "text": "这是最终回答。", "ts": replies[3]["ts"]},
     ]

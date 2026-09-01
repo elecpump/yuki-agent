@@ -94,7 +94,6 @@ class CognitionRuntime:
 
     def handle_chat_request(self, payload: dict) -> dict:
         payload = dict(payload or {})
-        payload.setdefault("session_id", "default")
         payload.setdefault("task_id", "")
         return self.hub.handle_chat_request(payload)
 

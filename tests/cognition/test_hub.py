@@ -130,7 +130,7 @@ def test_chat_request_does_not_publish_reply(tmp_path):
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
     hub = DecisionHub(bus, memory=memory, local_enabled=False)
 
-    result = hub.handle_chat_request({"text": "你好", "session_id": "ui"})
+    result = hub.handle_chat_request({"text": "你好"})
 
     assert result["text"] == L2_UNAVAILABLE_NOTICE
     assert result["spoke"] is True
