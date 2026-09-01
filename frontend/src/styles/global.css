@@ -146,6 +146,9 @@ button, textarea { font: inherit; }
 .console-toggle { position: absolute; right: 17px; top: 14px; z-index: 5; }
 .health-stack { display: flex; flex-direction: column; gap: 10px; }
 .health-card-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.local-model-actions { display: flex; align-items: center; gap: 8px; }
+.local-model-progress { display: flex; align-items: center; gap: 6px; }
+.local-model-error { color: #ff9b9b; }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 7px; }
 .status-dot.ok { background: #43d9a3; box-shadow: 0 0 10px rgba(67,217,163,.55); }
 .status-dot.bad { background: #ff6b7b; }

@@ -90,6 +90,35 @@ class ModelController:
         with self._condition:
             return self._handle
 
+    def enable(self) -> None:
+        with self._lifecycle_lock:
+            with self._condition:
+                if self._runtime.state == ModelReadinessState.DISABLED or (
+                    self._runtime.state == ModelReadinessState.FAILED
+                    and self._handle is None
+                ):
+                    self._runtime.state = ModelReadinessState.UNLOADED
+                    self._runtime.last_error_code = None
+                    self._condition.notify_all()
+
+    def disable(self, *, timeout_s: float) -> None:
+        with self._lifecycle_lock:
+            with self._condition:
+                if self._runtime.state == ModelReadinessState.DISABLED:
+                    return
+                if self._handle is None:
+                    self._runtime.state = ModelReadinessState.DISABLED
+                    self._runtime.accepting_calls = False
+                    self._runtime.retry_after = None
+                    self._runtime.last_error_code = None
+                    self._condition.notify_all()
+                    return
+            self.unload(timeout_s=timeout_s)
+            with self._condition:
+                self._runtime.state = ModelReadinessState.DISABLED
+                self._runtime.accepting_calls = False
+                self._condition.notify_all()
+
     def load(self) -> Any:
         with self._lifecycle_lock:
             with self._condition:
@@ -100,6 +129,13 @@ class ModelController:
                     ModelReadinessState.DEGRADED,
                 }:
                     return self._handle
+                if (
+                    self._runtime.state == ModelReadinessState.FAILED
+                    and self._handle is not None
+                ):
+                    raise ModelUnavailableError(
+                        f"model failed with retained handle: {self.spec.name}"
+                    )
                 if self._runtime.state in {
                     ModelReadinessState.DRAINING,
                     ModelReadinessState.UNLOADING,
@@ -231,8 +267,19 @@ class ModelController:
     def snapshot(self) -> dict:
         with self._condition:
             runtime = self._runtime
+            circuit_open = (
+                runtime.retry_after is not None
+                and self._clock() < runtime.retry_after
+            )
             return {
                 "runtime_state": runtime.state.value,
+                "runtime_enabled": runtime.state != ModelReadinessState.DISABLED,
+                "callable": (
+                    runtime.state
+                    in {ModelReadinessState.READY, ModelReadinessState.DEGRADED}
+                    and runtime.accepting_calls
+                    and not circuit_open
+                ),
                 "active_calls": runtime.active_calls,
                 "accepting_calls": runtime.accepting_calls,
                 "last_used_at": runtime.last_used_at,

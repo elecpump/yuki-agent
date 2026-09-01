@@ -78,3 +78,39 @@ def test_app_coordinates_shared_agents_and_reverse_teardown():
     assert events[-3:] == ["teardown:c", "teardown:b", "teardown:a"]
     assert "health/yuki" in remote.services
     assert remote.closed is True
+
+
+def test_app_injects_cognition_local_model_control_into_gateway(monkeypatch):
+    events = []
+    shutdown = ShutdownManager()
+    local = LocalRuntimeBus()
+    remote = FakeRemoteBus()
+    cognition = FakeAgent("cognition", shutdown, events)
+    cognition.local_model_control = object()
+    created = []
+
+    class FakeGateway:
+        def __init__(self, config, **kwargs):
+            del config
+            created.append(kwargs)
+
+        def start(self):
+            events.append("gateway:start")
+
+        def stop(self):
+            events.append("gateway:stop")
+
+    monkeypatch.setattr("yuki.app.main.GatewayServer", FakeGateway)
+    app = YukiApp(
+        Config(gateway={"enabled": True}),
+        hub=FakeHub(),
+        remote_bus=remote,
+        local_bus=local,
+        shutdown=shutdown,
+        agents=[cognition],
+    )
+
+    app.setup()
+    app.close()
+
+    assert created[0]["local_model_control"] is cognition.local_model_control

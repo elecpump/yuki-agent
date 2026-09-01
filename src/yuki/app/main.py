@@ -129,10 +129,19 @@ class YukiApp:
                 thread.start()
                 self._loop_threads.append(thread)
             if self.config.gateway.enabled:
+                local_model_control = next(
+                    (
+                        getattr(agent, "local_model_control", None)
+                        for agent in self.agents
+                        if agent.name == "cognition"
+                    ),
+                    None,
+                )
                 self.gateway = self.gateway or GatewayServer(
                     self.config,
                     bus=self.local_bus,
                     hub=self.hub,
+                    local_model_control=local_model_control,
                 )
                 self.gateway.start()
             self._started = True

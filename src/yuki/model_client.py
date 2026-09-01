@@ -313,6 +313,23 @@ class RemoteModelRegistry:
             timeout_ms=self._timeout_ms,
         )
 
+    def set_local_chat_enabled(
+        self,
+        enabled: bool,
+        *,
+        idempotency_key: str,
+        reason: str | None = None,
+    ) -> dict:
+        return self._bus.request(
+            "models/local-chat/control",
+            {
+                "enabled": enabled,
+                "idempotency_key": idempotency_key,
+                "reason": reason,
+            },
+            timeout_ms=self._timeout_ms,
+        )
+
     def operation_status(self, operation_id: str) -> dict:
         return self._bus.request(
             "models/operations/status",

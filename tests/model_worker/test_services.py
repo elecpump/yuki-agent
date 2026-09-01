@@ -1,6 +1,7 @@
 import base64
 import io
 import threading
+import time
 
 import numpy as np
 import pytest
@@ -74,6 +75,122 @@ def test_management_services_use_control_lane_and_async_operations():
         assert result["accepted"] is True
         assert bus.lanes["models/operations/submit"] == "control"
         assert bus.lanes["models/health"] == "control"
+    finally:
+        operations.close()
+
+
+def test_model_load_failure_has_stable_operation_error_code():
+    bus = FakeBus()
+    manager = ModelManager(vram_safety_margin_mb=0)
+    manager.register(
+        ManagedModelSpec(
+            name="local_chat",
+            loader=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+    )
+    operations = ModelOperationStore(operation_handler(manager))
+    try:
+        register_management_services(bus, manager, operations)
+        submitted = bus.services["models/operations/submit"](
+            {
+                "idempotency_key": "load-failure",
+                "action": "load",
+                "model": "local_chat",
+            }
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            status = bus.services["models/operations/status"](
+                {"operation_id": submitted["operation_id"]}
+            )
+            if status["state"] == "failed":
+                break
+            time.sleep(0.01)
+
+        assert status["error_code"] == "load_failed"
+    finally:
+        operations.close()
+
+
+def test_local_chat_control_is_dedicated_and_generic_submit_rejects_enable():
+    bus = FakeBus()
+    manager = ModelManager(vram_safety_margin_mb=0)
+    manager.register(
+        ManagedModelSpec(name="local_chat", loader=object, enabled=False)
+    )
+    operations = ModelOperationStore(operation_handler(manager))
+    try:
+        register_management_services(bus, manager, operations)
+        with pytest.raises(ValueError, match="invalid_action"):
+            bus.services["models/operations/submit"](
+                {
+                    "idempotency_key": "generic-enable",
+                    "action": "enable",
+                    "model": "local_chat",
+                }
+            )
+
+        submitted = bus.services["models/local-chat/control"](
+            {"idempotency_key": "dedicated-enable", "enabled": True}
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            status = bus.services["models/operations/status"](
+                {"operation_id": submitted["operation_id"]}
+            )
+            if status["state"] == "succeeded":
+                break
+            time.sleep(0.01)
+
+        assert status["state"] == "succeeded"
+        assert manager.get_model_health("local_chat")["callable"] is True
+        assert bus.lanes["models/local-chat/control"] == "control"
+    finally:
+        operations.close()
+
+
+def test_vram_admission_failure_has_stable_operation_error_code():
+    bus = FakeBus()
+
+    class LowMemoryGpu:
+        def snapshot(self):
+            return {"available": True, "free_mb": 0, "low_memory": True}
+
+        def empty_cache(self):
+            return False
+
+    manager = ModelManager(
+        gpu_monitor=LowMemoryGpu(),
+        vram_safety_margin_mb=0,
+        vram_hysteresis_mb=0,
+    )
+    manager.register(
+        ManagedModelSpec(
+            name="local_chat",
+            loader=object,
+            estimated_vram_mb=100,
+        )
+    )
+    operations = ModelOperationStore(operation_handler(manager))
+    try:
+        register_management_services(bus, manager, operations)
+        submitted = bus.services["models/operations/submit"](
+            {
+                "idempotency_key": "low-vram",
+                "action": "load",
+                "model": "local_chat",
+            }
+        )
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            status = bus.services["models/operations/status"](
+                {"operation_id": submitted["operation_id"]}
+            )
+            if status["state"] == "failed":
+                break
+            time.sleep(0.01)
+
+        assert status["error_code"] == "insufficient_vram"
     finally:
         operations.close()
 

@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from yuki.model_worker.operations import ModelOperationStore
+from yuki.model_worker.operations import ModelOperationFailure, ModelOperationStore
 
 
 def _wait_for_state(store, operation_id, expected, timeout=1.0):
@@ -58,6 +58,26 @@ def test_unknown_operation_is_explicit():
     try:
         with pytest.raises(KeyError, match="operation_not_found"):
             store.status("missing")
+    finally:
+        store.close()
+
+
+def test_operation_failure_preserves_structured_error_code():
+    def fail(action, model):
+        del action, model
+        raise ModelOperationFailure("load_failed")
+
+    store = ModelOperationStore(fail)
+    try:
+        submitted = store.submit(
+            idempotency_key="failure",
+            action="load",
+            model="local_chat",
+        )
+
+        status = _wait_for_state(store, submitted["operation_id"], "failed")
+
+        assert status["error_code"] == "load_failed"
     finally:
         store.close()
 

@@ -131,6 +131,14 @@ class DecisionHub:
     def close(self, timeout_s: float = 1.0) -> None:
         self._proactive.close(timeout_s)
 
+    def set_local_enabled(self, enabled: bool) -> None:
+        with self._decision_lock:
+            self._local_enabled = bool(enabled)
+
+    def local_enabled(self) -> bool:
+        with self._decision_lock:
+            return self._local_enabled
+
     def trigger_proactive_tick(self) -> None:
         self._proactive.trigger_tick(self._context)
 

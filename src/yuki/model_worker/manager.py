@@ -31,6 +31,10 @@ class GpuMonitorProtocol(Protocol):
     def empty_cache(self) -> bool: ...
 
 
+class InsufficientVramError(RuntimeError):
+    pass
+
+
 class ModelManager:
     def __init__(
         self,
@@ -98,6 +102,15 @@ class ModelManager:
                     timeout_s=self._drain_timeout_s,
                     force_manual=manual,
                 )
+
+    def enable(self, model: str, *, load: bool = True) -> Any:
+        with self._management_lock:
+            self._controller(model).enable()
+            return self.load(model) if load else self._controller(model).handle
+
+    def disable(self, model: str) -> None:
+        with self._management_lock:
+            self._controller(model).disable(timeout_s=self._drain_timeout_s)
 
     def reload(self, model: str) -> Any:
         with self._management_lock:
@@ -380,7 +393,7 @@ class ModelManager:
         while free < target:
             candidate = self._eviction_candidate(exclude=exclude)
             if candidate is None:
-                raise RuntimeError("insufficient_vram")
+                raise InsufficientVramError("insufficient_vram")
             self._controller(candidate).unload(timeout_s=self._drain_timeout_s)
             free = self._free_vram_mb()
             if free is None:

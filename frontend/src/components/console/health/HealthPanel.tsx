@@ -2,6 +2,7 @@ import { Card, Collapse, Tag } from "antd";
 import { useAppStore } from "../../../state/store";
 import type { ComponentHealth, HubHealth, JsonRecord } from "../../../types/api";
 import { ComponentList } from "./ComponentList";
+import { LocalModelControlCard } from "./LocalModelControlCard";
 import { ProcessCard } from "./ProcessCard";
 
 function hubComponents(hub: HubHealth | null): Record<string, ComponentHealth> {
@@ -69,6 +70,7 @@ export function HealthPanel() {
           />
         )}
       </Card>
+      <LocalModelControlCard />
       {Object.entries(processes).map(([name, process]) => (
         <ProcessCard name={name} process={process} key={name} />
       ))}

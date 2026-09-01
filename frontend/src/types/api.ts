@@ -47,3 +47,44 @@ export interface ApiErrorShape {
   details: JsonRecord;
   status?: number;
 }
+
+export type LocalModelState =
+  | "unavailable"
+  | "disabled"
+  | "enabling"
+  | "enabled"
+  | "disabling"
+  | "recovering"
+  | "failed";
+
+export interface LocalModelStatus {
+  available: boolean;
+  enabled: boolean;
+  target_enabled: boolean;
+  state: LocalModelState;
+  runtime_state: string;
+  loaded: boolean;
+  active_calls: number;
+  operation: LocalModelOperation | null;
+  last_error: string;
+}
+
+export interface LocalModelAcceptedOperation {
+  operation_id: string;
+  accepted: boolean;
+  target_enabled: boolean;
+}
+
+export type LocalModelOperationState =
+  | "queued"
+  | "running"
+  | "recovering"
+  | "succeeded"
+  | "failed";
+
+export interface LocalModelOperation {
+  operation_id: string;
+  target_enabled: boolean;
+  state: LocalModelOperationState;
+  error_code: string | null;
+}

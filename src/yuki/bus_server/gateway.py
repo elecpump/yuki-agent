@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from yuki.bus import BUS_HEALTH_SERVICE, BusNode
 from yuki.bus_server.ws_channels import (
@@ -17,12 +17,18 @@ from yuki.bus_server.ws_channels import (
     ws_channels,
 )
 from yuki.cognition.brain.hub import COGNITION_CHAT_SERVICE
+from yuki.cognition.local_model_control import LocalChatControl, LocalModelControlError
 from yuki.config import Config
 from yuki.topics import Topics
 
 
 class ChatRequest(BaseModel):
     text: str
+
+
+class LocalModelRequest(BaseModel):
+    enabled: bool
+    idempotency_key: str = Field(min_length=1)
 
 
 class ChatTaskStore:
@@ -149,10 +155,18 @@ class ConnectionManager:
 
 
 class GatewayRuntime:
-    def __init__(self, config: Config, bus, *, hub=None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        bus,
+        *,
+        hub=None,
+        local_model_control: LocalChatControl | None = None,
+    ) -> None:
         self.config = config
         self.bus = bus
         self.hub = hub
+        self.local_model_control = local_model_control
         self.tasks = ChatTaskStore()
         self._heartbeats: dict[str, dict] = {}
         self._foreground: dict = {}
@@ -323,6 +337,24 @@ class GatewayRuntime:
                 "text_extract": dict(self._text_extract),
             }
 
+    def local_model_status(self) -> dict:
+        if self.local_model_control is None:
+            raise HTTPException(status_code=503, detail="local model control unavailable")
+        return self.local_model_control.status()
+
+    def set_local_model_enabled(self, request: LocalModelRequest) -> dict:
+        if self.local_model_control is None:
+            raise HTTPException(status_code=503, detail="local model control unavailable")
+        return self.local_model_control.set_enabled(
+            request.enabled,
+            request.idempotency_key,
+        )
+
+    def local_model_operation_status(self, operation_id: str) -> dict:
+        if self.local_model_control is None:
+            raise HTTPException(status_code=503, detail="local model control unavailable")
+        return self.local_model_control.operation_status(operation_id)
+
     def request(self, service: str, payload: dict, *, timeout_ms: int | None = None) -> dict:
         return self.bus.request(
             service,
@@ -450,6 +482,22 @@ def create_gateway_app(
         }.get(exc.status_code, "http_error")
         return _error_response(code, str(exc.detail), exc.status_code)
 
+    @app.exception_handler(LocalModelControlError)
+    async def local_model_control_error_handler(
+        request: Request,
+        exc: LocalModelControlError,
+    ):
+        del request
+        status_code = {
+            "local_model_operation_not_found": 404,
+            "local_model_config_disabled": 409,
+            "local_model_operation_in_progress": 409,
+            "idempotency_key_conflict": 409,
+            "model_worker_unavailable": 503,
+            "model_worker_timeout": 504,
+        }.get(exc.code, 500)
+        return _error_response(exc.code, str(exc), status_code)
+
     @app.exception_handler(Exception)
     async def exception_handler(request: Request, exc: Exception):
         return _error_response("internal_error", str(exc), 500)
@@ -457,6 +505,18 @@ def create_gateway_app(
     @app.get("/api/health")
     def health() -> dict:
         return runtime.health_snapshot()
+
+    @app.get("/api/local-model")
+    def local_model_status() -> dict:
+        return runtime.local_model_status()
+
+    @app.put("/api/local-model", status_code=202)
+    def set_local_model(request: LocalModelRequest) -> dict:
+        return runtime.set_local_model_enabled(request)
+
+    @app.get("/api/local-model/operations/{operation_id}")
+    def local_model_operation(operation_id: str) -> dict:
+        return runtime.local_model_operation_status(operation_id)
 
     @app.post("/api/chat")
     def chat(request: ChatRequest) -> dict:
@@ -484,7 +544,14 @@ def create_gateway_app(
 
 
 class GatewayServer:
-    def __init__(self, config: Config, bus=None, *, hub=None) -> None:
+    def __init__(
+        self,
+        config: Config,
+        bus=None,
+        *,
+        hub=None,
+        local_model_control: LocalChatControl | None = None,
+    ) -> None:
         self.config = config
         self._owns_bus = bus is None
         self.bus = bus or BusNode(
@@ -493,7 +560,12 @@ class GatewayServer:
             auth_token=config.bus.auth_token,
             max_msg_size=config.bus.max_msg_size,
         )
-        self.runtime = GatewayRuntime(config, self.bus, hub=hub)
+        self.runtime = GatewayRuntime(
+            config,
+            self.bus,
+            hub=hub,
+            local_model_control=local_model_control,
+        )
         self.app = create_gateway_app(self.runtime)
         self._server = None
         self._thread: threading.Thread | None = None

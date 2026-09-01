@@ -11,8 +11,9 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
-from yuki.model_worker.manager import ModelManager
-from yuki.model_worker.operations import ModelOperationStore
+from yuki.model_worker.controller import ModelUnavailableError
+from yuki.model_worker.manager import InsufficientVramError, ModelManager
+from yuki.model_worker.operations import ModelOperationFailure, ModelOperationStore
 from yuki.model_worker.scheduler import ModelInferenceScheduler
 from yuki.runtime_bus import RuntimeBusProtocol
 
@@ -24,20 +25,40 @@ def operation_handler(
     manager: ModelManager,
 ) -> Callable[[str, str | None], dict]:
     def handle(action: str, model: str | None) -> dict:
-        if action == "load":
-            manager.load(_required_model(model))
-            return {"ok": True}
-        if action == "unload":
-            manager.unload(_required_model(model))
-            return {"ok": True}
-        if action == "reload":
-            manager.reload(_required_model(model))
-            return {"ok": True}
-        if action == "preflight":
-            return manager.preflight(model)
-        if action == "relieve_memory_pressure":
-            return manager.relieve_memory_pressure()
-        raise ValueError("invalid_action")
+        try:
+            if action == "load":
+                manager.load(_required_model(model))
+                return {"ok": True}
+            if action == "unload":
+                manager.unload(_required_model(model))
+                return {"ok": True}
+            if action == "reload":
+                manager.reload(_required_model(model))
+                return {"ok": True}
+            if action == "enable":
+                manager.enable(_required_model(model))
+                return {"ok": True}
+            if action == "disable":
+                manager.disable(_required_model(model))
+                return {"ok": True}
+            if action == "preflight":
+                return manager.preflight(model)
+            if action == "relieve_memory_pressure":
+                return manager.relieve_memory_pressure()
+            raise ValueError("invalid_action")
+        except InsufficientVramError as exc:
+            raise ModelOperationFailure("insufficient_vram") from exc
+        except ModelUnavailableError as exc:
+            raise ModelOperationFailure("model_disabled") from exc
+        except Exception as exc:
+            error_code = (
+                manager.get_model_health(model).get("last_error_code")
+                if model
+                else None
+            )
+            if error_code in {"load_failed", "unload_failed", "drain_timeout"}:
+                raise ModelOperationFailure(str(error_code)) from exc
+            raise
 
     return handle
 
@@ -93,6 +114,20 @@ def register_management_services(
                 "cancel_requested": False,
             }
 
+    def control_local_chat(payload: dict) -> dict:
+        payload = dict(payload or {})
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled_boolean_required")
+        if "local_chat" not in manager.names():
+            raise ValueError("unknown_model")
+        return operations.submit(
+            idempotency_key=str(payload.get("idempotency_key") or ""),
+            action="enable" if enabled else "disable",
+            model="local_chat",
+            reason=str(payload.get("reason") or "") or None,
+        )
+
     def legacy(action: str, payload: dict) -> dict:
         model = (payload or {}).get("model")
         accepted = operations.submit(
@@ -134,6 +169,7 @@ def register_management_services(
     bus.respond("models/operations/submit", submit, lane="control")
     bus.respond("models/operations/status", status, lane="control")
     bus.respond("models/operations/cancel", cancel, lane="control")
+    bus.respond("models/local-chat/control", control_local_chat, lane="control")
     bus.respond("models/unload", lambda payload: legacy("unload", payload))
     bus.respond("models/reload", lambda payload: legacy("reload", payload))
     bus.respond("models/preflight", lambda payload: legacy("preflight", payload))

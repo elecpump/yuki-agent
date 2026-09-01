@@ -1,6 +1,7 @@
 import os
 
 from yuki.cognition.assembly import CognitionAssembler
+from yuki.cognition.local_model_control import LocalChatControl
 from yuki.config import Config
 from yuki.functions.registry import FunctionRegistry
 from yuki.health import HealthStatus
@@ -12,6 +13,7 @@ from yuki.process import ProcessAgent
 
 logger = get_logger("yuki.cognition.agent")
 SOUL_REFLECTION_CLOSE_TIMEOUT_S = 1.0
+LOCAL_MODEL_CONTROL_CLOSE_TIMEOUT_S = 3.0
 
 
 class CognitionAgent(ProcessAgent):
@@ -38,6 +40,7 @@ class CognitionAgent(ProcessAgent):
         self._local_chat_model = local_chat_model
         self._embedding_provider = embedding_provider
         self._hub = None
+        self._local_model_control = None
         self._bridge = None
         self._context = None
         self._persona_store = None
@@ -67,6 +70,7 @@ class CognitionAgent(ProcessAgent):
         self._model_registry = assembled.model_registry
         self._bridge = assembled.bridge
         self._hub = assembled.hub
+        self._local_model_control = assembled.local_model_control
         self._context = assembled.context
         self._persona_store = assembled.persona_store
         self._persona_refresh = assembled.persona_refresh
@@ -87,6 +91,18 @@ class CognitionAgent(ProcessAgent):
                 timeout_s=self.config.thread.shutdown_timeout_s
             )
             self._thread_maintenance_scheduler = None
+        if self._local_model_control is not None:
+            # RemoteModelRegistry requests time out after 2s by default; allow an
+            # in-flight request to return before tearing down the hub it controls.
+            stopped = self._local_model_control.close(
+                timeout_s=LOCAL_MODEL_CONTROL_CLOSE_TIMEOUT_S
+            )
+            if not stopped:
+                logger.warning(
+                    "local model control shutdown timed out; preserving dependencies"
+                )
+                return
+            self._local_model_control = None
         if self._hub is not None:
             self._hub.close(timeout_s=SOUL_REFLECTION_CLOSE_TIMEOUT_S)
             self._hub = None
@@ -111,6 +127,10 @@ class CognitionAgent(ProcessAgent):
         if self._memory is not None:
             self._memory.close()
             self._memory = None
+
+    @property
+    def local_model_control(self) -> LocalChatControl | None:
+        return self._local_model_control
 
     def loop(self) -> None:
         # 定期执行衰减清理；进程存活期间不会无限积累已过期记忆。

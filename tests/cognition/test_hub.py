@@ -380,6 +380,30 @@ def test_chat_local_route_uses_composer(tmp_path):
     memory.close()
 
 
+def test_runtime_local_switch_changes_the_next_chat_route(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    router = FakeRouter(RouterDecision(GateRoute.LOCAL, 0.9))
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        loop=FakeLoop(),
+        local_router=router,
+        local_composer=FakeComposer(reply="local reply"),
+        local_enabled=True,
+    )
+
+    assert hub.local_enabled() is True
+    hub.set_local_enabled(False)
+    assert hub.handle_chat_request({"text": "关闭后"})["text"] == "cloud reply"
+    assert router.calls == []
+
+    hub.set_local_enabled(True)
+    assert hub.handle_chat_request({"text": "重新开启"})["text"] == "local reply"
+    assert router.calls[0][0] == "重新开启"
+    memory.close()
+
+
 def test_chat_local_failure_falls_to_cloud_notice(tmp_path):
     bus = FakeBus()
     memory = MemoryManager(MemoryStore(tmp_path / "m.db"))

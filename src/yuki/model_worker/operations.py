@@ -9,6 +9,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+class ModelOperationFailure(RuntimeError):
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
 @dataclass
 class ModelOperation:
     operation_id: str
@@ -178,6 +184,11 @@ class ModelOperationStore:
             try:
                 raw_result = self._handler(operation.action, operation.model)
                 result = dict(raw_result or {})
+            except ModelOperationFailure as exc:
+                with self._lock:
+                    operation.state = "failed"
+                    operation.error_code = exc.error_code
+                    operation.finished_at = self._clock()
             except Exception:
                 with self._lock:
                     operation.state = "failed"

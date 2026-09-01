@@ -28,4 +28,24 @@ describe("HealthPanel", () => {
     expect(screen.getByText(/nested: \{"lane":"control"\}/)).toBeInTheDocument();
     expect(screen.getByText(/PID 42/)).toBeInTheDocument();
   });
+
+  it("places local model control after Gateway and Bus Hub but before processes", () => {
+    useAppStore.setState({
+      processes: {
+        yuki: {
+          process: "yuki",
+          healthy: true,
+          fresh: true,
+          last_seen_age_s: 0,
+          components: {},
+        },
+      },
+    });
+
+    const { container } = render(<HealthPanel />);
+    const text = container.textContent || "";
+
+    expect(text.indexOf("Bus Hub")).toBeLessThan(text.indexOf("本地对话模型"));
+    expect(text.indexOf("本地对话模型")).toBeLessThan(text.indexOf("yuki"));
+  });
 });

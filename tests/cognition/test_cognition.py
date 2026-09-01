@@ -45,6 +45,7 @@ def test_cognition_agent_wires_pipeline_responder_and_memory(tmp_path):
         memory=MemoryManager(MemoryStore(tmp_path / "mem.db")),
     )
     agent.setup()
+    assert agent.local_model_control is None
     assert Topics.SITUATION_UPDATE in bus.subscriptions
     assert Topics.USER_UTTERANCE in bus.subscriptions
     assert all(service in bus.services for service in MEMORY_SERVICES)

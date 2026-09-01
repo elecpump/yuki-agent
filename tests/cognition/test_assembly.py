@@ -71,6 +71,7 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert runtime.pipeline is pipeline
         assert runtime.memory is memory
         assert runtime.model_registry is not None
+        assert runtime.local_model_control is not None
         assert runtime.hub is not None
         assert runtime.context is not None
         assert runtime.persona_store is not None
@@ -89,6 +90,7 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert "vision.understand" in names
         assert "perception.deep_understand_screen" not in names
     finally:
+        runtime.local_model_control.close()
         runtime.context.close()
         memory.close()
 

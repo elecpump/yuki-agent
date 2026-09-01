@@ -116,3 +116,29 @@ def test_remote_registry_uses_async_operation_services():
     submitted = registry.submit_operation("load", "vlm", idempotency_key="key")
     assert submitted["operation_id"] == "op"
     assert registry.operation_status("op")["state"] == "queued"
+
+
+def test_remote_registry_controls_only_local_chat_through_dedicated_service():
+    bus = FakeBus(
+        {"models/local-chat/control": {"operation_id": "op", "accepted": True}}
+    )
+    registry = RemoteModelRegistry(bus, timeout_ms=321)
+
+    result = registry.set_local_chat_enabled(
+        False,
+        idempotency_key="toggle",
+        reason="user_request",
+    )
+
+    assert result == {"operation_id": "op", "accepted": True}
+    assert bus.calls == [
+        (
+            "models/local-chat/control",
+            {
+                "enabled": False,
+                "idempotency_key": "toggle",
+                "reason": "user_request",
+            },
+            321,
+        )
+    ]

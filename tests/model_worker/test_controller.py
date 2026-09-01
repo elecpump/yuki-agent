@@ -69,6 +69,88 @@ def test_disabled_model_cannot_load():
         controller.load()
 
 
+def test_controller_can_disable_and_reenable_model():
+    unloaded = []
+    handle = object()
+    controller = ModelController(
+        ManagedModelSpec(
+            name="model",
+            loader=lambda: handle,
+            unloader=lambda value: unloaded.append(value),
+        )
+    )
+    controller.load()
+
+    controller.disable(timeout_s=0.1)
+
+    assert unloaded == [handle]
+    assert controller.snapshot()["runtime_state"] == "disabled"
+
+    controller.enable()
+
+    assert controller.snapshot()["runtime_state"] == "unloaded"
+
+
+def test_enable_recovers_failed_model_without_a_handle_for_retry():
+    attempts = {"count": 0}
+
+    def load():
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("boom")
+        return object()
+
+    controller = ModelController(ManagedModelSpec(name="model", loader=load))
+    with pytest.raises(RuntimeError, match="boom"):
+        controller.load()
+    assert controller.snapshot()["runtime_state"] == "failed"
+
+    controller.enable()
+
+    assert controller.snapshot()["runtime_state"] == "unloaded"
+    assert controller.load() is not None
+    assert controller.snapshot()["runtime_state"] == "ready"
+
+
+def test_disable_converges_failed_model_without_unloading_missing_handle():
+    unloaded = []
+    controller = ModelController(
+        ManagedModelSpec(
+            name="model",
+            loader=lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+            unloader=lambda handle: unloaded.append(handle),
+        )
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        controller.load()
+
+    controller.disable(timeout_s=0.1)
+
+    assert unloaded == []
+    assert controller.snapshot()["runtime_state"] == "disabled"
+
+
+def test_failed_model_with_retained_handle_cannot_be_loaded_over():
+    loads = []
+    handle = object()
+    controller = ModelController(
+        ManagedModelSpec(
+            name="model",
+            loader=lambda: loads.append("load") or handle,
+            unloader=lambda value: (_ for _ in ()).throw(RuntimeError("busy")),
+        )
+    )
+    controller.load()
+    with pytest.raises(RuntimeError, match="busy"):
+        controller.unload(timeout_s=0.1)
+
+    controller.enable()
+
+    with pytest.raises(ModelUnavailableError, match="failed"):
+        controller.load()
+    assert loads == ["load"]
+
+
 def test_drain_timeout_requests_cooperative_cancel_and_stays_draining():
     class Handle:
         def __init__(self):

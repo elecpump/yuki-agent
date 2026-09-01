@@ -14,13 +14,18 @@ from yuki.bus_server.gateway import (
     create_gateway_app,
 )
 from yuki.config import Config
+from yuki.cognition.local_model_control import LocalModelControlError
 from yuki.topics import Topics
 
 from tests.fakes import FakeBus
 
 
-def _client(config=None, bus=None):
-    runtime = GatewayRuntime(config or Config(), bus or FakeBus())
+def _client(config=None, bus=None, local_model_control=None):
+    runtime = GatewayRuntime(
+        config or Config(),
+        bus or FakeBus(),
+        local_model_control=local_model_control,
+    )
     return runtime, TestClient(create_gateway_app(runtime))
 
 
@@ -307,6 +312,111 @@ def test_gateway_does_not_expose_recorder_output_as_chat_history():
     with client:
         assert client.get("/api/history/sessions").status_code == 404
         assert client.get("/api/history/recording-id").status_code == 404
+
+
+def test_gateway_reads_local_model_control_status():
+    expected = {
+        "available": True,
+        "enabled": False,
+        "target_enabled": False,
+        "state": "disabled",
+        "runtime_state": "disabled",
+        "loaded": False,
+        "active_calls": 0,
+        "operation": None,
+        "last_error": "",
+    }
+
+    class Control:
+        def status(self):
+            return expected
+
+    _, client = _client(local_model_control=Control())
+
+    with client:
+        response = client.get("/api/local-model")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+def test_gateway_submits_local_model_switch_as_async_operation():
+    calls = []
+
+    class Control:
+        def set_enabled(self, enabled, idempotency_key):
+            calls.append((enabled, idempotency_key))
+            return {
+                "operation_id": "op-1",
+                "accepted": True,
+                "target_enabled": enabled,
+            }
+
+    _, client = _client(local_model_control=Control())
+
+    with client:
+        response = client.put(
+            "/api/local-model",
+            json={"enabled": False, "idempotency_key": "request-1"},
+        )
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "operation_id": "op-1",
+        "accepted": True,
+        "target_enabled": False,
+    }
+    assert calls == [(False, "request-1")]
+
+
+def test_gateway_reads_local_model_operation_status():
+    expected = {
+        "operation_id": "op-1",
+        "target_enabled": True,
+        "state": "recovering",
+        "error_code": None,
+    }
+
+    class Control:
+        def operation_status(self, operation_id):
+            assert operation_id == "op-1"
+            return expected
+
+    _, client = _client(local_model_control=Control())
+
+    with client:
+        response = client.get("/api/local-model/operations/op-1")
+
+    assert response.status_code == 200
+    assert response.json() == expected
+
+
+@pytest.mark.parametrize(
+    ("code", "status_code"),
+    [
+        ("local_model_operation_not_found", 404),
+        ("local_model_config_disabled", 409),
+        ("local_model_operation_in_progress", 409),
+        ("idempotency_key_conflict", 409),
+        ("model_worker_unavailable", 503),
+        ("model_worker_timeout", 504),
+    ],
+)
+def test_gateway_maps_local_model_control_errors(code, status_code):
+    class Control:
+        def operation_status(self, operation_id):
+            del operation_id
+            raise LocalModelControlError(code)
+
+    _, client = _client(local_model_control=Control())
+
+    with client:
+        response = client.get("/api/local-model/operations/op-1")
+
+    assert response.status_code == status_code
+    assert response.json() == {
+        "error": {"code": code, "message": code, "details": {}},
+    }
 
 
 def test_chat_task_store_missing_ids_are_safe():

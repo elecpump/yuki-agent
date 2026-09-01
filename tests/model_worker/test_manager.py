@@ -44,6 +44,38 @@ def test_manager_loads_dependencies_and_unloads_dependents_first():
     assert events == ["load:base", "load:child", "unload:child", "unload:base"]
 
 
+def test_disabled_model_inference_does_not_reload_model():
+    loads = []
+    manager = ModelManager(drain_timeout_s=0.1, vram_safety_margin_mb=0)
+    manager.register(
+        ManagedModelSpec(
+            name="local_chat",
+            loader=lambda: loads.append("load") or object(),
+            min_residency_s=0,
+        )
+    )
+    manager.load("local_chat")
+    manager.disable("local_chat")
+
+    with pytest.raises(ModelUnavailableError, match="disabled"):
+        manager.run_inference("local_chat", lambda handle: handle)
+
+    assert loads == ["load"]
+    assert manager.get_model_health("local_chat")["runtime_state"] == "disabled"
+
+
+def test_manager_enable_loads_disabled_model_by_default():
+    manager = ModelManager(vram_safety_margin_mb=0)
+    manager.register(
+        ManagedModelSpec(name="local_chat", loader=object, enabled=False)
+    )
+
+    handle = manager.enable("local_chat")
+
+    assert handle is not None
+    assert manager.get_model_health("local_chat")["runtime_state"] == "ready"
+
+
 def test_memory_admission_evicts_low_priority_lru_candidate():
     gpu = FakeGpuMonitor(free_mb=1000)
     events = []
@@ -121,6 +153,41 @@ def test_health_preserves_legacy_state_and_adds_runtime_state():
     assert health["state"] == "loaded"
     assert health["runtime_state"] == "ready"
     assert health["healthy"] if "healthy" in health else True
+
+
+def test_health_reports_dynamic_runtime_enabled_state():
+    manager = ModelManager(vram_safety_margin_mb=0)
+    manager.register(ManagedModelSpec(name="model", loader=object))
+    manager.load("model")
+    assert manager.get_model_health("model")["runtime_enabled"] is True
+
+    manager.disable("model")
+
+    assert manager.get_model_health("model")["runtime_enabled"] is False
+
+
+def test_health_callable_tracks_circuit_availability():
+    clock = {"now": 10.0}
+    manager = ModelManager(
+        circuit_breaker_s=5.0,
+        vram_safety_margin_mb=0,
+        clock=lambda: clock["now"],
+    )
+    manager.register(ManagedModelSpec(name="model", loader=object))
+    manager.load("model")
+    assert manager.get_model_health("model")["callable"] is True
+
+    with pytest.raises(RuntimeError, match="CUDA out of memory"):
+        manager.run_inference(
+            "model",
+            lambda handle: (_ for _ in ()).throw(
+                RuntimeError("CUDA out of memory")
+            ),
+        )
+    assert manager.get_model_health("model")["callable"] is False
+
+    clock["now"] = 16.0
+    assert manager.get_model_health("model")["callable"] is True
 
 
 def test_generic_inference_failure_degrades_without_opening_circuit():

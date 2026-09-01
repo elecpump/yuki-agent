@@ -39,6 +39,7 @@ from yuki.cognition.l2.bridge import CloudBridge
 from yuki.cognition.l2.client import CloudClient
 from yuki.cognition.l2.proactive import ProactiveAgent
 from yuki.cognition.l2.view import CloudViewBuilder
+from yuki.cognition.local_model_control import LocalChatControl
 from yuki.cognition.pipeline import PerceptionPipeline, build_pipeline
 from yuki.cognition.speech_buffer import SpeechBuffer
 from yuki.cognition.vad import FsmnVadBackend
@@ -74,6 +75,7 @@ class CognitionRuntime:
     memory: MemoryManager
     registry: FunctionRegistry
     model_registry: RemoteModelRegistry | None
+    local_model_control: LocalChatControl | None
     bridge: CloudBridge | None
     hub: DecisionHub
     context: WorkingContext
@@ -323,11 +325,21 @@ class CognitionAssembler:
             )
         persona_refresh()
 
+        local_model_control = None
+        if self.model_registry is not None:
+            local_model_control = LocalChatControl(
+                self.model_registry,
+                hub,
+                available=self.config.local_brain.enabled,
+                initially_enabled=self.config.local_brain.enabled,
+            )
+
         runtime = CognitionRuntime(
             pipeline=pipeline,
             memory=memory,
             registry=registry,
             model_registry=self.model_registry,
+            local_model_control=local_model_control,
             bridge=bridge,
             hub=hub,
             context=context,
