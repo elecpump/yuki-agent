@@ -54,7 +54,7 @@ export function useLocalModelControl(): LocalModelControl {
         if (operation.state === "succeeded") {
           await finish(null);
         } else if (operation.state === "failed") {
-          await finish(operation.error_code || "本地模型操作失败");
+          await finish(localModelErrorMessage(operation.error_code));
         } else {
           schedule(operation.operation_id);
         }

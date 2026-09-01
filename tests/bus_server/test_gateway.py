@@ -371,7 +371,11 @@ def test_gateway_submits_local_model_switch_as_async_operation():
 
 @pytest.mark.parametrize("extra_field", ["model", "action"])
 def test_gateway_rejects_local_model_switch_extra_fields(extra_field):
-    _, client = _client(local_model_control=object())
+    class Control:
+        def set_enabled(self, enabled, idempotency_key):
+            raise AssertionError("validation must reject extra fields before dispatch")
+
+    _, client = _client(local_model_control=Control())
 
     with client:
         response = client.put(

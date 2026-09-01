@@ -131,9 +131,9 @@ class YukiApp:
             if self.config.gateway.enabled:
                 local_model_control = next(
                     (
-                        getattr(agent, "local_model_control", None)
+                        control
                         for agent in self.agents
-                        if getattr(agent, "local_model_control", None) is not None
+                        if (control := getattr(agent, "local_model_control", None)) is not None
                     ),
                     None,
                 )

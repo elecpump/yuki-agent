@@ -21,7 +21,9 @@ export interface LocalModelSlice {
 }
 
 export function localModelErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "本地模型操作失败";
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string" && error.length > 0) return error;
+  return "本地模型操作失败";
 }
 
 export const createLocalModelSlice: StateCreator<

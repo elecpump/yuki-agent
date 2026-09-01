@@ -59,7 +59,7 @@ class ModelRuntimeState:
 
 
 class ModelUnavailableError(RuntimeError):
-    def __init__(self, message: str, *, error_code: str = "model_unavailable") -> None:
+    def __init__(self, message: str, *, error_code: str = "operation_failed") -> None:
         super().__init__(message)
         self.error_code = error_code
 

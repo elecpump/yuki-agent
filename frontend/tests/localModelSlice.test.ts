@@ -79,4 +79,22 @@ describe("local model slice", () => {
       localModelError: null,
     });
   });
+
+  it("tracks and finishes a local model operation", () => {
+    useAppStore.getState().trackLocalModelOperation("op-recover", "正在恢复连接");
+
+    expect(useAppStore.getState()).toMatchObject({
+      localModelLoading: true,
+      localModelOperationId: "op-recover",
+      localModelError: "正在恢复连接",
+    });
+
+    useAppStore.getState().finishLocalModelOperation("load_failed");
+
+    expect(useAppStore.getState()).toMatchObject({
+      localModelLoading: false,
+      localModelOperationId: null,
+      localModelError: "load_failed",
+    });
+  });
 });

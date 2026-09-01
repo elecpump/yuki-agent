@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from yuki.model_worker.controller import ManagedModelSpec
+from yuki.model_worker.controller import ManagedModelSpec, ModelUnavailableError
 from yuki.model_worker.manager import ModelManager
 from yuki.model_worker.operations import ModelOperationFailure, ModelOperationStore
 from yuki.model_worker.scheduler import ModelInferenceScheduler
@@ -212,6 +212,18 @@ def test_enable_preserves_failed_controller_error_code() -> None:
         operation_handler(manager)("enable", "local_chat")
 
     assert exc.value.error_code == "unload_failed"
+
+
+def test_unclassified_model_unavailability_uses_existing_operation_error_code() -> None:
+    class UnavailableManager:
+        def load(self, model: str) -> None:
+            del model
+            raise ModelUnavailableError("not ready")
+
+    with pytest.raises(ModelOperationFailure) as exc:
+        operation_handler(UnavailableManager())("load", "local_chat")  # type: ignore[arg-type]
+
+    assert exc.value.error_code == "operation_failed"
 
 
 def test_inference_services_decode_payloads_and_tts_replays_unacked_chunk():

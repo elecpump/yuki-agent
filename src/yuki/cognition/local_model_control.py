@@ -71,6 +71,7 @@ class LocalChatControl:
         initially_enabled: bool | None = None,
         retry_delays: Sequence[float] = (0.05, 0.1, 0.25, 0.5, 1.0),
         steady_poll_interval_s: float = 0.5,
+        operation_poll_interval_s: float = 0.25,
         wait: Callable[[threading.Event, float], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         operation_ttl_s: float = 300.0,
@@ -96,6 +97,7 @@ class LocalChatControl:
         delays = tuple(max(0.001, float(delay)) for delay in retry_delays)
         self._retry_delays = delays or (0.1,)
         self._steady_poll_interval_s = max(0.1, float(steady_poll_interval_s))
+        self._operation_poll_interval_s = max(0.1, float(operation_poll_interval_s))
         self._retry_index = 0
         self._wait = wait or (lambda event, delay: event.wait(delay))
         self._clock = clock
@@ -232,12 +234,22 @@ class LocalChatControl:
                     and operation is not None
                     and operation.state == "succeeded"
                 )
+                polling_worker = (
+                    self._active_operation_id is not None
+                    and operation is not None
+                    and operation.state in {"queued", "running"}
+                    and operation.worker_operation_id is not None
+                )
             delay = (
                 self._steady_poll_interval_s
                 if stable
-                else self._retry_delays[
-                    min(self._retry_index, len(self._retry_delays) - 1)
-                ]
+                else (
+                    self._operation_poll_interval_s
+                    if polling_worker
+                    else self._retry_delays[
+                        min(self._retry_index, len(self._retry_delays) - 1)
+                    ]
+                )
             )
             self._wait(self._wake, delay)
 
@@ -333,14 +345,7 @@ class LocalChatControl:
                     self._hub.set_local_enabled(True)
                 self._last_error = ""
                 return
-            self._hub.set_local_enabled(False)
-            operation.state = "recovering"
-            operation.error_code = "model_worker_unavailable"
-            operation.worker_operation_id = None
-            operation.worker_idempotency_key = None
-            operation.finished_at = None
-            self._active_operation_id = operation.operation_id
-            self._retry_index = min(self._retry_index + 1, len(self._retry_delays) - 1)
+            self._restart_drift_locked(operation, health)
 
     def _submit_worker_operation(self, operation: _Operation) -> None:
         with self._lock:
@@ -376,12 +381,11 @@ class LocalChatControl:
                 return
             with self._lock:
                 self._health = health
-                if operation.target_enabled:
-                    if not health.get("callable", False):
-                        return
-                    self._hub.set_local_enabled(True)
-                elif not self._health_converged(False, health):
+                if not self._health_converged(operation.target_enabled, health):
+                    self._restart_drift_locked(operation, health)
                     return
+                if operation.target_enabled:
+                    self._hub.set_local_enabled(True)
                 self._complete_locked(operation)
             return
         with self._lock:
@@ -390,6 +394,22 @@ class LocalChatControl:
             operation.finished_at = self._clock()
             self._last_error = operation.error_code
             self._active_operation_id = None
+
+    def _restart_drift_locked(self, operation: _Operation, health: dict) -> None:
+        self._hub.set_local_enabled(False)
+        operation.state = "recovering"
+        operation.error_code = self._drift_error_code(health)
+        operation.worker_operation_id = None
+        operation.worker_idempotency_key = None
+        operation.finished_at = None
+        self._active_operation_id = operation.operation_id
+        self._last_error = operation.error_code
+        self._retry_index = min(self._retry_index + 1, len(self._retry_delays) - 1)
+
+    def _drift_error_code(self, health: dict) -> str:
+        if not health.get("callable", False) and health.get("retry_after") is not None:
+            return str(health.get("last_error_code") or "model_circuit_open")
+        return "model_runtime_drift"
 
     def _read_health(self, operation: _Operation) -> dict | None:
         try:

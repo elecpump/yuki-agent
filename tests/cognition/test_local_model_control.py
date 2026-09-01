@@ -114,6 +114,34 @@ def test_available_control_bootstraps_through_callable_health_before_opening_rou
         control.close()
 
 
+def test_bootstrap_submits_enable_when_configured_model_is_not_callable() -> None:
+    class UnloadedRegistry(FakeRegistry):
+        def set_local_chat_enabled(self, enabled: bool, *, idempotency_key: str) -> dict:
+            result = super().set_local_chat_enabled(
+                enabled,
+                idempotency_key=idempotency_key,
+            )
+            if enabled:
+                self.health.update(
+                    runtime_state="ready",
+                    runtime_enabled=True,
+                    callable=True,
+                    loaded=True,
+                )
+            return result
+
+    hub = FakeHub(enabled=True)
+    registry = UnloadedRegistry(hub)
+    registry.health.update(runtime_state="unloaded", callable=False, loaded=False)
+    control = LocalChatControl(registry, hub, available=True)
+    try:
+        eventually(lambda: len(registry.submissions) == 1)
+        eventually(lambda: control.status()["state"] == "enabled")
+        assert hub.local_enabled() is True
+    finally:
+        control.close()
+
+
 def test_disable_closes_routing_before_worker_and_finishes_without_client_polling() -> None:
     hub = FakeHub(enabled=True)
     registry = FakeRegistry(hub)
@@ -129,6 +157,7 @@ def test_disable_closes_routing_before_worker_and_finishes_without_client_pollin
         )
         assert len(registry.submissions) == 1
         assert registry.submissions[0][0] is False
+        assert registry.submissions[0][1].startswith("disable-1:worker:")
         assert registry.submissions[0][2] is False
         assert control.status()["state"] == "disabled"
         assert hub.local_enabled() is False
@@ -352,6 +381,13 @@ def test_worker_restart_reapplies_disabled_target_without_frontend_polling() -> 
             callable=True,
             loaded=True,
         )
+        eventually(
+            lambda: control.operation_status(accepted["operation_id"])["state"]
+            == "recovering"
+        )
+        assert control.operation_status(accepted["operation_id"])["error_code"] == (
+            "model_runtime_drift"
+        )
         eventually(lambda: len(registry.submissions) == 2)
         eventually(
             lambda: control.operation_status(accepted["operation_id"])["state"]
@@ -486,6 +522,107 @@ def test_stable_control_does_not_busy_poll_worker_health() -> None:
         registry.health_calls = 0
         time.sleep(0.22)
         assert registry.health_calls <= 1
+    finally:
+        control.close()
+
+
+def test_running_operation_does_not_busy_poll_worker_status() -> None:
+    class CountingRegistry(FakeRegistry):
+        def __init__(self, hub: FakeHub) -> None:
+            super().__init__(hub)
+            self.operation_state = "running"
+            self.status_calls = 0
+
+        def operation_status(self, operation_id: str) -> dict:
+            self.status_calls += 1
+            return super().operation_status(operation_id)
+
+    hub = FakeHub(enabled=True)
+    registry = CountingRegistry(hub)
+    control = LocalChatControl(registry, hub, available=True)
+    try:
+        accepted = control.set_enabled(False, "slow-disable")
+        eventually(lambda: len(registry.submissions) == 1)
+        registry.status_calls = 0
+        time.sleep(0.22)
+        assert registry.status_calls <= 1
+        assert control.operation_status(accepted["operation_id"])["state"] == "running"
+    finally:
+        control.close()
+
+
+def test_drift_classification_does_not_compare_worker_monotonic_timestamp() -> None:
+    control = LocalChatControl(FakeRegistry(), FakeHub(), available=False, clock=lambda: 999.0)
+
+    assert control._drift_error_code(  # noqa: SLF001
+        {
+            "callable": False,
+            "retry_after": 1.0,
+            "last_error_code": "load_failed",
+        }
+    ) == "load_failed"
+
+
+@pytest.mark.parametrize("timeout_stage", ["submit", "status"])
+def test_uncertain_worker_attempt_starts_fresh_after_success_without_convergence(
+    timeout_stage: str,
+) -> None:
+    class TimeoutThenEvictedRegistry(FakeRegistry):
+        def __init__(self, hub: FakeHub) -> None:
+            super().__init__(hub)
+            self.by_key: dict[str, str] = {}
+            self.status_timeout_pending = timeout_stage == "status"
+
+        def set_local_chat_enabled(
+            self,
+            enabled: bool,
+            *,
+            idempotency_key: str,
+        ) -> dict:
+            self.submissions.append((enabled, idempotency_key, self.hub.local_enabled()))
+            existing = self.by_key.get(idempotency_key)
+            if existing is not None:
+                return {"operation_id": existing, "accepted": True}
+            operation_id = f"worker-{len(self.by_key) + 1}"
+            self.by_key[idempotency_key] = operation_id
+            if len(self.by_key) == 1:
+                if timeout_stage == "submit":
+                    raise BusTimeoutError("submit result lost")
+            else:
+                self.health.update(
+                    runtime_state="ready",
+                    runtime_enabled=True,
+                    callable=True,
+                    loaded=True,
+                )
+            return {"operation_id": operation_id, "accepted": True}
+
+        def operation_status(self, operation_id: str) -> dict:
+            if self.status_timeout_pending:
+                self.status_timeout_pending = False
+                raise BusTimeoutError("status result lost")
+            return {
+                "operation_id": operation_id,
+                "state": "succeeded",
+                "error_code": None,
+            }
+
+    hub = FakeHub(enabled=False)
+    registry = TimeoutThenEvictedRegistry(hub)
+    registry.health.update(
+        runtime_state="disabled",
+        runtime_enabled=False,
+        callable=False,
+        loaded=False,
+    )
+    control = LocalChatControl(registry, hub, available=True, initially_enabled=False)
+    try:
+        settle_disabled_bootstrap(control, registry)
+        control.set_enabled(True, f"enable-after-{timeout_stage}-timeout")
+        eventually(lambda: control.status()["state"] == "enabled", timeout_s=2.0)
+        assert len(set(registry.by_key)) == 2
+        assert registry.submissions[0][1] == registry.submissions[1][1]
+        assert registry.submissions[-1][1] != registry.submissions[0][1]
     finally:
         control.close()
 
