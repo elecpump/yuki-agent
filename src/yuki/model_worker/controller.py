@@ -59,7 +59,9 @@ class ModelRuntimeState:
 
 
 class ModelUnavailableError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, error_code: str = "model_unavailable") -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class ModelDrainTimeoutError(RuntimeError):
@@ -123,7 +125,10 @@ class ModelController:
         with self._lifecycle_lock:
             with self._condition:
                 if self._runtime.state == ModelReadinessState.DISABLED:
-                    raise ModelUnavailableError(f"model disabled: {self.spec.name}")
+                    raise ModelUnavailableError(
+                        f"model disabled: {self.spec.name}",
+                        error_code="model_disabled",
+                    )
                 if self._runtime.state in {
                     ModelReadinessState.READY,
                     ModelReadinessState.DEGRADED,
@@ -134,7 +139,8 @@ class ModelController:
                     and self._handle is not None
                 ):
                     raise ModelUnavailableError(
-                        f"model failed with retained handle: {self.spec.name}"
+                        f"model failed with retained handle: {self.spec.name}",
+                        error_code=self._runtime.last_error_code or "operation_failed",
                     )
                 if self._runtime.state in {
                     ModelReadinessState.DRAINING,

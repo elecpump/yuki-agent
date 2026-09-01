@@ -10,6 +10,8 @@ export interface LocalModelSlice {
   localModelLoading: boolean;
   localModelOperationId: string | null;
   localModelError: string | null;
+  trackLocalModelOperation: (operationId: string, error?: string | null) => void;
+  finishLocalModelOperation: (error?: string | null) => void;
   refreshLocalModel: (signal?: AbortSignal) => Promise<void>;
   setLocalModelEnabled: (
     enabled: boolean,
@@ -18,8 +20,8 @@ export interface LocalModelSlice {
   ) => Promise<string>;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "无法读取本地模型状态";
+export function localModelErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "本地模型操作失败";
 }
 
 export const createLocalModelSlice: StateCreator<
@@ -33,13 +35,29 @@ export const createLocalModelSlice: StateCreator<
   localModelOperationId: null,
   localModelError: null,
 
+  trackLocalModelOperation: (operationId, error = null) => {
+    set({
+      localModelLoading: true,
+      localModelOperationId: operationId,
+      localModelError: error,
+    });
+  },
+
+  finishLocalModelOperation: (error = null) => {
+    set({
+      localModelLoading: false,
+      localModelOperationId: null,
+      localModelError: error,
+    });
+  },
+
   refreshLocalModel: async (signal) => {
     set({ localModelLoading: true });
     try {
       const status = await getLocalModelStatus(signal);
       set({ localModelStatus: status, localModelLoading: false, localModelError: null });
     } catch (error) {
-      set({ localModelLoading: false, localModelError: errorMessage(error) });
+      set({ localModelLoading: false, localModelError: localModelErrorMessage(error) });
     }
   },
 
@@ -50,7 +68,7 @@ export const createLocalModelSlice: StateCreator<
       set({ localModelOperationId: accepted.operation_id });
       return accepted.operation_id;
     } catch (error) {
-      set({ localModelLoading: false, localModelError: errorMessage(error) });
+      set({ localModelLoading: false, localModelError: localModelErrorMessage(error) });
       throw error;
     }
   },

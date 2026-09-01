@@ -369,6 +369,23 @@ def test_gateway_submits_local_model_switch_as_async_operation():
     assert calls == [(False, "request-1")]
 
 
+@pytest.mark.parametrize("extra_field", ["model", "action"])
+def test_gateway_rejects_local_model_switch_extra_fields(extra_field):
+    _, client = _client(local_model_control=object())
+
+    with client:
+        response = client.put(
+            "/api/local-model",
+            json={
+                "enabled": False,
+                "idempotency_key": "request-1",
+                extra_field: "local_chat",
+            },
+        )
+
+    assert response.status_code == 422
+
+
 def test_gateway_reads_local_model_operation_status():
     expected = {
         "operation_id": "op-1",

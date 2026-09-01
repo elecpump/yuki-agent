@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import time
 import threading
+import time
 
 import pytest
 
@@ -127,7 +127,9 @@ def test_disable_closes_routing_before_worker_and_finishes_without_client_pollin
             lambda: control.operation_status(accepted["operation_id"])["state"]
             == "succeeded"
         )
-        assert registry.submissions == [(False, "disable-1", False)]
+        assert len(registry.submissions) == 1
+        assert registry.submissions[0][0] is False
+        assert registry.submissions[0][2] is False
         assert control.status()["state"] == "disabled"
         assert hub.local_enabled() is False
     finally:
@@ -191,6 +193,7 @@ def test_stale_health_result_cannot_reopen_route_after_disable_request() -> None
     control = LocalChatControl(registry, hub, available=True)
     try:
         assert started.wait(1.0)
+        assert control.status()["state"] == "enabling"
         control.set_enabled(False, "disable-during-health-check")
         transition_count = len(hub.transitions)
         release.set()
@@ -396,6 +399,93 @@ def test_worker_restart_closes_route_until_enabled_target_is_callable_again() ->
             == "succeeded"
         )
         assert hub.local_enabled() is True
+    finally:
+        control.close()
+
+
+def test_drift_recovery_uses_a_fresh_worker_idempotency_key() -> None:
+    class IdempotentWorkerRegistry(FakeRegistry):
+        def __init__(self, hub: FakeHub) -> None:
+            super().__init__(hub)
+            self.worker_operations: dict[str, str] = {}
+            self.health_failure: Exception | None = None
+
+        def get_model_health(self, model: str) -> dict:
+            if self.health_failure is not None:
+                failure, self.health_failure = self.health_failure, None
+                raise failure
+            return super().get_model_health(model)
+
+        def set_local_chat_enabled(
+            self,
+            enabled: bool,
+            *,
+            idempotency_key: str,
+        ) -> dict:
+            self.submissions.append((enabled, idempotency_key, self.hub.local_enabled()))
+            existing = self.worker_operations.get(idempotency_key)
+            if existing is not None:
+                return {"operation_id": existing, "accepted": True}
+            operation_id = f"worker-{len(self.worker_operations) + 1}"
+            self.worker_operations[idempotency_key] = operation_id
+            if enabled:
+                self.health.update(
+                    runtime_state="ready",
+                    runtime_enabled=True,
+                    callable=True,
+                    loaded=True,
+                )
+            return {"operation_id": operation_id, "accepted": True}
+
+    hub = FakeHub(enabled=False)
+    registry = IdempotentWorkerRegistry(hub)
+    registry.health.update(
+        runtime_state="disabled",
+        runtime_enabled=False,
+        callable=False,
+        loaded=False,
+    )
+    control = LocalChatControl(registry, hub, available=True, initially_enabled=False)
+    try:
+        settle_disabled_bootstrap(control, registry)
+        accepted = control.set_enabled(True, "enable-once")
+        eventually(
+            lambda: control.operation_status(accepted["operation_id"])["state"]
+            == "succeeded"
+        )
+
+        registry.health.update(
+            runtime_state="unloaded",
+            runtime_enabled=True,
+            callable=False,
+            loaded=False,
+        )
+        registry.health_failure = BusTimeoutError("health timed out during drift")
+        eventually(lambda: len(registry.submissions) >= 2)
+        eventually(lambda: control.status()["state"] == "enabled")
+        assert registry.submissions[0][1] != registry.submissions[1][1]
+    finally:
+        control.close()
+
+
+def test_stable_control_does_not_busy_poll_worker_health() -> None:
+    class CountingRegistry(FakeRegistry):
+        def __init__(self, hub: FakeHub) -> None:
+            super().__init__(hub)
+            self.health_calls = 0
+
+        def get_model_health(self, model: str) -> dict:
+            self.health_calls += 1
+            return super().get_model_health(model)
+
+    hub = FakeHub(enabled=True)
+    registry = CountingRegistry(hub)
+    control = LocalChatControl(registry, hub, available=True)
+    try:
+        eventually(lambda: control.status()["state"] == "enabled")
+        registry.health_calls = 0
+        time.sleep(0.22)
+        assert registry.health_calls <= 1
     finally:
         control.close()
 

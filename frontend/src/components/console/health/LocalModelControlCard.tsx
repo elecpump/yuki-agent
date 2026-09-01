@@ -20,17 +20,24 @@ const STATE_COLORS: Partial<Record<LocalModelState, string>> = {
   failed: "error",
 };
 
+function statusDotState(state: LocalModelState | undefined): "ok" | "bad" | "stale" {
+  if (state === "enabled") return "ok";
+  if (state === "failed") return "bad";
+  return "stale";
+}
+
 export function LocalModelControlCard() {
   const { status, loading, error, setEnabled } = useLocalModelControl();
   const state = status?.state;
   const unavailable = !status || !status.available;
   const busy = loading || state === "enabling" || state === "disabling" || state === "recovering";
   const displayError = error || status?.last_error;
+  const dotState = statusDotState(state);
 
   return (
     <Card size="small">
       <div className="health-card-title">
-        <span><i className={`status-dot ${state === "enabled" ? "ok" : state === "failed" ? "bad" : "stale"}`} />本地对话模型</span>
+        <span><i className={`status-dot ${dotState}`} />本地对话模型</span>
         <span className="local-model-actions">
           <Tag bordered={false} color={state ? STATE_COLORS[state] : undefined}>
             {state ? STATE_LABELS[state] : "读取中"}

@@ -9,7 +9,7 @@ from PIL import Image
 
 from yuki.model_worker.controller import ManagedModelSpec
 from yuki.model_worker.manager import ModelManager
-from yuki.model_worker.operations import ModelOperationStore
+from yuki.model_worker.operations import ModelOperationFailure, ModelOperationStore
 from yuki.model_worker.scheduler import ModelInferenceScheduler
 from yuki.model_worker.services import (
     TtsJobStore,
@@ -193,6 +193,25 @@ def test_vram_admission_failure_has_stable_operation_error_code():
         assert status["error_code"] == "insufficient_vram"
     finally:
         operations.close()
+
+
+def test_enable_preserves_failed_controller_error_code() -> None:
+    manager = ModelManager(vram_safety_margin_mb=0)
+    manager.register(
+        ManagedModelSpec(
+            name="local_chat",
+            loader=object,
+            unloader=lambda handle: (_ for _ in ()).throw(RuntimeError("cannot unload")),
+        )
+    )
+    manager.load("local_chat")
+    with pytest.raises(RuntimeError, match="cannot unload"):
+        manager.unload("local_chat")
+
+    with pytest.raises(ModelOperationFailure) as exc:
+        operation_handler(manager)("enable", "local_chat")
+
+    assert exc.value.error_code == "unload_failed"
 
 
 def test_inference_services_decode_payloads_and_tts_replays_unacked_chunk():

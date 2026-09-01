@@ -49,7 +49,7 @@ def operation_handler(
         except InsufficientVramError as exc:
             raise ModelOperationFailure("insufficient_vram") from exc
         except ModelUnavailableError as exc:
-            raise ModelOperationFailure("model_disabled") from exc
+            raise ModelOperationFailure(exc.error_code) from exc
         except Exception as exc:
             error_code = (
                 manager.get_model_health(model).get("last_error_code")

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from yuki.bus import BUS_HEALTH_SERVICE, BusNode
 from yuki.bus_server.ws_channels import (
@@ -27,6 +27,8 @@ class ChatRequest(BaseModel):
 
 
 class LocalModelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     enabled: bool
     idempotency_key: str = Field(min_length=1)
 

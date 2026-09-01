@@ -44,6 +44,7 @@ class _Operation:
     target_enabled: bool
     state: str = "queued"
     worker_operation_id: str | None = None
+    worker_idempotency_key: str | None = None
     error_code: str | None = None
     finished_at: float | None = None
     verify_first: bool = False
@@ -69,6 +70,7 @@ class LocalChatControl:
         available: bool,
         initially_enabled: bool | None = None,
         retry_delays: Sequence[float] = (0.05, 0.1, 0.25, 0.5, 1.0),
+        steady_poll_interval_s: float = 0.5,
         wait: Callable[[threading.Event, float], bool] | None = None,
         clock: Callable[[], float] = time.monotonic,
         operation_ttl_s: float = 300.0,
@@ -93,6 +95,7 @@ class LocalChatControl:
         }
         delays = tuple(max(0.001, float(delay)) for delay in retry_delays)
         self._retry_delays = delays or (0.1,)
+        self._steady_poll_interval_s = max(0.1, float(steady_poll_interval_s))
         self._retry_index = 0
         self._wait = wait or (lambda event, delay: event.wait(delay))
         self._clock = clock
@@ -106,7 +109,7 @@ class LocalChatControl:
                 operation_id=uuid.uuid4().hex,
                 idempotency_key=f"bootstrap:{uuid.uuid4().hex}",
                 target_enabled=self._target_enabled,
-                state="recovering",
+                state="queued",
                 verify_first=True,
                 public_visible=False,
             )
@@ -222,18 +225,42 @@ class LocalChatControl:
             except Exception:
                 self._mark_failed("operation_failed")
             self._wake.clear()
-            delay = self._retry_delays[min(self._retry_index, len(self._retry_delays) - 1)]
+            with self._lock:
+                operation = self._current_operation_locked()
+                stable = (
+                    self._active_operation_id is None
+                    and operation is not None
+                    and operation.state == "succeeded"
+                )
+            delay = (
+                self._steady_poll_interval_s
+                if stable
+                else self._retry_delays[
+                    min(self._retry_index, len(self._retry_delays) - 1)
+                ]
+            )
             self._wait(self._wake, delay)
 
-    def _mark_recovering(self, error_code: str) -> None:
+    def _mark_recovering(
+        self,
+        error_code: str,
+        *,
+        operation: _Operation | None = None,
+        reset_worker_key: bool = False,
+    ) -> None:
         with self._lock:
-            operation = self._current_operation_locked()
+            current = self._current_operation_locked()
+            if operation is not None and current is not operation:
+                return
+            operation = operation or current
             if operation is None or operation.state == "failed":
                 return
             operation.state = "recovering"
             operation.error_code = error_code
             operation.finished_at = None
             operation.worker_operation_id = None
+            if reset_worker_key:
+                operation.worker_idempotency_key = None
             self._last_error = error_code
             self._hub.set_local_enabled(False)
             self._active_operation_id = operation.operation_id
@@ -257,125 +284,105 @@ class LocalChatControl:
             if operation is None or operation.state == "failed":
                 return
             if operation.verify_first:
-                target = operation.target_enabled
-                verify_first = True
-                check_drift = False
-                worker_operation_id = ""
-                key = ""
-            else:
-                verify_first = False
-            if not verify_first and operation.state == "succeeded":
-                target = operation.target_enabled
-                check_drift = True
-            elif not verify_first:
-                check_drift = False
-            if verify_first or check_drift:
-                worker_operation_id = ""
-                key = ""
+                action = "verify"
+            elif operation.state == "succeeded":
+                action = "check_drift"
             elif operation.worker_operation_id is None:
                 operation.state = "running"
-                target = operation.target_enabled
-                key = operation.idempotency_key
+                action = "submit"
             else:
-                target = operation.target_enabled
-                key = ""
-                worker_operation_id = operation.worker_operation_id
+                action = "poll"
 
-        if verify_first:
-            health = dict(self._registry.get_model_health("local_chat"))
-            with self._lock:
-                if (
-                    self._active_operation_id != operation.operation_id
-                    or operation.target_enabled != target
-                    or self._target_enabled != target
-                ):
-                    return
-                self._health = health
-                converged = (
-                    bool(health.get("callable", False))
-                    if target
-                    else (
-                        health.get("runtime_state") == "disabled"
-                        and not bool(health.get("runtime_enabled", False))
-                    )
-                )
-                if converged:
-                    if target:
-                        self._hub.set_local_enabled(True)
-                    operation.state = "succeeded"
-                    operation.error_code = None
-                    operation.finished_at = self._clock()
-                    operation.verify_first = False
-                    self._active_operation_id = None
-                    self._last_error = ""
-                    return
+        if action == "verify":
+            self._verify_initial_health(operation)
+        elif action == "check_drift":
+            self._check_drift(operation)
+        elif action == "submit":
+            self._submit_worker_operation(operation)
+        else:
+            self._poll_worker_operation(operation)
+
+    def _verify_initial_health(self, operation: _Operation) -> None:
+        target = operation.target_enabled
+        health = self._read_health(operation)
+        if health is None:
+            return
+        with self._lock:
+            if not self._is_current_target_locked(operation, target, require_active=True):
+                return
+            self._health = health
+            if self._health_converged(target, health):
+                if target:
+                    self._hub.set_local_enabled(True)
+                self._complete_locked(operation)
                 operation.verify_first = False
-            return
+                return
+            operation.verify_first = False
 
-        if check_drift:
-            health = dict(self._registry.get_model_health("local_chat"))
-            with self._lock:
-                if (
-                    self._current_operation_locked() is not operation
-                    or operation.target_enabled != target
-                    or self._target_enabled != target
-                ):
-                    return
-                self._health = health
-                converged = (
-                    bool(health.get("callable", False))
-                    if target
-                    else (
-                        health.get("runtime_state") == "disabled"
-                        and not bool(health.get("runtime_enabled", False))
-                    )
+    def _check_drift(self, operation: _Operation) -> None:
+        target = operation.target_enabled
+        health = self._read_health(operation)
+        if health is None:
+            return
+        with self._lock:
+            if not self._is_current_target_locked(operation, target):
+                return
+            self._health = health
+            if self._health_converged(target, health):
+                if target:
+                    self._hub.set_local_enabled(True)
+                self._last_error = ""
+                return
+            self._hub.set_local_enabled(False)
+            operation.state = "recovering"
+            operation.error_code = "model_worker_unavailable"
+            operation.worker_operation_id = None
+            operation.worker_idempotency_key = None
+            operation.finished_at = None
+            self._active_operation_id = operation.operation_id
+            self._retry_index = min(self._retry_index + 1, len(self._retry_delays) - 1)
+
+    def _submit_worker_operation(self, operation: _Operation) -> None:
+        with self._lock:
+            if operation.worker_idempotency_key is None:
+                operation.worker_idempotency_key = (
+                    f"{operation.idempotency_key}:worker:{uuid.uuid4().hex}"
                 )
-                if converged:
-                    if target:
-                        self._hub.set_local_enabled(True)
-                    self._last_error = ""
-                    return
-                self._hub.set_local_enabled(False)
-                operation.state = "recovering"
-                operation.error_code = "model_worker_unavailable"
-                operation.worker_operation_id = None
-                operation.finished_at = None
-                self._active_operation_id = operation.operation_id
-                self._retry_index = min(self._retry_index + 1, len(self._retry_delays) - 1)
-            return
+            worker_key = operation.worker_idempotency_key
+            target = operation.target_enabled
+        result = self._registry.set_local_chat_enabled(
+            target,
+            idempotency_key=worker_key,
+        )
+        with self._lock:
+            operation.worker_operation_id = str(result["operation_id"])
 
-        if key:
-            result = self._registry.set_local_chat_enabled(target, idempotency_key=key)
-            with self._lock:
-                operation.worker_operation_id = str(result["operation_id"])
+    def _poll_worker_operation(self, operation: _Operation) -> None:
+        worker_operation_id = operation.worker_operation_id
+        if worker_operation_id is None:
             return
-
         result = self._registry.operation_status(worker_operation_id)
         state = str(result.get("state") or "")
         if state == "cancelled" or result.get("error_code") == "operation_not_found":
+            with self._lock:
+                operation.worker_idempotency_key = None
             self._mark_recovering("model_worker_unavailable")
             return
         if state in {"queued", "running"}:
             return
         if state == "succeeded":
-            health = dict(self._registry.get_model_health("local_chat"))
+            health = self._read_health(operation)
+            if health is None:
+                return
             with self._lock:
                 self._health = health
-                if target:
+                if operation.target_enabled:
                     if not health.get("callable", False):
                         return
                     self._hub.set_local_enabled(True)
-                elif not (
-                    health.get("runtime_state") == "disabled"
-                    and not bool(health.get("runtime_enabled", False))
-                ):
+                elif not self._health_converged(False, health):
                     return
-                operation.state = "succeeded"
-                operation.error_code = None
-                operation.finished_at = self._clock()
-                self._active_operation_id = None
-                self._retry_index = 0
-                self._last_error = ""
+                self._complete_locked(operation)
             return
         with self._lock:
             operation.state = "failed"
@@ -383,6 +390,59 @@ class LocalChatControl:
             operation.finished_at = self._clock()
             self._last_error = operation.error_code
             self._active_operation_id = None
+
+    def _read_health(self, operation: _Operation) -> dict | None:
+        try:
+            return dict(self._registry.get_model_health("local_chat"))
+        except BusTimeoutError:
+            self._mark_recovering(
+                "model_worker_timeout",
+                operation=operation,
+                reset_worker_key=True,
+            )
+            return None
+        except BusError:
+            self._mark_recovering(
+                "model_worker_unavailable",
+                operation=operation,
+                reset_worker_key=True,
+            )
+            return None
+
+    def _complete_locked(self, operation: _Operation) -> None:
+        operation.state = "succeeded"
+        operation.error_code = None
+        operation.finished_at = self._clock()
+        self._active_operation_id = None
+        self._retry_index = 0
+        self._last_error = ""
+
+    def _is_current_target_locked(
+        self,
+        operation: _Operation,
+        target: bool,
+        *,
+        require_active: bool = False,
+    ) -> bool:
+        current_matches = (
+            self._active_operation_id == operation.operation_id
+            if require_active
+            else self._current_operation_locked() is operation
+        )
+        return (
+            current_matches
+            and operation.target_enabled == target
+            and self._target_enabled == target
+        )
+
+    @staticmethod
+    def _health_converged(target: bool, health: dict) -> bool:
+        if target:
+            return bool(health.get("callable", False))
+        return (
+            health.get("runtime_state") == "disabled"
+            and not bool(health.get("runtime_enabled", False))
+        )
 
     def _current_operation_locked(self) -> _Operation | None:
         operation_id = self._active_operation_id or self._last_operation_id

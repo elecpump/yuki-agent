@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { getLocalModelOperation } from "../../api/rest";
 import { LOCAL_MODEL_OPERATION_POLL_MS } from "../../config/runtime";
 import type { LocalModelStatus } from "../../types/api";
+import { localModelErrorMessage } from "../slices/localModelSlice";
 import { useAppStore } from "../store";
 
 export interface LocalModelControl {
@@ -11,10 +12,6 @@ export interface LocalModelControl {
   error: string | null;
   refresh: () => Promise<void>;
   setEnabled: (enabled: boolean) => Promise<void>;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "本地模型操作失败";
 }
 
 export function useLocalModelControl(): LocalModelControl {
@@ -37,11 +34,7 @@ export function useLocalModelControl(): LocalModelControl {
     if (disposed.current) return;
     await refresh();
     if (disposed.current) return;
-    useAppStore.setState({
-      localModelLoading: false,
-      localModelOperationId: null,
-      localModelError: terminalError,
-    });
+    useAppStore.getState().finishLocalModelOperation(terminalError);
   }, [refresh]);
 
   const poll = useCallback((id: string) => {
@@ -66,7 +59,7 @@ export function useLocalModelControl(): LocalModelControl {
           schedule(operation.operation_id);
         }
       } catch (pollError) {
-        const message = errorMessage(pollError);
+        const message = localModelErrorMessage(pollError);
         await refresh();
         if (disposed.current) return;
         const authoritative = useAppStore.getState().localModelStatus?.operation;
@@ -75,18 +68,12 @@ export function useLocalModelControl(): LocalModelControl {
           && authoritative.state !== "succeeded"
           && authoritative.state !== "failed"
         ) {
-          useAppStore.setState({
-            localModelLoading: true,
-            localModelOperationId: authoritative.operation_id,
-            localModelError: message,
-          });
+          useAppStore
+            .getState()
+            .trackLocalModelOperation(authoritative.operation_id, message);
           schedule(authoritative.operation_id);
         } else {
-          useAppStore.setState({
-            localModelLoading: false,
-            localModelOperationId: null,
-            localModelError: message,
-          });
+          useAppStore.getState().finishLocalModelOperation(message);
         }
       }
     };
@@ -101,10 +88,7 @@ export function useLocalModelControl(): LocalModelControl {
       if (state.localModelError !== null) return;
       const operation = state.localModelStatus?.operation;
       if (operation && operation.state !== "succeeded" && operation.state !== "failed") {
-        useAppStore.setState({
-          localModelLoading: true,
-          localModelOperationId: operation.operation_id,
-        });
+        useAppStore.getState().trackLocalModelOperation(operation.operation_id);
         poll(operation.operation_id);
       }
     });
@@ -123,7 +107,7 @@ export function useLocalModelControl(): LocalModelControl {
         .setLocalModelEnabled(enabled, crypto.randomUUID());
       if (!disposed.current) poll(id);
     } catch (submitError) {
-      await finish(errorMessage(submitError));
+      await finish(localModelErrorMessage(submitError));
     }
   }, [finish, poll]);
 

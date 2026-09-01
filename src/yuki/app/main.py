@@ -133,7 +133,7 @@ class YukiApp:
                     (
                         getattr(agent, "local_model_control", None)
                         for agent in self.agents
-                        if agent.name == "cognition"
+                        if getattr(agent, "local_model_control", None) is not None
                     ),
                     None,
                 )
