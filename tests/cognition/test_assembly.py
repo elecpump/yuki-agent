@@ -1,4 +1,10 @@
-from yuki.cognition.assembly import CognitionAssembler, CognitionRuntime
+from yuki.cognition.assembly import (
+    COGNITION_VOICE_CANCEL_SERVICE,
+    COGNITION_VOICE_START_SERVICE,
+    COGNITION_VOICE_STATUS_SERVICE,
+    CognitionAssembler,
+    CognitionRuntime,
+)
 from yuki.cognition.brain.hub import COGNITION_AWAKE_SERVICE
 from yuki.cognition.context.store import ThreadTurnStore
 from yuki.config import Config
@@ -16,6 +22,8 @@ class FakePipeline:
     def __init__(self):
         self.warmups = 0
         self.stt_warmups = 0
+        self.voice = {"state": "idle", "session_id": None, "active": False}
+        self.awake_payloads = []
 
     @property
     def frame_client(self):
@@ -39,6 +47,17 @@ class FakePipeline:
     def warmup_stt(self):
         self.stt_warmups += 1
 
+    def voice_status(self):
+        return dict(self.voice)
+
+    def on_awake(self, topic, payload):
+        self.awake_payloads.append((topic, dict(payload)))
+        self.voice = {"state": "listening", "session_id": 1, "active": True}
+
+    def cancel_voice(self):
+        self.voice = {"state": "idle", "session_id": None, "active": False}
+        return dict(self.voice)
+
 
 def test_cognition_runtime_does_not_invent_chat_session_id():
     class Hub:
@@ -52,6 +71,40 @@ def test_cognition_runtime_does_not_invent_chat_session_id():
         "text": "你好",
         "task_id": "",
     }
+
+
+def test_cognition_runtime_starts_and_cancels_frontend_voice_session():
+    pipeline = FakePipeline()
+    runtime = object.__new__(CognitionRuntime)
+    runtime.pipeline = pipeline
+    runtime.voice_available = True
+
+    started = runtime.handle_voice_start({"source": "untrusted"})
+    assert started == {"available": True, "state": "listening", "session_id": 1, "active": True}
+    assert pipeline.awake_payloads[0][0] == Topics.AWAKE
+    assert pipeline.awake_payloads[0][1]["source"] == "frontend"
+
+    assert runtime.handle_voice_cancel({}) == {
+        "available": True,
+        "state": "idle",
+        "session_id": None,
+        "active": False,
+    }
+
+
+def test_cognition_runtime_reports_voice_unavailable_when_stt_is_disabled():
+    pipeline = FakePipeline()
+    runtime = object.__new__(CognitionRuntime)
+    runtime.pipeline = pipeline
+    runtime.voice_available = False
+
+    assert runtime.handle_voice_start({}) == {
+        "available": False,
+        "state": "idle",
+        "session_id": None,
+        "active": False,
+    }
+    assert pipeline.awake_payloads == []
 
 
 def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
@@ -81,6 +134,9 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert all(service in bus.services for service in MEMORY_SERVICES)
         assert FUNCTIONS_CALL_SERVICE in bus.services
         assert COGNITION_AWAKE_SERVICE in bus.services
+        assert COGNITION_VOICE_START_SERVICE in bus.services
+        assert COGNITION_VOICE_CANCEL_SERVICE in bus.services
+        assert COGNITION_VOICE_STATUS_SERVICE in bus.services
         assert Topics.USER_UTTERANCE in bus.subscriptions
         assert Topics.SITUATION_UPDATE in bus.subscriptions
         names = runtime.registry.names()

@@ -1,8 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestJson } from "../src/api/client";
 import {
+  cancelVoiceListening,
+  getVoiceStatus,
   getLocalModelOperation,
   getLocalModelStatus,
+  startVoiceListening,
   setLocalModelEnabled,
 } from "../src/api/rest";
 
@@ -108,5 +111,34 @@ describe("local model REST client", () => {
       }),
     ]);
     expect(fetchMock.mock.calls[1]?.[0]).toMatch(/\/api\/local-model\/operations\/op-1$/);
+  });
+});
+
+describe("voice REST client", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("reads, starts, and cancels the backend voice session", async () => {
+    const idle = { available: true, state: "idle", session_id: null, active: false };
+    const listening = { available: true, state: "listening", session_id: 1, active: true };
+    const response = (body: unknown) =>
+      new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(response(idle))
+      .mockResolvedValueOnce(response(listening))
+      .mockResolvedValueOnce(response(idle));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(getVoiceStatus()).resolves.toEqual(idle);
+    await expect(startVoiceListening()).resolves.toEqual(listening);
+    await expect(cancelVoiceListening()).resolves.toEqual(idle);
+    expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
+      [expect.stringMatching(/\/api\/voice$/), undefined],
+      [expect.stringMatching(/\/api\/voice\/listen$/), "POST"],
+      [expect.stringMatching(/\/api\/voice\/listen$/), "DELETE"],
+    ]);
   });
 });

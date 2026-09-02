@@ -68,6 +68,10 @@ from yuki.topics import Topics
 
 logger = get_logger("yuki.cognition.assembly")
 
+COGNITION_VOICE_START_SERVICE = "cognition.voice.start"
+COGNITION_VOICE_CANCEL_SERVICE = "cognition.voice.cancel"
+COGNITION_VOICE_STATUS_SERVICE = "cognition.voice.status"
+
 
 @dataclass
 class CognitionRuntime:
@@ -85,6 +89,7 @@ class CognitionRuntime:
     soul_reflection_scheduler: SoulReflectionScheduler | None
     thread_maintenance_scheduler: ThreadMaintenanceScheduler | None
     cache_manager: ModelCacheManager
+    voice_available: bool = True
 
     def handle_awake_request(self, payload: dict) -> dict:
         payload = dict(payload or {})
@@ -98,6 +103,32 @@ class CognitionRuntime:
         payload = dict(payload or {})
         payload.setdefault("task_id", "")
         return self.hub.handle_chat_request(payload)
+
+    def voice_status(self) -> dict:
+        status = self.pipeline.voice_status() if self.voice_available else {
+            "state": "idle",
+            "session_id": None,
+            "active": False,
+        }
+        return {"available": self.voice_available, **status}
+
+    def handle_voice_start(self, payload: dict) -> dict:
+        if self.voice_available:
+            request = dict(payload or {})
+            request["source"] = "frontend"
+            request.setdefault("ts", time.time())
+            self.pipeline.on_awake(Topics.AWAKE, request)
+        return self.voice_status()
+
+    def handle_voice_cancel(self, payload: dict) -> dict:
+        del payload
+        if self.voice_available:
+            self.pipeline.cancel_voice()
+        return self.voice_status()
+
+    def handle_voice_status(self, payload: dict) -> dict:
+        del payload
+        return self.voice_status()
 
     def handle_soul_get(self, payload: dict) -> dict:
         return {"soul": self.soul_store.load_or_default()}
@@ -349,9 +380,13 @@ class CognitionAssembler:
             soul_reflection_scheduler=soul_reflection_scheduler,
             thread_maintenance_scheduler=thread_maintenance_scheduler,
             cache_manager=cache_manager,
+            voice_available=self.config.stt.enabled,
         )
         self.bus.respond(COGNITION_AWAKE_SERVICE, runtime.handle_awake_request)
         self.bus.respond(COGNITION_CHAT_SERVICE, runtime.handle_chat_request)
+        self.bus.respond(COGNITION_VOICE_START_SERVICE, runtime.handle_voice_start)
+        self.bus.respond(COGNITION_VOICE_CANCEL_SERVICE, runtime.handle_voice_cancel)
+        self.bus.respond(COGNITION_VOICE_STATUS_SERVICE, runtime.handle_voice_status)
         self.bus.respond(SOUL_GET_SERVICE, runtime.handle_soul_get)
         return runtime
 

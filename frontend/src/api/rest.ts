@@ -3,6 +3,7 @@ import type {
   LocalModelAcceptedOperation,
   LocalModelOperation,
   LocalModelStatus,
+  VoiceStatus,
 } from "../types/api";
 import { requestJson } from "./client";
 
@@ -34,4 +35,16 @@ export function getLocalModelOperation(
     `/api/local-model/operations/${encodeURIComponent(operationId)}`,
     { signal },
   );
+}
+
+export function getVoiceStatus(signal?: AbortSignal): Promise<VoiceStatus> {
+  return requestJson<VoiceStatus>("/api/voice", { signal });
+}
+
+export function startVoiceListening(signal?: AbortSignal): Promise<VoiceStatus> {
+  return requestJson<VoiceStatus>("/api/voice/listen", { method: "POST", signal });
+}
+
+export function cancelVoiceListening(signal?: AbortSignal): Promise<VoiceStatus> {
+  return requestJson<VoiceStatus>("/api/voice/listen", { method: "DELETE", signal });
 }

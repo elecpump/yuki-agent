@@ -118,6 +118,10 @@ button, textarea { font: inherit; }
 }
 .composer-box:focus-within { border-color: #7167d6; box-shadow: 0 0 0 3px rgba(113, 103, 214, .13); }
 .composer-box textarea { flex: 1; min-height: 30px; max-height: 150px; resize: none; color: #eef1ff; background: transparent; border: 0; outline: 0; line-height: 1.6; padding: 5px 0; }
+.voice-button { color: #a9b1c9; flex: 0 0 auto; }
+.voice-button:hover:not(:disabled) { color: #c9c2ff !important; background: rgba(113, 96, 233, .14) !important; }
+.voice-button.active { color: #ff8398; background: rgba(255, 91, 122, .13); animation: voice-pulse 1.4s ease-in-out infinite; }
+@keyframes voice-pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 91, 122, .12); } 50% { box-shadow: 0 0 0 5px rgba(255, 91, 122, .05); } }
 .composer-hint { color: #656e87; font-size: 11px; padding: 7px 3px 0; }
 .chat-error { color: #ff9b9b; font-size: 12px; padding: 0 3px 8px; }
 

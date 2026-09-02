@@ -57,6 +57,19 @@ class AsrSession:
     def speech_buffer(self) -> SpeechBuffer:
         return self._speech_buffer
 
+    def snapshot(self) -> dict:
+        with self._lock:
+            return {
+                "state": self._state,
+                "session_id": self._session_id,
+                "active": self._state in {"listening", "speaking", "processing"},
+            }
+
+    def cancel(self) -> dict:
+        with self._lock:
+            self.return_to_idle()
+            return self.snapshot()
+
     def begin(self) -> list:
         """on_awake：idle→listening，返回需回灌的 pre-roll 帧。"""
         with self._lock:

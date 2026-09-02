@@ -1,6 +1,7 @@
 import { Button } from "antd";
 import { useEffect, useRef } from "react";
 import { useAppStore } from "../../state/store";
+import type { VoiceControl } from "../../state/hooks/useVoiceControl";
 import { ChatInput } from "./ChatInput";
 import { MessageBubble } from "./MessageBubble";
 import { ThinkingIndicator } from "./ThinkingIndicator";
@@ -8,9 +9,10 @@ import { ThinkingIndicator } from "./ThinkingIndicator";
 interface ChatPanelProps {
   onSend: (text: string) => boolean;
   onCancel: () => void;
+  voice: VoiceControl;
 }
 
-export function ChatPanel({ onSend, onCancel }: ChatPanelProps) {
+export function ChatPanel({ onSend, onCancel, voice }: ChatPanelProps) {
   const messages = useAppStore((state) => state.messages);
   const pending = useAppStore((state) => state.pending);
   const sendLocked = useAppStore((state) => state.sendLocked);
@@ -64,6 +66,10 @@ export function ChatPanel({ onSend, onCancel }: ChatPanelProps) {
               : undefined
         }
         onSend={onSend}
+        voiceStatus={voice.status}
+        voicePending={voice.pending}
+        voiceError={voice.error}
+        onToggleVoice={() => void voice.toggleVoice()}
       />
     </main>
   );

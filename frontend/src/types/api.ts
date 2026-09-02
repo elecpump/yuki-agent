@@ -48,6 +48,15 @@ export interface ApiErrorShape {
   status?: number;
 }
 
+export type VoiceState = "idle" | "listening" | "speaking" | "processing" | "tts";
+
+export interface VoiceStatus {
+  available: boolean;
+  state: VoiceState;
+  session_id: number | null;
+  active: boolean;
+}
+
 export type LocalModelState =
   | "unavailable"
   | "disabled"

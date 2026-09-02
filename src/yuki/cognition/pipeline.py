@@ -390,6 +390,12 @@ class PerceptionPipeline:
         for samples in pre_roll:
             self._asr.add_frame(samples)
 
+    def voice_status(self) -> dict:
+        return self._asr.snapshot()
+
+    def cancel_voice(self) -> dict:
+        return self._asr.cancel()
+
     def on_mic(self, topic: str, payload: dict) -> None:
         import numpy as np
         native = payload.get("samples")

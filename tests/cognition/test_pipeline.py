@@ -312,6 +312,26 @@ def test_pipeline_understand_screen_returns_vlm_context():
     assert not any(t == Topics.REPLY for t, _ in bus.published)
 
 
+def test_pipeline_exposes_authoritative_voice_status_and_cancel():
+    pipeline = _make_pipeline()
+    try:
+        assert pipeline.voice_status() == {
+            "state": "idle",
+            "session_id": None,
+            "active": False,
+        }
+
+        pipeline.on_awake(Topics.AWAKE, {"source": "frontend"})
+        assert pipeline.voice_status()["state"] == "listening"
+        assert pipeline.cancel_voice() == {
+            "state": "idle",
+            "session_id": None,
+            "active": False,
+        }
+    finally:
+        pipeline.close()
+
+
 def test_pipeline_tts_events_duck_and_restore_asr():
     sb = FakeSpeechBuffer()
     bus = FakeBus()

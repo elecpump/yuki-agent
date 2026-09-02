@@ -37,6 +37,20 @@ def test_begin_starts_listening_and_returns_pre_roll():
     assert session.session_id is not None
 
 
+def test_snapshot_reports_the_current_voice_session():
+    now = [10.0]
+    session = _session(now)
+
+    assert session.snapshot() == {"state": "idle", "session_id": None, "active": False}
+
+    session.begin()
+    assert session.snapshot() == {
+        "state": "listening",
+        "session_id": session.session_id,
+        "active": True,
+    }
+
+
 def test_begin_ignored_when_not_idle():
     now = [10.0]
     session = _session(now)
@@ -91,6 +105,31 @@ def test_is_current_matches_session():
     assert session.is_current(sid + 1) is False
 
 
+def test_cancel_stops_an_active_session_and_invalidates_late_results():
+    now = [10.0]
+    session = _session(now)
+    session.begin()
+    sid = session.session_id
+    assert session.consume_utterance(sid) is True
+
+    assert session.cancel() == {"state": "idle", "session_id": None, "active": False}
+    assert session.is_current(sid) is False
+
+
+def test_cancel_stops_a_speaking_session():
+    class SpeakingBuffer(FakeSpeechBuffer):
+        def has_speech(self):
+            return bool(self.frames)
+
+    now = [10.0]
+    session = _session(now, SpeakingBuffer())
+    session.begin()
+    session.feed(np.ones(320, dtype=np.float32))
+    assert session.state == "speaking"
+
+    assert session.cancel() == {"state": "idle", "session_id": None, "active": False}
+
+
 def test_tts_state_discards_audio_and_clears_pre_roll():
     now = [10.0]
     sb = FakeSpeechBuffer()
@@ -129,3 +168,11 @@ def test_tts_transitions_are_idempotent_and_cancel_processing():
     session.exit_tts()
     assert session.state == "idle"
     assert sb.reset_calls == resets_after_exit
+
+
+def test_cancel_does_not_interrupt_tts():
+    now = [10.0]
+    session = _session(now)
+    session.enter_tts()
+
+    assert session.cancel() == {"state": "tts", "session_id": None, "active": False}

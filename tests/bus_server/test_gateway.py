@@ -5,13 +5,18 @@ import pytest
 fastapi_testclient = pytest.importorskip("fastapi.testclient")
 TestClient = fastapi_testclient.TestClient
 
-from yuki.bus import BUS_HEALTH_SERVICE
+from yuki.bus import BUS_HEALTH_SERVICE, BusError, BusTimeoutError
 from yuki.bus_server.ws_channels import WsChannelSpec
 from yuki.bus_server.gateway import (
     COGNITION_CHAT_SERVICE,
     ChatTaskStore,
     GatewayRuntime,
     create_gateway_app,
+)
+from yuki.cognition.assembly import (
+    COGNITION_VOICE_CANCEL_SERVICE,
+    COGNITION_VOICE_START_SERVICE,
+    COGNITION_VOICE_STATUS_SERVICE,
 )
 from yuki.config import Config
 from yuki.cognition.local_model_control import LocalModelControlError
@@ -111,6 +116,57 @@ def test_gateway_desktop_frontend_health_contract_and_windows_cors():
     assert initial["data"]["hub"]["components"]["proxy"]["ok"] is True
     assert initial["data"]["processes"]["yuki"]["fresh"] is True
     assert initial["data"]["processes"]["yuki"]["last_seen_age_s"] >= 0
+
+
+def test_gateway_exposes_fixed_voice_control_endpoints():
+    bus = FakeBus()
+    idle = {"available": True, "state": "idle", "session_id": None, "active": False}
+    listening = {"available": True, "state": "listening", "session_id": 1, "active": True}
+    bus.respond(COGNITION_VOICE_STATUS_SERVICE, lambda payload: idle)
+    bus.respond(COGNITION_VOICE_START_SERVICE, lambda payload: listening)
+    bus.respond(COGNITION_VOICE_CANCEL_SERVICE, lambda payload: idle)
+    _, client = _client(bus=bus)
+
+    with client:
+        assert client.get("/api/voice").json() == idle
+        assert client.post("/api/voice/listen").json() == listening
+        assert client.delete("/api/voice/listen").json() == idle
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [
+        (BusError("offline"), 503, "voice_unavailable"),
+        (BusTimeoutError("slow"), 504, "voice_timeout"),
+    ],
+)
+def test_gateway_maps_voice_bus_failures(error, status_code, code):
+    bus = FakeBus()
+
+    def fail(payload):
+        raise error
+
+    bus.respond(COGNITION_VOICE_START_SERVICE, fail)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.post("/api/voice/listen")
+
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+
+
+def test_gateway_rejects_start_when_stt_is_disabled():
+    bus = FakeBus()
+    unavailable = {"available": False, "state": "idle", "session_id": None, "active": False}
+    bus.respond(COGNITION_VOICE_START_SERVICE, lambda payload: unavailable)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.post("/api/voice/listen")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "voice_unavailable"
 
 
 def test_gateway_health_marks_stale_or_invalid_heartbeats_not_fresh():

@@ -9,12 +9,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from yuki.bus import BUS_HEALTH_SERVICE, BusNode
+from yuki.bus import BUS_HEALTH_SERVICE, BusError, BusNode, BusTimeoutError
 from yuki.bus_server.ws_channels import (
     WsChannelSpec,
     create_ws_handler,
     register_ws_channel,
     ws_channels,
+)
+from yuki.cognition.assembly import (
+    COGNITION_VOICE_CANCEL_SERVICE,
+    COGNITION_VOICE_START_SERVICE,
+    COGNITION_VOICE_STATUS_SERVICE,
 )
 from yuki.cognition.brain.hub import COGNITION_CHAT_SERVICE
 from yuki.cognition.local_model_control import LocalChatControl, LocalModelControlError
@@ -31,6 +36,12 @@ class LocalModelRequest(BaseModel):
 
     enabled: bool
     idempotency_key: str = Field(min_length=1)
+
+
+class VoiceControlError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class ChatTaskStore:
@@ -357,6 +368,26 @@ class GatewayRuntime:
             raise HTTPException(status_code=503, detail="local model control unavailable")
         return self.local_model_control.operation_status(operation_id)
 
+    def voice_status(self) -> dict:
+        return self._voice_request(COGNITION_VOICE_STATUS_SERVICE)
+
+    def start_voice(self) -> dict:
+        status = self._voice_request(COGNITION_VOICE_START_SERVICE)
+        if not status.get("available", False):
+            raise VoiceControlError("voice_unavailable", "语音功能不可用")
+        return status
+
+    def cancel_voice(self) -> dict:
+        return self._voice_request(COGNITION_VOICE_CANCEL_SERVICE)
+
+    def _voice_request(self, service: str) -> dict:
+        try:
+            return self.request(service, {})
+        except BusTimeoutError as exc:
+            raise VoiceControlError("voice_timeout", "语音请求超时，请重试") from exc
+        except BusError as exc:
+            raise VoiceControlError("voice_unavailable", "语音功能不可用") from exc
+
     def request(self, service: str, payload: dict, *, timeout_ms: int | None = None) -> dict:
         return self.bus.request(
             service,
@@ -500,6 +531,15 @@ def create_gateway_app(
         }.get(exc.code, 500)
         return _error_response(exc.code, str(exc), status_code)
 
+    @app.exception_handler(VoiceControlError)
+    async def voice_control_error_handler(request: Request, exc: VoiceControlError):
+        del request
+        status_code = {
+            "voice_unavailable": 503,
+            "voice_timeout": 504,
+        }.get(exc.code, 500)
+        return _error_response(exc.code, str(exc), status_code)
+
     @app.exception_handler(Exception)
     async def exception_handler(request: Request, exc: Exception):
         return _error_response("internal_error", str(exc), 500)
@@ -538,6 +578,18 @@ def create_gateway_app(
     @app.get("/api/perception/status")
     def perception_status() -> dict:
         return runtime.perception_status()
+
+    @app.get("/api/voice")
+    def voice_status() -> dict:
+        return runtime.voice_status()
+
+    @app.post("/api/voice/listen")
+    def start_voice() -> dict:
+        return runtime.start_voice()
+
+    @app.delete("/api/voice/listen")
+    def cancel_voice() -> dict:
+        return runtime.cancel_voice()
 
     for spec in (channels if channels is not None else ws_channels()):
         app.router.add_websocket_route(spec.route, create_ws_handler(spec, connections, runtime))
