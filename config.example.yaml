@@ -97,7 +97,7 @@ local_brain:
   fp8_dequantize: true
   local_files_only: false
 vlm:
-  enabled: true
+  enabled: false
   model: Qwen/Qwen3-VL-8B-Instruct
   cache_dir: ""
   deep_interval_s: 300.0
