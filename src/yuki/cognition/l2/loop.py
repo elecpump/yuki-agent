@@ -97,19 +97,19 @@ class AgentLoop:
         snapshot = context or ContextSnapshot()
         enriched = self._view_builder.enrich(snapshot, memory, utterance)
         view_text = self._view_builder.format(enriched, utterance)
-        messages = [
-            {
-                "role": "system",
-                "content": CRISIS_SYSTEM_PROMPT if crisis else self._system,
-            },
-        ]
-        if not crisis:
-            messages.append({"role": "system", "content": PREFERENCE_MEMORY_INSTRUCTION})
+        system_content = (
+            CRISIS_SYSTEM_PROMPT
+            if crisis
+            else f"{self._system}\n\n{PREFERENCE_MEMORY_INSTRUCTION}"
+        )
+        messages = [{"role": "system", "content": system_content}]
         messages.append({"role": "user", "content": view_text})
         tools = (
             None
             if crisis
-            else self._registry.tool_schemas() if self._registry is not None else None
+            else self._registry.tool_schemas(wire_names=True)
+            if self._registry is not None
+            else None
         )
         transition_sent = False
 

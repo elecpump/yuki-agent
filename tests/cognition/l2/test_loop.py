@@ -48,8 +48,11 @@ def test_run_returns_single_final_reply() -> None:
         "failed": False,
     }
     messages, tools, timeout_s = client.calls[0]
-    assert messages[0] == {"role": "system", "content": "你是测试助手"}
-    assert any("memory.write" in item.get("content", "") for item in messages)
+    # 云 API（如 DeepSeek）拒绝多个 system 消息：主提示与偏好记忆指令必须合并为一条。
+    system_messages = [m for m in messages if m["role"] == "system"]
+    assert len(system_messages) == 1
+    assert system_messages[0]["content"].startswith("你是测试助手")
+    assert "memory.write" in system_messages[0]["content"]
     assert tools == []
     assert timeout_s is not None and 0 < timeout_s <= 15.0
 
@@ -71,6 +74,29 @@ def test_run_executes_tool_and_returns_later_final_reply() -> None:
     assert second_messages[-2]["role"] == "assistant"
     assert second_messages[-1]["role"] == "tool"
     assert '"ok": true' in second_messages[-1]["content"]
+
+
+def test_loop_dispatches_wire_named_tool_call_to_dotted_tool() -> None:
+    registry = FunctionRegistry()
+    calls: list[str] = []
+    registry.tool("memory.write", description="写入记忆", params=None)(
+        lambda _: calls.append("called") or {"ok": True}
+    )
+    tool_call = {
+        "id": "call-1",
+        "type": "function",
+        "function": {"name": "memory_write", "arguments": "{}"},
+    }
+    client = TurnClient([_message("", [tool_call]), _message("写好了")])
+    loop = AgentLoop(client, registry, system_prompt="测试")
+
+    result = loop.run("记住我喜欢蓝色")
+
+    assert result["text"] == "写好了"
+    assert calls == ["called"]
+    # 发给云 API 的工具 schema 必须使用 wire 名（点号会被 OpenAI 兼容 API 拒绝）
+    schemas = {s["function"]["name"] for s in client.calls[0][1] or []}
+    assert schemas == {"memory_write"}
 
 
 def test_crisis_blocks_hallucinated_tool_call_without_dispatch() -> None:

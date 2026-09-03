@@ -1,4 +1,5 @@
 import json
+import re
 
 from pydantic import BaseModel, Field
 
@@ -112,3 +113,24 @@ def test_tool_schemas_shape():
     assert "text" in echo["parameters"]["properties"]
     assert echo["parameters"]["required"] == ["text"]
     assert by_name["noop"]["function"]["parameters"] == {"type": "object", "properties": {}}
+
+
+def test_dotted_tool_name_uses_wire_name_in_schemas_and_dispatch():
+    r = FunctionRegistry()
+    r.tool("memory.write", description="写入记忆", params=None)(lambda p: {"ok": True})
+    r.tool("echo", description="回显", params=None)(lambda p: p or {"ok": True})
+
+    schemas = r.tool_schemas()
+    assert "memory.write" in {s["function"]["name"] for s in schemas}
+
+    wire = r.tool_schemas(wire_names=True)
+    names = {s["function"]["name"] for s in wire}
+    assert "memory.write" not in names
+    assert "memory_write" in names
+    for s in wire:
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", s["function"]["name"])
+
+    # 内部名与 wire 名都能 dispatch
+    assert r.dispatch({"name": "memory.write"})["ok"] is True
+    assert r.dispatch({"name": "memory_write"})["ok"] is True
+    assert r.dispatch({"name": "echo"})["ok"] is True

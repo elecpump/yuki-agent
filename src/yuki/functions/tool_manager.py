@@ -92,6 +92,15 @@ class RateLimiter:
 class ToolManager:
     """Register, validate, dispatch, and describe callable tools."""
 
+    @staticmethod
+    def wire_name(name: str) -> str:
+        """云 API（OpenAI 兼容）要求函数名匹配 ^[a-zA-Z0-9_-]+$，点号命名（如
+        memory.write）会被拒绝。内部名保持点号，仅在 L2 云边界转 wire 名。"""
+        return name.replace(".", "_")
+
+    def _wire_to_internal(self) -> dict[str, str]:
+        return {self.wire_name(name): name for name in self._tools}
+
     def __init__(
         self,
         *,
@@ -158,6 +167,8 @@ class ToolManager:
     def dispatch(self, tool_call: dict) -> dict:
         name = tool_call.get("name")
         tool = self._tools.get(name) if isinstance(name, str) else None
+        if tool is None and isinstance(name, str):
+            tool = self._tools.get(self._wire_to_internal().get(name, ""))
         if tool is None:
             return {
                 "ok": False,
@@ -193,8 +204,12 @@ class ToolManager:
             return {"ok": False, "error": {"code": "handler_error", "message": str(exc)}}
         return {"ok": True, "result": result}
 
-    def tool_schemas(self) -> list[dict]:
-        return [self.get_tool_schema(name) for name in self.names()]
+    def tool_schemas(self, *, wire_names: bool = False) -> list[dict]:
+        schemas = [self.get_tool_schema(name) for name in self.names()]
+        if wire_names:
+            for schema in schemas:
+                schema["function"]["name"] = self.wire_name(schema["function"]["name"])
+        return schemas
 
     def list_tools(self) -> list[dict]:
         result = []

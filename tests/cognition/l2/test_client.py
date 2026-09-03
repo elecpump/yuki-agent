@@ -98,6 +98,19 @@ def test_default_post_maps_http_error_to_cloud_error(monkeypatch):
         client.chat([{"role": "user", "content": "x"}])
 
 
+def test_default_post_includes_error_body_in_cloud_error(monkeypatch):
+    import io
+
+    def fake_urlopen(req, timeout=None):
+        body = b'{"error": {"message": "Model Not Exist", "type": "invalid_request_error"}}'
+        raise urllib.error.HTTPError(req.full_url, 400, "Bad Request", {}, io.BytesIO(body))
+
+    monkeypatch.setattr("yuki.cognition.l2.client.urllib.request.urlopen", fake_urlopen)
+    client = CloudClient("https://api.example.com/v1", "m1", timeout_s=5.0)
+    with pytest.raises(CloudError, match="Model Not Exist"):
+        client.chat([{"role": "user", "content": "x"}])
+
+
 def test_chat_accepts_per_call_timeout():
     captured = {}
 

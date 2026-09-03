@@ -15,7 +15,13 @@ def _default_post(url: str, headers: dict, payload: dict, timeout: float) -> dic
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        raise CloudError(f"HTTP {exc.code}") from exc
+        body = ""
+        try:
+            body = exc.read().decode("utf-8", errors="replace")[:300].strip()
+        except Exception:
+            body = ""
+        detail = f": {body}" if body else ""
+        raise CloudError(f"HTTP {exc.code}{detail}") from exc
     except json.JSONDecodeError as exc:
         raise CloudError(f"invalid JSON response: {exc}") from exc
 

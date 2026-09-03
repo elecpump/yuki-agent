@@ -157,7 +157,9 @@ def test_generate_uses_provided_system_prompt_as_is():
     client = TurnClient([{"choices": [{"message": {"content": "回答"}}]}])
     bridge = CloudBridge(client, system_prompt="你好呀{persona}保持这样")  # 不做 .format
     bridge.generate("你好", context=None, memory=None)
-    assert client.calls[0][0][0]["content"] == "你好呀{persona}保持这样"
+    system_messages = [m for m in client.calls[0][0] if m["role"] == "system"]
+    assert len(system_messages) == 1
+    assert system_messages[0]["content"].startswith("你好呀{persona}保持这样")
 
 
 def test_set_system_prompt_updates():
@@ -167,7 +169,9 @@ def test_set_system_prompt_updates():
     assert isinstance(bridge.loop, AgentLoop)
     assert bridge.loop._system == "新的系统提示"
     bridge.generate("你好", context=None, memory=None)
-    assert client.calls[0][0][0]["content"] == "新的系统提示"
+    system_messages = [m for m in client.calls[0][0] if m["role"] == "system"]
+    assert len(system_messages) == 1
+    assert system_messages[0]["content"].startswith("新的系统提示")
 
 
 def test_refine_persona_calls_client():
