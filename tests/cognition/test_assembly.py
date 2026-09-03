@@ -1,7 +1,9 @@
 from yuki.cognition.assembly import (
+    COGNITION_HISTORY_TURNS_SERVICE,
     COGNITION_VOICE_CANCEL_SERVICE,
     COGNITION_VOICE_START_SERVICE,
     COGNITION_VOICE_STATUS_SERVICE,
+    COGNITION_VOICE_TOGGLE_SERVICE,
     CognitionAssembler,
     CognitionRuntime,
 )
@@ -107,6 +109,42 @@ def test_cognition_runtime_reports_voice_unavailable_when_stt_is_disabled():
     assert pipeline.awake_payloads == []
 
 
+def test_cognition_runtime_toggles_voice_from_current_state():
+    pipeline = FakePipeline()
+    runtime = object.__new__(CognitionRuntime)
+    runtime.pipeline = pipeline
+    runtime.voice_available = True
+
+    assert runtime.handle_voice_toggle({})["state"] == "listening"
+    assert runtime.handle_voice_toggle({})["state"] == "idle"
+
+
+def test_cognition_runtime_toggle_does_not_start_when_voice_is_unavailable():
+    pipeline = FakePipeline()
+    runtime = object.__new__(CognitionRuntime)
+    runtime.pipeline = pipeline
+    runtime.voice_available = False
+
+    assert runtime.handle_voice_toggle({}) == {
+        "available": False,
+        "state": "idle",
+        "session_id": None,
+        "active": False,
+    }
+    assert pipeline.awake_payloads == []
+
+
+def test_cognition_runtime_toggle_does_not_interrupt_tts():
+    pipeline = FakePipeline()
+    pipeline.voice = {"state": "tts", "session_id": None, "active": False}
+    runtime = object.__new__(CognitionRuntime)
+    runtime.pipeline = pipeline
+    runtime.voice_available = True
+
+    assert runtime.handle_voice_toggle({})["state"] == "tts"
+    assert pipeline.awake_payloads == []
+
+
 def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
     bus = FakeBus()
     pipeline = FakePipeline()
@@ -137,6 +175,8 @@ def test_cognition_assembler_builds_runtime_and_registers_services(tmp_path):
         assert COGNITION_VOICE_START_SERVICE in bus.services
         assert COGNITION_VOICE_CANCEL_SERVICE in bus.services
         assert COGNITION_VOICE_STATUS_SERVICE in bus.services
+        assert COGNITION_VOICE_TOGGLE_SERVICE in bus.services
+        assert COGNITION_HISTORY_TURNS_SERVICE in bus.services
         assert Topics.USER_UTTERANCE in bus.subscriptions
         assert Topics.SITUATION_UPDATE in bus.subscriptions
         names = runtime.registry.names()

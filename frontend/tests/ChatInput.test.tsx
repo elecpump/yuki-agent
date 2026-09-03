@@ -12,7 +12,7 @@ describe("ChatInput", () => {
         disabled
         disabledReason="对话通道连接中，输入内容会保留"
         onSend={onSend}
-        voiceStatus={{ available: true, state: "idle", session_id: null, active: false }}
+        voiceStatus={{ available: true, state: "idle", session_id: null, active: false, hotkey: null }}
         voicePending={false}
         voiceError={null}
         onToggleVoice={vi.fn()}
@@ -36,7 +36,7 @@ describe("ChatInput", () => {
         disabled
         disabledReason="对话通道连接中，输入内容会保留"
         onSend={vi.fn(() => false)}
-        voiceStatus={{ available: true, state: "idle", session_id: null, active: false }}
+        voiceStatus={{ available: true, state: "idle", session_id: null, active: false, hotkey: null }}
         voicePending={false}
         voiceError={null}
         onToggleVoice={onToggleVoice}
@@ -55,7 +55,7 @@ describe("ChatInput", () => {
       <ChatInput
         disabled={false}
         onSend={vi.fn(() => false)}
-        voiceStatus={{ available: true, state: "speaking", session_id: 3, active: true }}
+        voiceStatus={{ available: true, state: "speaking", session_id: 3, active: true, hotkey: null }}
         voicePending={false}
         voiceError={null}
         onToggleVoice={vi.fn()}
@@ -72,7 +72,7 @@ describe("ChatInput", () => {
       <ChatInput
         disabled={false}
         onSend={vi.fn(() => false)}
-        voiceStatus={{ available: true, state: "tts", session_id: null, active: false }}
+        voiceStatus={{ available: true, state: "tts", session_id: null, active: false, hotkey: null }}
         voicePending={false}
         voiceError={null}
         onToggleVoice={vi.fn()}
@@ -88,7 +88,7 @@ describe("ChatInput", () => {
       <ChatInput
         disabled={false}
         onSend={vi.fn(() => false)}
-        voiceStatus={{ available: false, state: "idle", session_id: null, active: false }}
+        voiceStatus={{ available: false, state: "idle", session_id: null, active: false, hotkey: null }}
         voicePending={false}
         voiceError={null}
         onToggleVoice={vi.fn()}
@@ -98,5 +98,44 @@ describe("ChatInput", () => {
     const voiceButton = screen.getByRole("button", { name: "开始语音" });
     expect(voiceButton).toBeDisabled();
     expect(voiceButton).toHaveAttribute("title", "语音功能不可用");
+  });
+
+  it("shows whether the global hotkey is active or using the window fallback", () => {
+    const props = {
+      disabled: false,
+      onSend: vi.fn(() => false),
+      voicePending: false,
+      voiceError: null,
+      onToggleVoice: vi.fn(),
+    };
+    const { rerender } = render(
+      <ChatInput
+        {...props}
+        voiceStatus={{
+          available: true,
+          state: "idle",
+          session_id: null,
+          active: false,
+          hotkey: { registered: true, error: "" },
+        }}
+      />,
+    );
+    expect(screen.getByText("全局热键已启用（Ctrl+Shift+Space）")).toBeInTheDocument();
+
+    rerender(
+      <ChatInput
+        {...props}
+        voiceStatus={{
+          available: true,
+          state: "idle",
+          session_id: null,
+          active: false,
+          hotkey: { registered: false, error: "shortcut occupied" },
+        }}
+      />,
+    );
+    expect(
+      screen.getByText("全局热键不可用（被占用），请点击语音按钮"),
+    ).toBeInTheDocument();
   });
 });

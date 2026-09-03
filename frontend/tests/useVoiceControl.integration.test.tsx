@@ -6,6 +6,10 @@ import { useAppStore } from "../src/state/store";
 const idle = { available: true, state: "idle", session_id: null, active: false };
 const listening = { available: true, state: "listening", session_id: 1, active: true };
 
+function stubVoiceFetch(voiceFetch: ReturnType<typeof vi.fn>): void {
+  vi.stubGlobal("fetch", voiceFetch);
+}
+
 describe("useVoiceControl integration", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -29,7 +33,7 @@ describe("useVoiceControl integration", () => {
       .mockResolvedValueOnce(response(idle))
       .mockResolvedValueOnce(response(listening))
       .mockResolvedValueOnce(response(idle));
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -63,7 +67,7 @@ describe("useVoiceControl integration", () => {
       .fn()
       .mockResolvedValueOnce(response(tts))
       .mockResolvedValueOnce(response(idle));
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -85,7 +89,7 @@ describe("useVoiceControl integration", () => {
       .fn()
       .mockResolvedValueOnce(response(listening))
       .mockResolvedValueOnce(response(idle));
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -152,7 +156,7 @@ describe("useVoiceControl integration", () => {
       .mockResolvedValueOnce(response(listening))
       .mockRejectedValueOnce(new Error("temporary"))
       .mockResolvedValueOnce(response(idle));
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -173,7 +177,7 @@ describe("useVoiceControl integration", () => {
     const fetchMock = vi.fn().mockImplementation(
       () => new Promise<Response>((resolve) => resolvers.push(resolve)),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
     const { result } = renderHook(() => useVoiceControl(), { reactStrictMode: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
 
@@ -204,7 +208,7 @@ describe("useVoiceControl integration", () => {
           resolveCancel = resolve;
         }),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -230,7 +234,7 @@ describe("useVoiceControl integration", () => {
       headers: { "Content-Type": "application/json" },
     });
     const fetchMock = vi.fn().mockResolvedValue(response);
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { unmount } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -258,7 +262,7 @@ describe("useVoiceControl integration", () => {
           resolveStart = resolve;
         }),
       );
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -294,7 +298,7 @@ describe("useVoiceControl integration", () => {
         }),
       )
       .mockResolvedValueOnce(response(idle));
-    vi.stubGlobal("fetch", fetchMock);
+    stubVoiceFetch(fetchMock);
 
     const { result } = renderHook(() => useVoiceControl());
     await act(async () => undefined);
@@ -308,5 +312,45 @@ describe("useVoiceControl integration", () => {
 
     await act(async () => resolvePoll(response(listening)));
     expect(result.current.status).toEqual(idle);
+  });
+
+  it("does not install the window shortcut when the global hotkey is registered", async () => {
+    const globalIdle = { ...idle, hotkey: { registered: true, error: "" } };
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(globalIdle), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }));
+    stubVoiceFetch(fetchMock);
+
+    renderHook(() => useVoiceControl());
+    await act(async () => undefined);
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", { code: "Space", ctrlKey: true, shiftKey: true }),
+    );
+    await act(async () => undefined);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refreshes voice state when the window becomes active", async () => {
+    const response = (body: unknown) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(response(idle))
+      .mockResolvedValueOnce(response(listening))
+      .mockResolvedValueOnce(response(idle));
+    stubVoiceFetch(fetchMock);
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+
+    const { result } = renderHook(() => useVoiceControl());
+    await act(async () => undefined);
+    await act(async () => window.dispatchEvent(new Event("focus")));
+    expect(result.current.status).toEqual(listening);
+    await act(async () => document.dispatchEvent(new Event("visibilitychange")));
+
+    expect(result.current.status).toEqual(idle);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });

@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 import pytest
@@ -14,9 +15,11 @@ from yuki.bus_server.gateway import (
     create_gateway_app,
 )
 from yuki.cognition.assembly import (
+    COGNITION_HISTORY_TURNS_SERVICE,
     COGNITION_VOICE_CANCEL_SERVICE,
     COGNITION_VOICE_START_SERVICE,
     COGNITION_VOICE_STATUS_SERVICE,
+    COGNITION_VOICE_TOGGLE_SERVICE,
 )
 from yuki.config import Config
 from yuki.cognition.local_model_control import LocalModelControlError
@@ -128,9 +131,143 @@ def test_gateway_exposes_fixed_voice_control_endpoints():
     _, client = _client(bus=bus)
 
     with client:
-        assert client.get("/api/voice").json() == idle
-        assert client.post("/api/voice/listen").json() == listening
-        assert client.delete("/api/voice/listen").json() == idle
+        assert client.get("/api/voice").json() == {**idle, "hotkey": None}
+        assert client.post("/api/voice/listen").json() == {**listening, "hotkey": None}
+        assert client.delete("/api/voice/listen").json() == {**idle, "hotkey": None}
+
+
+def test_gateway_stores_hotkey_registration_in_voice_snapshot():
+    bus = FakeBus()
+    idle = {"available": True, "state": "idle", "session_id": None, "active": False}
+    bus.respond(COGNITION_VOICE_STATUS_SERVICE, lambda payload: idle)
+    _, client = _client(bus=bus)
+
+    with client:
+        assert client.get("/api/voice").json()["hotkey"] is None
+        response = client.post(
+            "/api/voice/hotkey",
+            json={"registered": False, "error": "shortcut occupied"},
+        )
+        snapshot = client.get("/api/voice").json()
+
+    assert response.status_code == 200
+    assert snapshot["hotkey"] == {
+        "registered": False,
+        "error": "shortcut occupied",
+    }
+
+
+def test_voice_control_responses_preserve_hotkey_registration():
+    bus = FakeBus()
+    listening = {"available": True, "state": "listening", "session_id": 3, "active": True}
+    bus.respond(COGNITION_VOICE_START_SERVICE, lambda payload: listening)
+    _, client = _client(bus=bus)
+
+    with client:
+        client.post("/api/voice/hotkey", json={"registered": True})
+        response = client.post("/api/voice/listen")
+
+    assert response.json()["hotkey"] == {"registered": True, "error": ""}
+
+
+def test_gateway_forwards_voice_toggle_to_cognition():
+    bus = FakeBus()
+    listening = {"available": True, "state": "listening", "session_id": 9, "active": True}
+    bus.respond(COGNITION_VOICE_TOGGLE_SERVICE, lambda payload: listening)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.post("/api/voice/toggle")
+
+    assert response.status_code == 200
+    assert response.json() == {**listening, "hotkey": None}
+
+
+def test_gateway_rejects_voice_toggle_when_stt_is_disabled():
+    bus = FakeBus()
+    unavailable = {"available": False, "state": "idle", "session_id": None, "active": False}
+    bus.respond(COGNITION_VOICE_TOGGLE_SERVICE, lambda payload: unavailable)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.post("/api/voice/toggle")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "voice_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [
+        (BusError("offline"), 503, "voice_unavailable"),
+        (BusTimeoutError("slow"), 504, "voice_timeout"),
+    ],
+)
+def test_gateway_maps_voice_toggle_failures(error, status_code, code):
+    bus = FakeBus()
+
+    def fail(payload):
+        raise error
+
+    bus.respond(COGNITION_VOICE_TOGGLE_SERVICE, fail)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.post("/api/voice/toggle")
+
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+
+
+def test_gateway_reads_recent_chat_history_with_bounded_limit():
+    bus = FakeBus()
+    requested = []
+
+    def history(payload):
+        requested.append(payload)
+        return {"turns": [{"id": 2, "role": "agent", "source": "agent_reply", "content": "hi", "ts": 2.0}]}
+
+    bus.respond(COGNITION_HISTORY_TURNS_SERVICE, history)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.get("/api/history/turns?limit=12")
+
+    assert response.status_code == 200
+    assert requested == [{"limit": 12}]
+    assert response.json()["turns"][0]["id"] == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "status_code", "code"),
+    [
+        (BusError("offline"), 503, "history_unavailable"),
+        (BusTimeoutError("slow"), 504, "history_timeout"),
+    ],
+)
+def test_gateway_maps_history_failures(error, status_code, code):
+    bus = FakeBus()
+
+    def fail(payload):
+        raise error
+
+    bus.respond(COGNITION_HISTORY_TURNS_SERVICE, fail)
+    _, client = _client(bus=bus)
+
+    with client:
+        response = client.get("/api/history/turns")
+
+    assert response.status_code == status_code
+    assert response.json()["error"]["code"] == code
+
+
+def test_gateway_rejects_out_of_range_history_limit():
+    _, client = _client()
+
+    with client:
+        response = client.get("/api/history/turns?limit=51")
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -244,6 +381,8 @@ def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():
             "spoke": True,
             "reason": "chat_local",
             "emotion": "warm",
+            "user_turn_id": 10,
+            "agent_turn_id": 11,
         },
     )
     runtime, client = _client(bus=bus)
@@ -261,6 +400,8 @@ def test_gateway_ws_chat_wraps_single_rpc_reply_as_done_chunk():
     assert message["ts"] == 1.0
     assert message["spoke"] is True
     assert message["emotion"] == "warm"
+    assert message["user_turn_id"] == 10
+    assert message["turn_id"] == 11
 
 
 def test_gateway_mounts_injected_custom_channel():
@@ -342,6 +483,30 @@ def test_gateway_ws_perception_pushes_focus_and_text_updates():
 
     assert focus == {"type": "foreground", "data": {"app": "chrome"}}
     assert text == {"type": "text_extract", "data": {"layer": "fast", "summary": "visible text"}}
+
+
+def test_gateway_broadcasts_voice_turns_to_chat_connections():
+    asyncio.run(_assert_gateway_broadcasts_voice_turns_to_chat_connections())
+
+
+async def _assert_gateway_broadcasts_voice_turns_to_chat_connections():
+    bus = FakeBus()
+    runtime = GatewayRuntime(Config(), bus)
+    runtime.start()
+    updates = runtime.register_chat_queue()
+    payload = {
+        "kind": "user",
+        "turn_id": 7,
+        "reply_to_turn_id": None,
+        "text": "hello",
+        "ts": 7.0,
+    }
+
+    runtime.on_voice_turn(Topics.VOICE_TURN, payload)
+    message = await asyncio.wait_for(updates.get(), timeout=1.0)
+
+    assert Topics.VOICE_TURN in bus.subscriptions
+    assert message == {"type": "voice_turn", "data": payload}
 
 
 def test_gateway_config_redacts_bus_auth_token():

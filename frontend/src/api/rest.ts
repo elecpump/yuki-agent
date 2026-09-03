@@ -1,5 +1,6 @@
 import type {
   HealthSnapshot,
+  HistoryTurn,
   LocalModelAcceptedOperation,
   LocalModelOperation,
   LocalModelStatus,
@@ -47,4 +48,11 @@ export function startVoiceListening(signal?: AbortSignal): Promise<VoiceStatus> 
 
 export function cancelVoiceListening(signal?: AbortSignal): Promise<VoiceStatus> {
   return requestJson<VoiceStatus>("/api/voice/listen", { method: "DELETE", signal });
+}
+
+export function getHistoryTurns(
+  limit = 50,
+  signal?: AbortSignal,
+): Promise<{ turns: HistoryTurn[] }> {
+  return requestJson<{ turns: HistoryTurn[] }>(`/api/history/turns?limit=${limit}`, { signal });
 }

@@ -25,6 +25,8 @@ describe("chat slice", () => {
       task_id: "server-task",
       text: "晚上好",
       reason: "chat_local",
+      user_turn_id: 10,
+      turn_id: 11,
       done: true,
       status: "completed",
     });
@@ -33,6 +35,8 @@ describe("chat slice", () => {
     expect(state.pending).toBe(false);
     expect(state.sendLocked).toBe(false);
     expect(state.messages.map((message) => message.text)).toEqual(["你好", "晚上好"]);
+    expect(state.messages.map((message) => message.turnId)).toEqual([10, 11]);
+    expect(state.messages[1]?.replyToTurnId).toBe(10);
     expect(state.messages[1]?.reason).toBe("chat_local");
   });
 
@@ -69,5 +73,44 @@ describe("chat slice", () => {
 
     expect(useAppStore.getState().requestMayBeQueued).toBe(true);
     expect(useAppStore.getState().nextRequestMayQueue).toBe(false);
+  });
+
+  it("hydrates history chronologically and deduplicates overlapping voice turns", () => {
+    useAppStore.getState().hydrateHistory([
+      { id: 2, role: "agent", source: "agent_reply", content: "回答", ts: 2 },
+      { id: 1, role: "user", source: "user_input", content: "问题", ts: 1 },
+    ]);
+    useAppStore.getState().appendVoiceReplyTurn(2, 1, "重复回答", 2);
+    useAppStore.getState().appendVoiceUserTurn(3, "继续问", 3);
+
+    expect(useAppStore.getState().messages.map(({ turnId, role, text }) => ({
+      turnId,
+      role,
+      text,
+    }))).toEqual([
+      { turnId: 1, role: "user", text: "问题" },
+      { turnId: 2, role: "assistant", text: "回答" },
+      { turnId: 3, role: "user", text: "继续问" },
+    ]);
+  });
+
+  it("preserves local messages without persisted turn ids while hydrating history", () => {
+    useAppStore.setState({
+      messages: [{
+        id: "local-user",
+        role: "user",
+        text: "正在输入的消息",
+        createdAt: 3_000,
+      }],
+    });
+
+    useAppStore.getState().hydrateHistory([
+      { id: 1, role: "user", source: "user_input", content: "历史消息", ts: 1 },
+    ]);
+
+    expect(useAppStore.getState().messages.map((message) => message.text)).toEqual([
+      "历史消息",
+      "正在输入的消息",
+    ]);
   });
 });

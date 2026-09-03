@@ -12,7 +12,13 @@ describe("voice slice", () => {
   });
 
   it("refreshes status without presenting a control operation as pending", async () => {
-    const status = { available: true, state: "idle", session_id: null, active: false };
+    const status = {
+      available: true,
+      state: "idle" as const,
+      session_id: null,
+      active: false,
+      hotkey: null,
+    };
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
@@ -40,12 +46,14 @@ describe("voice slice", () => {
       state: "idle" as const,
       session_id: null,
       active: false,
+      hotkey: null,
     };
     const listening = {
       available: true,
       state: "listening" as const,
       session_id: 1,
       active: true,
+      hotkey: null,
     };
     useAppStore.setState({ voiceStatus: idle });
     let resolveRequest: (response: Response) => void = () => undefined;
@@ -81,6 +89,7 @@ describe("voice slice", () => {
       state: "listening" as const,
       session_id: 1,
       active: true,
+      hotkey: null,
     };
     useAppStore.setState({ voiceStatus: listening });
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Gateway 不可达")));

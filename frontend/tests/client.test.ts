@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { requestJson } from "../src/api/client";
 import {
   cancelVoiceListening,
+  getHistoryTurns,
   getVoiceStatus,
   getLocalModelOperation,
   getLocalModelStatus,
@@ -139,6 +140,21 @@ describe("voice REST client", () => {
       [expect.stringMatching(/\/api\/voice$/), undefined],
       [expect.stringMatching(/\/api\/voice\/listen$/), "POST"],
       [expect.stringMatching(/\/api\/voice\/listen$/), "DELETE"],
+    ]);
+  });
+
+  it("loads persisted chat history", async () => {
+    const response = (body: unknown) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi.fn().mockResolvedValueOnce(response({ turns: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await getHistoryTurns(12);
+
+    expect(fetchMock.mock.calls.map(([url, init]) => [String(url), init?.method])).toEqual([
+      [expect.stringMatching(/\/api\/history\/turns\?limit=12$/), undefined],
     ]);
   });
 });

@@ -1,6 +1,7 @@
 class Topics:
     AWAKE = "event/awake"
     REPLY = "event/reply"
+    VOICE_TURN = "event/voice_turn"
     FOCUS_CHANGED = "event/focus_changed"
     CONTENT_READY = "event/perception/content_ready"
     SITUATION_UPDATE = "event/perception/situation_update"

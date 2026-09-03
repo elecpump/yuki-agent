@@ -76,6 +76,7 @@ export function useVoiceControl(): VoiceControl {
   }, [stopPolling, updatePolling]);
 
   useEffect(() => {
+    if (status?.hotkey?.registered === true) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.ctrlKey
@@ -89,7 +90,26 @@ export function useVoiceControl(): VoiceControl {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleVoice]);
+  }, [status?.hotkey?.registered, toggleVoice]);
+
+  useEffect(() => {
+    const refresh = () => {
+      const controller = new AbortController();
+      requestController.current = controller;
+      void useAppStore.getState().refreshVoice(controller.signal).then((nextStatus) => {
+        if (!disposed.current) updatePolling(nextStatus);
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [updatePolling]);
 
   return { status, pending, error, toggleVoice };
 }

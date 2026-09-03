@@ -10,6 +10,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{Manager, RunEvent};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -19,6 +20,7 @@ use windows_sys::Win32::System::Console::{
 };
 
 const GATEWAY_ADDRESS: &str = "127.0.0.1:8765";
+const VOICE_HOTKEY: &str = "Ctrl+Shift+Space";
 const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
 const CTRL_BREAK_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const FORCE_KILL_GRACE_PERIOD: Duration = Duration::from_secs(2);
@@ -35,17 +37,22 @@ struct BackendState {
     owned: Mutex<Option<Child>>,
 }
 
+fn connect_gateway(address: &SocketAddr) -> std::io::Result<TcpStream> {
+    let stream = TcpStream::connect_timeout(address, Duration::from_secs(1))?;
+    let timeout = Some(Duration::from_secs(1));
+    stream.set_read_timeout(timeout)?;
+    stream.set_write_timeout(timeout)?;
+    Ok(stream)
+}
+
 fn probe_gateway() -> ProbeResult {
     let address: SocketAddr = GATEWAY_ADDRESS
         .parse()
         .expect("static gateway address is valid");
-    let mut stream = match TcpStream::connect_timeout(&address, Duration::from_secs(1)) {
+    let mut stream = match connect_gateway(&address) {
         Ok(stream) => stream,
         Err(_) => return ProbeResult::Unreachable,
     };
-    let timeout = Some(Duration::from_secs(1));
-    let _ = stream.set_read_timeout(timeout);
-    let _ = stream.set_write_timeout(timeout);
     if stream
         .write_all(b"GET /api/health HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nConnection: close\r\n\r\n")
         .is_err()
@@ -76,6 +83,79 @@ fn probe_gateway() -> ProbeResult {
         ProbeResult::Yuki
     } else {
         ProbeResult::Occupied
+    }
+}
+
+fn build_gateway_post_request(path: &str, body: &str) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\n\
+         Host: 127.0.0.1:8765\r\n\
+         Content-Type: application/json\r\n\
+         Content-Length: {}\r\n\
+         Connection: close\r\n\r\n\
+         {body}",
+        body.len(),
+    )
+}
+
+fn post_gateway_json_to(address: SocketAddr, path: &str, body: &str) -> bool {
+    let mut stream = match connect_gateway(&address) {
+        Ok(stream) => stream,
+        Err(_) => return false,
+    };
+    if stream
+        .write_all(build_gateway_post_request(path, body).as_bytes())
+        .is_err()
+    {
+        return false;
+    }
+    let mut response = String::new();
+    stream.read_to_string(&mut response).is_ok()
+        && response
+            .lines()
+            .next()
+            .is_some_and(|line| line.contains(" 200 "))
+}
+
+fn post_gateway_json(path: &str, body: &str) -> bool {
+    let address = GATEWAY_ADDRESS
+        .parse()
+        .expect("static gateway address is valid");
+    post_gateway_json_to(address, path, body)
+}
+
+fn report_hotkey_status(registered: bool, error: Option<String>) {
+    thread::spawn(move || {
+        let body = serde_json::json!({
+            "registered": registered,
+            "error": error.unwrap_or_default(),
+        })
+        .to_string();
+        for _ in 0..40 {
+            if post_gateway_json("/api/voice/hotkey", &body) {
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+}
+
+fn configure_global_hotkey(app: &tauri::App) {
+    let result = app
+        .global_shortcut()
+        .on_shortcut(VOICE_HOTKEY, |_app, _shortcut, event| {
+            if event.state() == ShortcutState::Pressed {
+                thread::spawn(|| {
+                    let _ = post_gateway_json("/api/voice/toggle", "{}");
+                });
+            }
+        });
+    match result {
+        Ok(()) => report_hotkey_status(true, None),
+        Err(error) => {
+            eprintln!("[yuki-desktop] global voice hotkey unavailable: {error}");
+            report_hotkey_status(false, Some(error.to_string()));
+        }
     }
 }
 
@@ -257,6 +337,38 @@ fn shutdown_backend(state: &BackendState) {
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+
+    #[test]
+    fn builds_gateway_json_post_request() {
+        let request = build_gateway_post_request("/api/voice/hotkey", r#"{"registered":true}"#);
+
+        assert!(request.starts_with("POST /api/voice/hotkey HTTP/1.1\r\n"));
+        assert!(request.contains("Content-Type: application/json\r\n"));
+        assert!(request.contains("Content-Length: 19\r\n"));
+        assert!(request.ends_with("\r\n\r\n{\"registered\":true}"));
+    }
+
+    #[test]
+    fn posts_json_to_gateway_address() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("read listener address");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            let mut request = [0_u8; 512];
+            let read = stream.read(&mut request).expect("read request");
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}")
+                .expect("write response");
+            String::from_utf8_lossy(&request[..read]).into_owned()
+        });
+
+        assert!(post_gateway_json_to(address, "/api/voice/toggle", "{}",));
+        assert!(server
+            .join()
+            .expect("join server")
+            .starts_with("POST /api/voice/toggle HTTP/1.1\r\n",));
+    }
 
     #[test]
     fn wait_for_exit_detects_completed_child() {
@@ -291,9 +403,11 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(BackendState::default())
         .setup(|app| {
             configure_backend(app.state::<BackendState>().inner());
+            configure_global_hotkey(app);
             Ok(())
         })
         .build(tauri::generate_context!())

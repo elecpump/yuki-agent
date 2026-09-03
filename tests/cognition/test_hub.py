@@ -136,6 +136,7 @@ def test_chat_request_does_not_publish_reply(tmp_path):
     assert result["spoke"] is True
     assert result["emotion"] == "neutral"
     assert _reply_text(bus) is None
+    assert all(topic != Topics.VOICE_TURN for topic, _ in bus.published)
     memory.close()
 
 
@@ -497,7 +498,7 @@ def test_hub_persists_user_before_generation_and_links_reply(tmp_path):
         local_enabled=False,
     )
 
-    hub.handle_chat_request({"text": "别忘了这句话"})
+    result = hub.handle_chat_request({"text": "别忘了这句话"})
 
     turns = turn_store.items()
     assert [(turn["role"], turn["content"]) for turn in turns] == [
@@ -506,6 +507,96 @@ def test_hub_persists_user_before_generation_and_links_reply(tmp_path):
     ]
     assert turns[0]["reply_to_turn_id"] == turns[1]["id"]
     assert turns[1]["response_state"] == "completed"
+    assert result["user_turn_id"] == turns[1]["id"]
+    assert result["agent_turn_id"] == turns[0]["id"]
+    turn_store.close()
+    memory.close()
+
+
+def test_voice_utterance_publishes_persisted_user_and_reply_turns(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    turn_store = ThreadTurnStore(tmp_path / "thread.db")
+    context = WorkingContext(turn_store)
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        bridge=FakeBridge(reply="语音回复"),
+        context=context,
+        projector=ContextProjector(),
+        local_enabled=False,
+        clock=lambda: 42.0,
+    )
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "语音问题", "ts": 41.0})
+
+    events = [payload for topic, payload in bus.published if topic == Topics.VOICE_TURN]
+    assert events == [
+        {
+            "kind": "user",
+            "turn_id": 1,
+            "reply_to_turn_id": None,
+            "text": "语音问题",
+            "ts": 41.0,
+        },
+        {
+            "kind": "reply",
+            "turn_id": 2,
+            "reply_to_turn_id": 1,
+            "text": "语音回复",
+            "ts": 42.0,
+        },
+    ]
+    turn_store.close()
+    memory.close()
+
+
+def test_history_turns_returns_latest_non_proactive_turns(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    turn_store = ThreadTurnStore(tmp_path / "thread.db")
+    context = WorkingContext(turn_store)
+    context.add_agent("主动问候")
+    user_id = context.add_user("第一问")
+    context.add_agent("第一答", reply_to_turn_id=user_id)
+    second_id = context.add_user("第二问")
+    context.add_agent("第二答", reply_to_turn_id=second_id)
+    hub = DecisionHub(bus, memory=memory, context=context, projector=ContextProjector())
+
+    result = hub.history_turns(2)
+
+    assert [(turn["role"], turn["content"]) for turn in result["turns"]] == [
+        ("agent", "第二答"),
+        ("user", "第二问"),
+    ]
+    assert all(turn["source"] != "proactive" for turn in result["turns"])
+    assert set(result["turns"][0]) == {"id", "role", "source", "content", "ts"}
+    turn_store.close()
+    memory.close()
+
+
+def test_interrupted_voice_utterance_publishes_only_the_user_turn(tmp_path):
+    bus = FakeBus()
+    memory = MemoryManager(MemoryStore(tmp_path / "m.db"))
+    turn_store = ThreadTurnStore(tmp_path / "thread.db")
+    context = WorkingContext(turn_store)
+    loop = FakeLoop(
+        result={"text": "", "steps": 1, "interrupted": True, "failed": False},
+    )
+    hub = DecisionHub(
+        bus,
+        memory=memory,
+        loop=loop,
+        context=context,
+        projector=ContextProjector(),
+        local_enabled=False,
+    )
+
+    hub.on_user_utterance(Topics.USER_UTTERANCE, {"text": "先停一下", "ts": 41.0})
+
+    events = [payload for topic, payload in bus.published if topic == Topics.VOICE_TURN]
+    assert [(event["kind"], event["text"]) for event in events] == [("user", "先停一下")]
+    assert turn_store.items()[0]["response_state"] == "interrupted"
     turn_store.close()
     memory.close()
 

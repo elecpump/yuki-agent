@@ -55,6 +55,15 @@ export interface VoiceStatus {
   state: VoiceState;
   session_id: number | null;
   active: boolean;
+  hotkey: { registered: boolean; error: string } | null;
+}
+
+export interface HistoryTurn {
+  id: number;
+  role: "user" | "agent";
+  source: "user_input" | "agent_reply" | string;
+  content: string;
+  ts: number;
 }
 
 export type LocalModelState =

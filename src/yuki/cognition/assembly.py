@@ -71,6 +71,8 @@ logger = get_logger("yuki.cognition.assembly")
 COGNITION_VOICE_START_SERVICE = "cognition.voice.start"
 COGNITION_VOICE_CANCEL_SERVICE = "cognition.voice.cancel"
 COGNITION_VOICE_STATUS_SERVICE = "cognition.voice.status"
+COGNITION_VOICE_TOGGLE_SERVICE = "cognition.voice.toggle"
+COGNITION_HISTORY_TURNS_SERVICE = "cognition.history.turns"
 
 
 @dataclass
@@ -129,6 +131,17 @@ class CognitionRuntime:
     def handle_voice_status(self, payload: dict) -> dict:
         del payload
         return self.voice_status()
+
+    def handle_voice_toggle(self, payload: dict) -> dict:
+        status = self.voice_status()
+        if status["state"] == "tts" or not status["available"]:
+            return status
+        if status["active"]:
+            return self.handle_voice_cancel(payload)
+        return self.handle_voice_start(payload)
+
+    def handle_history_turns(self, payload: dict) -> dict:
+        return self.hub.history_turns(int((payload or {}).get("limit", 50)))
 
     def handle_soul_get(self, payload: dict) -> dict:
         return {"soul": self.soul_store.load_or_default()}
@@ -387,6 +400,8 @@ class CognitionAssembler:
         self.bus.respond(COGNITION_VOICE_START_SERVICE, runtime.handle_voice_start)
         self.bus.respond(COGNITION_VOICE_CANCEL_SERVICE, runtime.handle_voice_cancel)
         self.bus.respond(COGNITION_VOICE_STATUS_SERVICE, runtime.handle_voice_status)
+        self.bus.respond(COGNITION_VOICE_TOGGLE_SERVICE, runtime.handle_voice_toggle)
+        self.bus.respond(COGNITION_HISTORY_TURNS_SERVICE, runtime.handle_history_turns)
         self.bus.respond(SOUL_GET_SERVICE, runtime.handle_soul_get)
         return runtime
 

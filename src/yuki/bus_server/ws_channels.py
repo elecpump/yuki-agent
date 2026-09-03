@@ -65,16 +65,57 @@ def create_ws_handler(
         await websocket.accept()
         connection_id = await connections.register(websocket, spec.channel_name)
         updates = spec.queue_factory(runtime) if spec.queue_factory is not None else None
+        send_lock = asyncio.Lock()
+        duplex_tasks: list[asyncio.Task] = []
+
+        async def send(message: dict) -> None:
+            async with send_lock:
+                await websocket.send_json(message)
+
+        async def forward_updates() -> None:
+            assert updates is not None
+            while True:
+                await send(await updates.get())
+                await connections.touch(connection_id)
+
+        async def handle_requests() -> None:
+            assert spec.message_handler is not None
+            while True:
+                message = await websocket.receive_json()
+                await connections.touch(connection_id)
+                reply = await spec.message_handler(runtime, message)
+                if reply is not None:
+                    await send(reply)
+
         try:
             if spec.initial_message is not None:
-                await websocket.send_json(spec.initial_message(runtime))
+                await send(spec.initial_message(runtime))
+            if updates is not None and spec.message_handler is not None:
+                duplex_tasks = [
+                    asyncio.create_task(handle_requests()),
+                    asyncio.create_task(forward_updates()),
+                ]
+                done, pending = await asyncio.wait(
+                    duplex_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+                for task in done:
+                    if task.cancelled():
+                        continue
+                    error = task.exception()
+                    if error is not None and not isinstance(error, WebSocketDisconnect):
+                        raise error
+                return
             while True:
                 if spec.message_handler is not None:
                     message = await websocket.receive_json()
                     await connections.touch(connection_id)
                     reply = await spec.message_handler(runtime, message)
                     if reply is not None:
-                        await websocket.send_json(reply)
+                        await send(reply)
                     continue
                 if updates is None:
                     await websocket.receive_text()
@@ -83,10 +124,15 @@ def create_ws_handler(
                 message = await _wait_for_ws_message_or_queue(websocket, updates)
                 await connections.touch(connection_id)
                 if message is not None:
-                    await websocket.send_json(message)
+                    await send(message)
         except WebSocketDisconnect:
             return
         finally:
+            for task in duplex_tasks:
+                if not task.done():
+                    task.cancel()
+            if duplex_tasks:
+                await asyncio.gather(*duplex_tasks, return_exceptions=True)
             await connections.unregister(connection_id)
             if updates is not None and spec.unregister_queue is not None:
                 spec.unregister_queue(runtime, updates)

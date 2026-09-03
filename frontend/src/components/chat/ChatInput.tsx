@@ -33,6 +33,16 @@ function voiceTooltip(status: VoiceStatus | null, error: string | null): string 
   return "开始语音（Ctrl+Shift+Space）";
 }
 
+function hotkeyHint(status: VoiceStatus | null): string | undefined {
+  if (status?.hotkey?.registered === true) {
+    return "全局热键已启用（Ctrl+Shift+Space）";
+  }
+  if (status?.hotkey?.registered === false) {
+    return "全局热键不可用（被占用），请点击语音按钮";
+  }
+  return undefined;
+}
+
 export function ChatInput({
   disabled,
   disabledReason,
@@ -96,6 +106,7 @@ export function ChatInput({
           {disabledReason
             || voiceError
             || voiceHint(voiceStatus)
+            || hotkeyHint(voiceStatus)
             || "Enter 发送 · Shift + Enter 换行 · Ctrl + Shift + Space 语音"}
         </div>
       </div>

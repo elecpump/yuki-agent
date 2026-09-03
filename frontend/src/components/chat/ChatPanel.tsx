@@ -16,11 +16,16 @@ export function ChatPanel({ onSend, onCancel, voice }: ChatPanelProps) {
   const messages = useAppStore((state) => state.messages);
   const pending = useAppStore((state) => state.pending);
   const sendLocked = useAppStore((state) => state.sendLocked);
+  const chatHistoryLoading = useAppStore((state) => state.chatHistoryLoading);
   const chatWsState = useAppStore((state) => state.chatWsState);
   const requestMayBeQueued = useAppStore((state) => state.requestMayBeQueued);
   const error = useAppStore((state) => state.chatError);
   const toggleConsole = useAppStore((state) => state.toggleConsole);
   const listRef = useRef<HTMLDivElement>(null);
+  let disabledReason: string | undefined;
+  if (chatHistoryLoading) disabledReason = "正在加载聊天记录，输入内容会保留";
+  else if (sendLocked) disabledReason = "等待当前请求结束…";
+  else if (chatWsState !== "open") disabledReason = "对话通道连接中，输入内容会保留";
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight, behavior: "smooth" });
@@ -57,14 +62,8 @@ export function ChatPanel({ onSend, onCancel, voice }: ChatPanelProps) {
       </div>
       {error && <div className="chat-composer-inner chat-error">{error}</div>}
       <ChatInput
-        disabled={sendLocked || chatWsState !== "open"}
-        disabledReason={
-          sendLocked
-            ? "等待当前请求结束…"
-            : chatWsState !== "open"
-              ? "对话通道连接中，输入内容会保留"
-              : undefined
-        }
+        disabled={chatHistoryLoading || sendLocked || chatWsState !== "open"}
+        disabledReason={disabledReason}
         onSend={onSend}
         voiceStatus={voice.status}
         voicePending={voice.pending}

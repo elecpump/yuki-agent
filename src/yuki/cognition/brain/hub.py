@@ -139,6 +139,24 @@ class DecisionHub:
         with self._decision_lock:
             return self._local_enabled
 
+    def history_turns(self, limit: int = 50) -> dict:
+        if self._context_wrapper is None:
+            return {"turns": []}
+        turns = (
+            turn
+            for turn in self._context_wrapper.items()
+            if turn.get("source") != "proactive"
+        )
+        return {
+            "turns": [
+                {
+                    key: turn[key]
+                    for key in ("id", "role", "source", "content", "ts")
+                }
+                for turn in list(turns)[: max(0, int(limit))]
+            ]
+        }
+
     def trigger_proactive_tick(self) -> None:
         self._proactive.trigger_tick(self._context)
 
@@ -153,7 +171,12 @@ class DecisionHub:
         )
 
     def on_user_utterance(self, topic: str, payload: dict) -> None:
-        self._handle(TriggerKind.UTTERANCE, payload.get("text", ""), publish_reply=True)
+        self._handle(
+            TriggerKind.UTTERANCE,
+            payload.get("text", ""),
+            publish_reply=True,
+            voice_ts=payload.get("ts"),
+        )
 
     def on_user_utterance_probe(self, topic: str, payload: dict) -> None:
         ts = (payload or {}).get("ts")
@@ -175,6 +198,7 @@ class DecisionHub:
         situation: dict | None = None,
         *,
         publish_reply: bool,
+        voice_ts: float | None = None,
     ) -> dict:
         if trigger == TriggerKind.UTTERANCE:
             now = self._clock()
@@ -187,6 +211,7 @@ class DecisionHub:
                 text,
                 situation,
                 publish_reply=publish_reply,
+                voice_ts=voice_ts,
             )
         if trigger == TriggerKind.UTTERANCE:
             self._notify_utterance_observers(text)
@@ -206,10 +231,22 @@ class DecisionHub:
         situation: dict | None = None,
         *,
         publish_reply: bool,
+        voice_ts: float | None = None,
     ) -> dict:
         user_turn_id = None
         if self._context_wrapper is not None and trigger == TriggerKind.UTTERANCE:
             user_turn_id = self._context_wrapper.add_user(text)
+            if publish_reply and user_turn_id is not None:
+                self._bus.publish(
+                    Topics.VOICE_TURN,
+                    {
+                        "kind": "user",
+                        "turn_id": user_turn_id,
+                        "reply_to_turn_id": None,
+                        "text": text,
+                        "ts": voice_ts if isinstance(voice_ts, (int, float)) else self._clock(),
+                    },
+                )
 
         snapshot = None
         if self._context_wrapper is not None and self._projector is not None:
@@ -251,13 +288,14 @@ class DecisionHub:
         if spoke and reply_id is None:
             reply_id = uuid.uuid4().hex
 
+        agent_turn_id = None
         if self._context_wrapper is not None:
             if spoke:
                 try:
                     if user_turn_id is None:
-                        self._context_wrapper.add_agent(rendered)
+                        agent_turn_id = self._context_wrapper.add_agent(rendered)
                     else:
-                        self._context_wrapper.add_agent(
+                        agent_turn_id = self._context_wrapper.add_agent(
                             rendered,
                             reply_to_turn_id=user_turn_id,
                         )
@@ -268,6 +306,17 @@ class DecisionHub:
                 self._mark_response(user_turn_id, "interrupted")
 
         if spoke and publish_reply:
+            if agent_turn_id is not None:
+                self._bus.publish(
+                    Topics.VOICE_TURN,
+                    {
+                        "kind": "reply",
+                        "turn_id": agent_turn_id,
+                        "reply_to_turn_id": user_turn_id,
+                        "text": rendered,
+                        "ts": reply_ts,
+                    },
+                )
             self._bus.publish(
                 Topics.REPLY,
                 final_reply_payload(rendered, reply_ts, emotion_value, reply_id),
@@ -299,6 +348,8 @@ class DecisionHub:
             "emotion": emotion_value,
             "spoke": spoke,
             "reason": result["reason"],
+            "user_turn_id": user_turn_id,
+            "agent_turn_id": agent_turn_id,
         }
 
     def _mark_response(self, user_turn_id: int | None, state: ResponseState) -> None:

@@ -4,7 +4,7 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -17,9 +17,11 @@ from yuki.bus_server.ws_channels import (
     ws_channels,
 )
 from yuki.cognition.assembly import (
+    COGNITION_HISTORY_TURNS_SERVICE,
     COGNITION_VOICE_CANCEL_SERVICE,
     COGNITION_VOICE_START_SERVICE,
     COGNITION_VOICE_STATUS_SERVICE,
+    COGNITION_VOICE_TOGGLE_SERVICE,
 )
 from yuki.cognition.brain.hub import COGNITION_CHAT_SERVICE
 from yuki.cognition.local_model_control import LocalChatControl, LocalModelControlError
@@ -31,6 +33,13 @@ class ChatRequest(BaseModel):
     text: str
 
 
+class VoiceHotkeyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    registered: bool
+    error: str = ""
+
+
 class LocalModelRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +48,12 @@ class LocalModelRequest(BaseModel):
 
 
 class VoiceControlError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+class HistoryControlError(RuntimeError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
@@ -184,8 +199,10 @@ class GatewayRuntime:
         self._heartbeats: dict[str, dict] = {}
         self._foreground: dict = {}
         self._text_extract: dict = {}
+        self._voice_hotkey: dict | None = None
         self._status_queues: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
         self._perception_queues: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
+        self._chat_queues: list[tuple[asyncio.AbstractEventLoop, asyncio.Queue]] = []
         self._lock = threading.Lock()
         self._started = False
 
@@ -196,6 +213,7 @@ class GatewayRuntime:
         self.bus.subscribe(Topics.HEARTBEAT, self.on_heartbeat)
         self.bus.subscribe(Topics.FOCUS_CHANGED, self.on_focus_changed)
         self.bus.subscribe(Topics.SITUATION_UPDATE, self.on_situation_update)
+        self.bus.subscribe(Topics.VOICE_TURN, self.on_voice_turn)
         if hasattr(self.bus, "respond"):
             self.bus.respond("health/gateway", lambda payload: self.gateway_health())
 
@@ -220,6 +238,10 @@ class GatewayRuntime:
             self._text_extract = dict(payload)
         self._broadcast(self._perception_queues, {"type": "text_extract", "data": dict(payload)})
 
+    def on_voice_turn(self, topic: str, payload: dict) -> None:
+        del topic
+        self._broadcast(self._chat_queues, {"type": "voice_turn", "data": dict(payload)})
+
     def register_status_queue(self) -> asyncio.Queue:
         return self._register_queue(self._status_queues)
 
@@ -231,6 +253,12 @@ class GatewayRuntime:
 
     def unregister_perception_queue(self, worker_queue: asyncio.Queue) -> None:
         self._unregister_queue(self._perception_queues, worker_queue)
+
+    def register_chat_queue(self) -> asyncio.Queue:
+        return self._register_queue(self._chat_queues)
+
+    def unregister_chat_queue(self, worker_queue: asyncio.Queue) -> None:
+        self._unregister_queue(self._chat_queues, worker_queue)
 
     def _register_queue(
         self,
@@ -369,16 +397,33 @@ class GatewayRuntime:
         return self.local_model_control.operation_status(operation_id)
 
     def voice_status(self) -> dict:
-        return self._voice_request(COGNITION_VOICE_STATUS_SERVICE)
+        return self._with_voice_hotkey(self._voice_request(COGNITION_VOICE_STATUS_SERVICE))
+
+    def _with_voice_hotkey(self, status: dict) -> dict:
+        with self._lock:
+            hotkey = dict(self._voice_hotkey) if self._voice_hotkey is not None else None
+        return {**status, "hotkey": hotkey}
+
+    def set_voice_hotkey(self, request: VoiceHotkeyRequest) -> dict:
+        hotkey = {"registered": request.registered, "error": request.error}
+        with self._lock:
+            self._voice_hotkey = hotkey
+        return dict(hotkey)
 
     def start_voice(self) -> dict:
         status = self._voice_request(COGNITION_VOICE_START_SERVICE)
         if not status.get("available", False):
             raise VoiceControlError("voice_unavailable", "语音功能不可用")
-        return status
+        return self._with_voice_hotkey(status)
 
     def cancel_voice(self) -> dict:
-        return self._voice_request(COGNITION_VOICE_CANCEL_SERVICE)
+        return self._with_voice_hotkey(self._voice_request(COGNITION_VOICE_CANCEL_SERVICE))
+
+    def toggle_voice(self) -> dict:
+        status = self._voice_request(COGNITION_VOICE_TOGGLE_SERVICE)
+        if not status.get("available", False):
+            raise VoiceControlError("voice_unavailable", "语音功能不可用")
+        return self._with_voice_hotkey(status)
 
     def _voice_request(self, service: str) -> dict:
         try:
@@ -387,6 +432,14 @@ class GatewayRuntime:
             raise VoiceControlError("voice_timeout", "语音请求超时，请重试") from exc
         except BusError as exc:
             raise VoiceControlError("voice_unavailable", "语音功能不可用") from exc
+
+    def history_turns(self, limit: int) -> dict:
+        try:
+            return self.request(COGNITION_HISTORY_TURNS_SERVICE, {"limit": limit})
+        except BusTimeoutError as exc:
+            raise HistoryControlError("history_timeout", "历史记录请求超时") from exc
+        except BusError as exc:
+            raise HistoryControlError("history_unavailable", "历史记录不可用") from exc
 
     def request(self, service: str, payload: dict, *, timeout_ms: int | None = None) -> dict:
         return self.bus.request(
@@ -447,6 +500,8 @@ async def _chat_message_handler(runtime: GatewayRuntime, message: dict) -> dict 
         "ts": result.get("ts"),
         "spoke": result.get("spoke"),
         "emotion": result.get("emotion"),
+        "user_turn_id": result.get("user_turn_id"),
+        "turn_id": result.get("agent_turn_id"),
         "done": True,
         "status": task["status"],
         "error": task.get("error", ""),
@@ -464,6 +519,8 @@ def _register_default_ws_channels() -> None:
     register_ws_channel(WsChannelSpec(
         route="/ws/chat",
         channel_name="chat",
+        queue_factory=lambda runtime: runtime.register_chat_queue(),
+        unregister_queue=lambda runtime, q: runtime.unregister_chat_queue(q),
         message_handler=_chat_message_handler,
     ))
     register_ws_channel(WsChannelSpec(
@@ -540,6 +597,15 @@ def create_gateway_app(
         }.get(exc.code, 500)
         return _error_response(exc.code, str(exc), status_code)
 
+    @app.exception_handler(HistoryControlError)
+    async def history_control_error_handler(request: Request, exc: HistoryControlError):
+        del request
+        status_code = {
+            "history_unavailable": 503,
+            "history_timeout": 504,
+        }.get(exc.code, 500)
+        return _error_response(exc.code, str(exc), status_code)
+
     @app.exception_handler(Exception)
     async def exception_handler(request: Request, exc: Exception):
         return _error_response("internal_error", str(exc), 500)
@@ -564,6 +630,10 @@ def create_gateway_app(
     def chat(request: ChatRequest) -> dict:
         return runtime.run_chat(request.text)
 
+    @app.get("/api/history/turns")
+    def history_turns(limit: int = Query(default=50, ge=1, le=50)) -> dict:
+        return runtime.history_turns(limit)
+
     @app.get("/api/chat/{task_id}")
     def chat_task(task_id: str) -> dict:
         task = runtime.tasks.get(task_id)
@@ -586,6 +656,14 @@ def create_gateway_app(
     @app.post("/api/voice/listen")
     def start_voice() -> dict:
         return runtime.start_voice()
+
+    @app.post("/api/voice/hotkey")
+    def set_voice_hotkey(request: VoiceHotkeyRequest) -> dict:
+        return runtime.set_voice_hotkey(request)
+
+    @app.post("/api/voice/toggle")
+    def toggle_voice() -> dict:
+        return runtime.toggle_voice()
 
     @app.delete("/api/voice/listen")
     def cancel_voice() -> dict:

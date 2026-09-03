@@ -22,6 +22,8 @@ export interface AssistantChunkMessage {
   ts?: number | null;
   spoke?: boolean | null;
   emotion?: string | null;
+  user_turn_id?: number | null;
+  turn_id?: number | null;
   done: true;
   status: "completed" | "failed" | "cancel_requested" | string;
   error?: string;
@@ -32,8 +34,23 @@ export interface InterruptAckMessage {
   task: unknown;
 }
 
+export interface VoiceTurnMessage {
+  type: "voice_turn";
+  data: {
+    kind: "user" | "reply";
+    turn_id: number;
+    reply_to_turn_id: number | null;
+    text: string;
+    ts: number;
+  };
+}
+
 export type StatusServerMessage = HealthMessage | PingMessage;
-export type ChatServerMessage = AssistantChunkMessage | PingMessage | InterruptAckMessage;
+export type ChatServerMessage =
+  | AssistantChunkMessage
+  | VoiceTurnMessage
+  | PingMessage
+  | InterruptAckMessage;
 export type ServerMessage = StatusServerMessage | ChatServerMessage | { type: string; [key: string]: unknown };
 
 export interface ChannelEvent {
