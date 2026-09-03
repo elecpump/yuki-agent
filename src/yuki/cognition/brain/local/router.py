@@ -111,6 +111,8 @@ class LocalRouter:
                     'route 只能取 "local" 或 "cloud"：local 表示简单对话/闲聊/情感回应，'
                     "本地模型即可自然回复；cloud 表示需要查信息、执行命令、多步推理、复杂问题，"
                     "以及任何需要长期记住的显式用户偏好或纠正。"
+                    "confidence 必须是一个 0.0 到 1.0 之间的数字（如 0.9），"
+                    '禁止使用 "high"/"low"/"medium" 等文字或百分数。'
                     'crisis 只能取 true 或 false：仅当用户明确表达自伤、自杀等严重危机或求助意图时为 true。'
                     'emotion 只能取 "neutral"、"joy"、"sadness"、"anxiety"、"anger"、"love"、"tired" 之一，'
                     "表示用户当前情绪。"
