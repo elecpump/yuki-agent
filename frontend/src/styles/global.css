@@ -161,6 +161,15 @@ button, textarea { font: inherit; }
 .component-item { padding: 9px 10px; border-radius: 9px; background: rgba(255,255,255,.035); }
 .component-row { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
 .component-detail { color: #7f89a5; font-size: 11px; margin-top: 5px; overflow-wrap: anywhere; }
+.component-ok { color: #43d9a3; }
+.component-bad { color: #ff6b7b; }
+.kv-row { display: flex; gap: 6px; align-items: baseline; padding: 1px 0; line-height: 1.5; }
+.kv-key { color: #8b95ad; flex-shrink: 0; }
+.kv-value { color: #c6cede; overflow-wrap: anywhere; }
+.kv-dim { color: #5c6680; }
+.kv-list-item { margin-right: 4px; }
+.kv-group-title { color: #64748b; margin: 4px 0 1px; font-weight: 600; }
+.kv-group-body { padding-left: 10px; border-left: 1px solid rgba(148, 163, 184, 0.18); margin-left: 2px; }
 .placeholder { min-height: 280px; display: grid; place-items: center; text-align: center; color: #7f89a5; }
 .connection-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 12px; color: #a8b0c8; }
 

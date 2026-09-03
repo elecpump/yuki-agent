@@ -19,14 +19,18 @@ describe("HealthPanel", () => {
     });
   });
 
-  it("renders hub components and serializes nested detail values", () => {
-    render(<HealthPanel />);
+  it("renders hub components with hierarchical detail rows", () => {
+    const { container } = render(<HealthPanel />);
     fireEvent.click(screen.getByText("1 个 Hub 组件"));
 
-    expect(screen.getByText("proxy")).toBeInTheDocument();
-    expect(screen.getByText(/last_forwarded_s: 1/)).toBeInTheDocument();
-    expect(screen.getByText(/nested: \{"lane":"control"\}/)).toBeInTheDocument();
-    expect(screen.getByText(/PID 42/)).toBeInTheDocument();
+    const text = container.textContent || "";
+    expect(text).toContain("proxy");
+    expect(text).toContain("last_forwarded_s");
+    expect(text).toContain("nested"); // 嵌套对象渲染为分组标题
+    expect(text).toContain("lane");
+    expect(text).toContain("control");
+    expect(text).not.toContain('{"lane":"control"}'); // 不再整体 JSON 序列化
+    expect(text).toContain("PID 42");
   });
 
   it("places local model control after Gateway and Bus Hub but before processes", () => {
