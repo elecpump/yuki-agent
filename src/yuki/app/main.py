@@ -142,6 +142,7 @@ class YukiApp:
                     bus=self.local_bus,
                     hub=self.hub,
                     local_model_control=local_model_control,
+                    wire_bus=self.remote_bus,
                 )
                 self.gateway.start()
             self._started = True

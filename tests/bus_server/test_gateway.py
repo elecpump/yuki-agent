@@ -59,6 +59,28 @@ def test_gateway_health_aggregates_hub_and_heartbeats():
     assert "health/gateway" in bus.services
 
 
+def test_gateway_subscribes_heartbeats_on_wire_bus():
+    # 进程心跳发布在 wire bus（main 的 HealthReporter 用 remote_bus、model_worker
+    # 用自己的 BusNode）；local bus 无心跳发布者。gateway 必须双 bus 订阅，
+    # 否则 /api/health 的 processes 恒为空、健康面板看不到进程卡。
+    local = FakeBus()
+    wire = FakeBus()
+    runtime = GatewayRuntime(Config(), local, wire_bus=wire)
+    runtime.start()
+
+    wire_handlers = wire.subscriptions.get(Topics.HEARTBEAT, [])
+    assert wire_handlers, "wire bus must receive process heartbeats"
+    wire_handlers[0](
+        Topics.HEARTBEAT,
+        {"process": "model_worker", "healthy": True, "ts": time.time()},
+    )
+
+    snapshot = runtime.health_snapshot()
+    assert snapshot["processes"]["model_worker"]["healthy"] is True
+    assert snapshot["processes"]["model_worker"]["fresh"] is True
+    assert local.subscriptions.get(Topics.HEARTBEAT)
+
+
 def test_gateway_health_prefers_in_process_hub_snapshot():
     class Hub:
         def health_snapshot(self):

@@ -190,9 +190,11 @@ class GatewayRuntime:
         *,
         hub=None,
         local_model_control: LocalChatControl | None = None,
+        wire_bus=None,
     ) -> None:
         self.config = config
         self.bus = bus
+        self.wire_bus = wire_bus
         self.hub = hub
         self.local_model_control = local_model_control
         self.tasks = ChatTaskStore()
@@ -211,6 +213,11 @@ class GatewayRuntime:
             return
         self._started = True
         self.bus.subscribe(Topics.HEARTBEAT, self.on_heartbeat)
+        # 进程心跳由各进程发布在 wire bus（main 进程 health.py 用 remote_bus，
+        # model_worker 用自己的 BusNode）；local bus 上没有任何心跳发布者。
+        # 只订阅 wire bus 会让 /api/health 的 processes 恒为空。
+        if self.wire_bus is not None and self.wire_bus is not self.bus:
+            self.wire_bus.subscribe(Topics.HEARTBEAT, self.on_heartbeat)
         self.bus.subscribe(Topics.FOCUS_CHANGED, self.on_focus_changed)
         self.bus.subscribe(Topics.SITUATION_UPDATE, self.on_situation_update)
         self.bus.subscribe(Topics.VOICE_TURN, self.on_voice_turn)
@@ -683,6 +690,7 @@ class GatewayServer:
         *,
         hub=None,
         local_model_control: LocalChatControl | None = None,
+        wire_bus=None,
     ) -> None:
         self.config = config
         self._owns_bus = bus is None
@@ -697,6 +705,7 @@ class GatewayServer:
             self.bus,
             hub=hub,
             local_model_control=local_model_control,
+            wire_bus=wire_bus,
         )
         self.app = create_gateway_app(self.runtime)
         self._server = None
